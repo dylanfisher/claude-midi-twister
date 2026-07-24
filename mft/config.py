@@ -117,9 +117,21 @@ ANIM_PULSE = {
     "8": 15,
     "16": 16,
 }
-#: Brightness ramp: BRIGHTNESS_MIN..BRIGHTNESS_MAX is a linear fade.
+#: Brightness ramp: BRIGHTNESS_MIN..BRIGHTNESS_MAX is a linear fade, and its
+#: bottom value is 0% -- an extinguished LED rather than a merely dim one.
 BRIGHTNESS_MIN = 17
 BRIGHTNESS_MAX = 47
+
+#: What "off" is on channels 3 and 6.
+#:
+#: Not ``ANIM_NONE``. Value 0 on those channels means *no animation*, which
+#: hands the LED back to the device's own idea of what to show -- on a stock
+#: unit that is the inactive colour at low brightness, which is why a board that
+#: had been told to go dark sat there glowing blue after the daemon exited. The
+#: bottom of the brightness ramp is the only value that keeps the LED under our
+#: control *and* puts it at zero. Override if your unit's ramp starts elsewhere
+#: (find it with ``python -m mft.calibrate anim``).
+DARK_VALUE = int(os.environ.get("MFT_DARK_VALUE", BRIGHTNESS_MIN))
 
 #: Every gate and pulse rate above is measured in beats, and the Twister takes
 #: its beat from incoming MIDI clock. Without a clock each encoder free-runs off
@@ -409,8 +421,9 @@ SHUTDOWN_CYCLE_SECONDS = 1.2
 #: Uniform fade to black -- and to actually *off*, not to the hardware's minimum
 #: brightness, which is still a lit encoder wearing a colour.
 SHUTDOWN_FADE_SECONDS = 0.9
-#: Below this the encoder is switched off rather than dimmed further. Channel 3
-#: has no dark end: its bottom brightness value still glows.
+#: Below this the encoder is switched off (:data:`DARK_VALUE`) rather than
+#: dimmed further -- an encoder at the bottom of the fade is still an encoder
+#: wearing a hue, and the board has to end with nothing on it at all.
 SHUTDOWN_DARK_LEVEL = 0.02
 
 #: Banner colour for transient words pushed onto the board later (RATE on a

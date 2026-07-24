@@ -74,9 +74,9 @@ class Twister:
 
     # -- per-encoder features ----------------------------------------------
 
-    def ring(self, slot: Slot, value: int) -> None:
+    def ring(self, slot: Slot, value: int, force: bool = False) -> None:
         """LED ring position, 0-127."""
-        self.cc(config.CH_ENCODER, slot_to_cc(slot), value)
+        self.cc(config.CH_ENCODER, slot_to_cc(slot), value, force=force)
 
     def color(self, slot: Slot, color: str | int | None) -> None:
         """Switch RGB hue. Accepts a name from ``config.COLORS``, a raw
@@ -93,14 +93,21 @@ class Twister:
         """RGB gate/pulse animation (0 = none)."""
         self.cc(config.CH_SWITCH_ANIM, slot_to_cc(slot), value)
 
-    def rgb_off(self, slot: Slot) -> None:
+    def rgb_off(self, slot: Slot, force: bool = False) -> None:
         """Extinguish the switch LED completely.
 
         Channel 2 has no "off" -- its whole 0-127 range is hue, and 0 is blue.
-        The only way to get a genuinely dark encoder is value 0 on the
-        animation/brightness channel, and nothing may set a brightness after.
+        Channel 3 does, but it is *not* ``ANIM_NONE``: value 0 there means "no
+        animation", which stops overriding the device and lets it fall back to
+        its own inactive colour, so the encoder keeps glowing dimly. Zero
+        brightness (:data:`config.DARK_VALUE`) is the value that is actually
+        dark, and nothing may set a hue or brightness after it.
         """
-        self.cc(config.CH_SWITCH_ANIM, slot_to_cc(slot), config.ANIM_NONE)
+        self.cc(config.CH_SWITCH_ANIM, slot_to_cc(slot), config.DARK_VALUE, force=force)
+
+    def ring_off(self, slot: Slot, force: bool = False) -> None:
+        """Same story one channel over: zero brightness, not "no animation"."""
+        self.cc(config.CH_RING_ANIM, slot_to_cc(slot), config.DARK_VALUE, force=force)
 
     def rgb_brightness(self, slot: Slot, fraction: float) -> None:
         self.cc(config.CH_SWITCH_ANIM, slot_to_cc(slot), _brightness_value(fraction))
@@ -166,14 +173,30 @@ class Twister:
 
     # -- bulk ---------------------------------------------------------------
 
-    def clear(self, slot: Slot) -> None:
-        self.ring(slot, 0)
-        self.rgb_off(slot)
-        self.ring_anim(slot, config.ANIM_NONE)
+    def clear(self, slot: Slot, force: bool = False) -> None:
+        """One encoder, dark on both channels.
 
-    def clear_all(self) -> None:
+        Brightness goes last on each channel: it is the value that holds the LED
+        off, so anything sent after it (a hue, a ring position, an animation)
+        would light the encoder back up.
+        """
+        self.ring(slot, 0, force=force)
+        self.rgb_off(slot, force=force)
+        self.ring_off(slot, force=force)
+
+    def clear_all(self, force: bool = False) -> None:
         for slot in range(config.SLOT_COUNT):
-            self.clear(slot)
+            self.clear(slot, force=force)
+
+    def blackout(self) -> None:
+        """The last word on the board: every encoder off, no matter what the
+        de-dup cache believes it already sent.
+
+        Used on the way out, where "the LED is already off so skip the write"
+        is exactly the assumption you cannot afford to get wrong -- the daemon
+        does not get a second chance to correct a board it left glowing.
+        """
+        self.clear_all(force=True)
 
     # -- input --------------------------------------------------------------
 
@@ -195,7 +218,7 @@ class Twister:
     def close(self) -> None:
         try:
             self.stop_clock()
-            self.clear_all()
+            self.blackout()
         finally:
             for port in (self._out, self._in):
                 if port is not None:

@@ -543,9 +543,11 @@ class Visualizer:
             self.animate(board_mod.ShutdownOverlay(time.monotonic()))
         finally:
             # The overlay's own last frame is nearly dark, not dark: the final
-            # word on the board has to be an actual off, and it has to be sent
-            # even if the animation was cut short.
-            self.device.clear_all()
+            # word on the board has to be an actual off, it has to be sent even
+            # if the animation was cut short, and it has to go out forced --
+            # the de-dup cache thinking those encoders are already off is not
+            # something a board left glowing on the desk can be argued with.
+            self.device.blackout()
             self._stop.set()
 
     def stop(self) -> None:

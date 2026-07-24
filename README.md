@@ -448,6 +448,15 @@ Note the *or*: on channels 3 and 6 the low value band is rate-based gate/pulse
 animations and the band above it is a plain brightness ramp, so a lit encoder can
 animate or dim, not both.
 
+There is also no *off* anywhere obvious. Channel 2 is hue all the way down (0 is
+blue, not dark), and value 0 on channels 3 and 6 means "no animation" — it stops
+overriding the device, which then goes back to showing its own inactive colour,
+so the board sits there glowing dimly at you. The only genuine off is the bottom
+of the brightness ramp: `config.DARK_VALUE`, 17 by default, overridable with
+`MFT_DARK_VALUE` if your unit's ramp starts somewhere else. That is what the
+shutdown wipe fades into and what the daemon forces onto all 64 encoders before
+it lets go of the port, so a stopped daemon leaves a completely dim board.
+
 The exact value→colour and value→animation numbers drift between firmware
 revisions, so `mft/config.py` ships anchors rather than gospel. Sweep your own:
 
@@ -462,7 +471,7 @@ Everything else worth tuning — frame rate, colours per state, fade durations,
 attention ramp, snooze steps, brightness floors — is in `mft/config.py` too, and
 the switches you'd most likely want at runtime are environment variables:
 `MFT_CLOCK_BPM`, `MFT_BOOT_ANIMATION`, `MFT_AMBIENT`, `MFT_SUBAGENT_STACK`,
-`MFT_ENCODER_MODE`, `MFT_CONTEXT_RING`.
+`MFT_ENCODER_MODE`, `MFT_CONTEXT_RING`, `MFT_DARK_VALUE`.
 
 ## Tests
 
