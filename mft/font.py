@@ -1,0 +1,77 @@
+"""A 4x4 bitmap font, because a bank of the Twister is a 16-pixel display.
+
+Four rows of four characters each; ``#`` is a lit pixel and anything else is
+dark. Four pixels is not enough for a legible alphabet in the typographic sense
+-- several glyphs are frank approximations, and a couple of pairs (O/0, M/W) are
+only barely distinguishable. It is enough to spell a word you are expecting,
+which is the whole job: CLAUDE on boot, RATE when a turn dies on a rate limit, a
+two-digit number when you want a count.
+
+Ring brightness gives real grayscale per pixel, so :func:`crossfade` can blend
+two glyphs rather than hard-cutting between them.
+"""
+
+from __future__ import annotations
+
+from . import config
+
+#: Rows top to bottom, columns left to right.
+GLYPHS: dict[str, tuple[str, str, str, str]] = {
+    " ": ("....", "....", "....", "...."),
+    "A": ("####", "#..#", "####", "#..#"),
+    "B": ("###.", "#..#", "###.", "###."),
+    "C": ("####", "#...", "#...", "####"),
+    "D": ("###.", "#..#", "#..#", "###."),
+    "E": ("####", "###.", "#...", "####"),
+    "F": ("####", "#...", "###.", "#..."),
+    "G": (".###", "#...", "#..#", ".###"),
+    "H": ("#..#", "#..#", "####", "#..#"),
+    "I": ("####", ".##.", ".##.", "####"),
+    "J": ("..##", "...#", "#..#", ".##."),
+    "K": ("#..#", "##..", "##..", "#..#"),
+    "L": ("#...", "#...", "#...", "####"),
+    "M": ("#..#", "####", "#..#", "#..#"),
+    "N": ("#..#", "##.#", "#.##", "#..#"),
+    "O": (".##.", "#..#", "#..#", ".##."),
+    "P": ("###.", "#..#", "###.", "#..."),
+    "Q": (".##.", "#..#", "#.##", ".###"),
+    "R": ("###.", "#..#", "###.", "#..#"),
+    "S": (".###", "##..", "..##", "###."),
+    "T": ("####", ".##.", ".##.", ".##."),
+    "U": ("#..#", "#..#", "#..#", "####"),
+    "V": ("#..#", "#..#", "#..#", ".##."),
+    "W": ("#..#", "#..#", "####", ".##."),
+    "X": ("#..#", ".##.", ".##.", "#..#"),
+    "Y": ("#..#", ".##.", ".##.", ".##."),
+    "Z": ("####", "..#.", ".#..", "####"),
+    "0": (".##.", "#..#", "#..#", ".##."),
+    "1": (".#..", "##..", ".#..", "###."),
+    "2": ("###.", "..#.", ".#..", "####"),
+    "3": ("###.", "..#.", "..#.", "###."),
+    "4": ("#..#", "#..#", "####", "...#"),
+    "5": ("####", "##..", "..##", "###."),
+    "6": (".##.", "#...", "###.", ".##."),
+    "7": ("####", "...#", "..#.", ".#.."),
+    "8": (".##.", "#..#", ".##.", ".##."),
+    "9": (".##.", "#..#", ".###", "..#."),
+}
+
+#: Number of pixels in one glyph, i.e. one bank.
+PIXELS = config.GRID_ROWS * config.GRID_COLS
+
+
+def pixels(char: str) -> list[float]:
+    """One glyph as ``PIXELS`` intensities in slot order (row-major).
+
+    Unknown characters render blank rather than raising, so a caller can pass
+    arbitrary text through without sanitising it first.
+    """
+    rows = GLYPHS.get(char.upper(), GLYPHS[" "])
+    return [1.0 if cell == "#" else 0.0 for row in rows for cell in row]
+
+
+def crossfade(a: str, b: str, t: float) -> list[float]:
+    """Blend glyph ``a`` into glyph ``b``; ``t`` runs 0.0 -> 1.0."""
+    t = max(0.0, min(1.0, t))
+    left, right = pixels(a), pixels(b)
+    return [l + (r - l) * t for l, r in zip(left, right)]
