@@ -231,27 +231,25 @@ class LampTestOverlay(Overlay):
         return max(0.0, min(1.0, local / 6.0))
 
     @staticmethod
-    def _field(x: float, y: float, t: float) -> tuple[float, float]:
-        """Two independent scalar fields over the 4x4 grid, in -1..1.
+    def _field(x: float, y: float, t: float) -> float:
+        """One scalar field over the 4x4 grid, in -1..1.
 
-        The rates share no common factor, which is the whole trick: the sum
-        never repeats, so sixteen pixels are enough to read as motion with
-        somewhere to go. Brightness and hue come off *different* fields --
-        locking them together would collapse the whole thing back into one
-        heightmap wearing a gradient.
+        Four travelling waves whose rates share no common factor, which is the
+        whole trick: the sum never repeats, so sixteen pixels are enough to read
+        as motion with somewhere to go.
+
+        It used to drive a hue off a second, independent field as well. Boot
+        does not light the RGB at all now, so there is nothing for that field to
+        colour and it is gone rather than left computing a number no one reads.
         """
         cx = 1.5 + 1.2 * math.sin(0.11 * t)
         cy = 1.5 + 1.2 * math.cos(0.13 * t)
-        level = (
+        return (
             math.sin(1.7 * x + 0.90 * t)
             + math.sin(1.3 * y - 0.61 * t)
             + math.sin(0.9 * (x + y) + 0.37 * t)
             + math.sin(2.1 * math.hypot(x - cx, y - cy) - 1.13 * t)
         ) / 4
-        hue = (
-            math.sin(0.8 * y - 0.23 * t) + math.sin(0.7 * (x - y) + 0.17 * t)
-        ) / 2
-        return level, hue
 
     def apply(self, board: list[Cell], now: float, claimed=frozenset()) -> None:
         t = now - self.started_at
@@ -262,15 +260,13 @@ class LampTestOverlay(Overlay):
         # full or it is not a lamp test -- and only then dissolves into the
         # field, so the two read as one gesture rather than two clips spliced.
         mix = _smoothstep((t - self.sweep) / (0.8 * self.sweep))
-        low, high = config.LAMP_TEST_HUES
 
         for offset, slot in enumerate(bank_slots(self.bank)):
             if slot in claimed:
                 continue  # a session's own encoder is never decoration
             x = float(offset % 4)
             y = float(offset // 4)
-            level, hue_field = self._field(x, y, t)
-            level = _smoothstep((level + 1) / 2)
+            level = _smoothstep((self._field(x, y, t) + 1) / 2)
             level = level * mix + self._sweep_fill(offset, t) * (1 - mix)
             level *= gain
             # Ambient breathing underneath is left alone wherever it is already
@@ -278,8 +274,11 @@ class LampTestOverlay(Overlay):
             # into a crossfade back to the idle board rather than a blackout.
             if level <= board[slot].brightness:
                 continue
-            hue = int(low + (high - low) * (hue_field + 1) / 2)
-            board[slot] = Cell(hue, config.ANIM_NONE, int(127 * level), level)
+            # Colourless, like the word it follows: the ring carries the whole
+            # thing and the RGB stays dark. Boot is the one stretch where the
+            # board is saying nothing, and the hue channel is how it says
+            # things -- so it has no business being lit here.
+            board[slot] = Cell(None, config.ANIM_NONE, int(127 * level), level)
 
 
 def spiral_path(bank: int = 0) -> list[int]:
@@ -610,7 +609,14 @@ def stack_subagents(
 
 
 def ambient(board: list[Cell], now: float) -> None:
-    """Nothing is running, so the board breathes rather than going dark."""
+    """Nothing is running, so the board breathes rather than going dark.
+
+    It lies *underneath* everything, including the boot sequence -- the lamp
+    test only writes a cell it would light more than what is already there, so
+    whatever colour this is shows through the gaps in it. Which is why it is no
+    colour at all: a blue breathing through the lamp test was the blue on the
+    board at boot, and an idle board has by definition nothing to say.
+    """
     for slot in bank_slots(0):
         index = slot % config.ENCODERS_PER_BANK
         phase = (

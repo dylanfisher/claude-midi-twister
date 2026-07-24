@@ -638,6 +638,40 @@ class Overlays(unittest.TestCase):
         self.assertTrue(lit)
         self.assertEqual({c.color for c in lit}, {"red"})
 
+    def test_nothing_in_the_boot_sequence_lights_the_rgb(self):
+        # The invariant, rather than the three places that happened to break it.
+        # Boot is the word, then the lamp test -- and underneath both of them,
+        # ambient, which only shows through where whatever is on top is dimmer.
+        # That last one is how the blue got out: it is painted by compose() and
+        # not by any overlay, so testing the overlays alone would miss it.
+        # Every frame, every slot, all the way through: no hue.
+        word = board.TextOverlay(config.BOOT_WORD, 0.0)
+        lamp = board.LampTestOverlay(word.duration)
+        t = 0.0
+        end = word.duration + lamp.duration
+        while t < end:
+            overlays = [word] if t < word.duration else [lamp]
+            for cell in board.compose([], t, overlays):
+                self.assertIsNone(cell.color, t)
+            t += 0.25
+        # And the idle board it settles onto once the lamp test has expired,
+        # which is what you are left looking at.
+        for cell in board.compose([], end + 1.0, []):
+            self.assertIsNone(cell.color)
+
+    def test_the_lamp_test_still_lights_every_ring(self):
+        # Colourless is not the same as absent. The sweep is a lamp test in the
+        # aircraft sense -- every ring reaches full, or a dead LED has somewhere
+        # to hide -- and that has to survive losing the hue.
+        lamp = board.LampTestOverlay(0.0)
+        seen = set()
+        t = 0.0
+        while t < config.LAMP_TEST_SWEEP_SECONDS * 1.5:
+            frame = board.compose([], t, [lamp])[: config.ENCODERS_PER_BANK]
+            seen |= {i for i, c in enumerate(frame) if c.brightness > 0.9}
+            t += 1.0 / config.FPS
+        self.assertEqual(seen, set(range(config.ENCODERS_PER_BANK)))
+
     def test_boot_letters_hard_cut_rather_than_fading(self):
         # Each letter is simply *there* for its whole slot: a 4x4 glyph is only
         # legible with every pixel at full, so a blend between two of them is a

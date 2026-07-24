@@ -410,11 +410,11 @@ LAMP_TEST_SECONDS = 60.0
 #: frames rather than by hard-cutting, so the first encoder to light reads as
 #: emerging from the field rather than as the field glitching.
 LAMP_TEST_DISMISS_SECONDS = 0.8
-#: Hue band the field wanders inside, as raw 0-127 values (red -> violet, the
-#: long way round through magenta and purple). Bounded on purpose: a field that
-#: roams the entire wheel reads as a colour test, and this one has to still look
-#: like the same device that just spelled CLAUDE in violet.
-LAMP_TEST_HUES = (78, 122)
+#: The field used to wander a hue band. It doesn't any more: boot lights no RGB
+#: at all, start to finish, so the sweep and the field are rings only -- white
+#: light moving on a dark board, matching the word that precedes them. The band
+#: was 78..122, which on a wheel that wraps around 80 was not the red-to-violet
+#: it claimed to be anyway.
 BOOT_ANIMATION = _flag("MFT_BOOT_ANIMATION", True)
 
 # --- Session spawn ----------------------------------------------------------
@@ -508,6 +508,12 @@ SUBAGENT_RING = 24
 #: With nothing running the board doesn't go dark, it breathes -- it stops being
 #: a dashboard and becomes an object that lives on your desk.
 AMBIENT = _flag("MFT_AMBIENT", True)
-AMBIENT_COLOR = "blue"
+#: No hue: the ring breathes and the RGB stays dark, same as the boot word.
+#: This layer sits under everything, so any colour here leaks through the gaps
+#: in whatever is painted on top of it -- and it was leaking blue through the
+#: lamp test, which is what the boot animation's blue flash actually was. An
+#: idle board has nothing to say, and the hue channel is how this device says
+#: things. Set it to a hue if you want the resting state to mean something.
+AMBIENT_COLOR = None
 AMBIENT_PERIOD_SECONDS = 12.0
 AMBIENT_BRIGHTNESS = 0.14
