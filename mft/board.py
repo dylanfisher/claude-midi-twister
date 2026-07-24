@@ -98,15 +98,23 @@ class TextOverlay(Overlay):
         self,
         text: str,
         started_at: float,
-        color: str | int | Sequence[str | int] = config.BOOT_LETTER_COLORS,
+        color: str | int | Sequence[str | int] | None = config.BOOT_LETTER_COLORS,
         bank: int = 0,
         fade: float = config.BOOT_FADE_SECONDS,
         hold: float = config.BOOT_HOLD_SECONDS,
         reverse: bool = False,
     ) -> None:
         self.text = (text[::-1] if reverse else text) or " "
-        self.colors: tuple[str | int, ...] = (
-            (color,) if isinstance(color, (str, int)) else tuple(color) or (config.BOOT_COLOR,)
+        #: ``None`` is a colour in its own right here: it means *don't light the
+        #: RGB at all*, and let the ring carry the glyph. That is the only way
+        #: to spell something white on this hardware -- the RGB channel is a hue
+        #: wheel with no achromatic value on it, so any hue you pick is a
+        #: colour, and a letter wearing one reads as a status rather than as
+        #: text. See :data:`config.BOOT_LETTER_COLORS`.
+        self.colors: tuple[str | int | None, ...] = (
+            (color,)
+            if color is None or isinstance(color, (str, int))
+            else tuple(color) or (config.BOOT_COLOR,)
         )
         self.bank = bank
         #: Zero stays zero -- see the class docstring. Anything else is a real
@@ -147,7 +155,10 @@ class TextOverlay(Overlay):
         # The whole frame takes the incoming letter's hue. A cell can only hold
         # one colour, so during a crossfade the outgoing glyph is already wearing
         # the new one -- which is the right way round: the colour announces the
-        # letter arriving rather than trailing the one leaving.
+        # letter arriving rather than trailing the one leaving. A hue of None
+        # lights no RGB at all and the ring alone draws the glyph, which is what
+        # the boot word does; there is then nothing to distinguish a lit pixel
+        # from a dark one but the ring, which is exactly the point.
         color = self.colors[index % len(self.colors)]
         for offset, slot in enumerate(bank_slots(self.bank)):
             level = blend[offset]

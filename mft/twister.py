@@ -219,10 +219,18 @@ class Twister:
 
         threading.Thread(target=pump, name="mft-input", daemon=True).start()
 
-    def close(self) -> None:
+    def close(self, dark: bool = True) -> None:
+        """Hang up. ``dark`` is the daemon's exit: leave nothing glowing.
+
+        The calibrator passes ``False``. Its whole product is a lit board you
+        are being asked to look at, and blacking that out on the way through
+        the door means a non-interactive run shows you nothing at all -- the
+        LEDs go out in the same breath as the prompt that asks you about them.
+        """
         try:
             self.stop_clock()
-            self.blackout()
+            if dark:
+                self.blackout()
         finally:
             for port in (self._out, self._in):
                 if port is not None:
@@ -259,7 +267,7 @@ class NullTwister(Twister):
     def stop_clock(self) -> None:
         return
 
-    def close(self) -> None:
+    def close(self, dark: bool = True) -> None:
         return
 
 

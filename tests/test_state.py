@@ -594,20 +594,49 @@ class Overlays(unittest.TestCase):
         self.assertFalse(overlay.done(overlay.duration - 0.01))
         self.assertTrue(overlay.done(overlay.duration))
 
-    def test_the_boot_word_is_white_and_fully_lit_throughout(self):
+    def test_the_boot_word_is_colourless_and_fully_lit_throughout(self):
         # The word is the one thing on this device that is text rather than
         # status. Colour is how everything else here means something, so the
-        # letters stay out of that vocabulary entirely: white, at full, every
-        # frame -- no hue walking the wheel and nothing half-lit to squint at.
+        # letters stay out of that vocabulary entirely -- and on this hardware
+        # that means no hue at all rather than a white one. The RGB channel is a
+        # wheel with no achromatic value anywhere on it (it wraps; 48 and 127
+        # are both green), so a colour of None is the only white there is: the
+        # ring draws the glyph and the RGB stays dark.
         overlay = board.TextOverlay(config.BOOT_WORD, 0.0)
         t = 0.0
         while t < overlay.duration:
             frame = board.compose([], t, [overlay])[: config.ENCODERS_PER_BANK]
             lit = [c for c in frame if c.brightness > 0]
             self.assertTrue(lit, t)
-            self.assertEqual({c.color for c in lit}, {"white"}, t)
+            self.assertEqual({c.color for c in lit}, {None}, t)
+            self.assertEqual({c.ring for c in lit}, {127}, t)
             self.assertEqual({c.brightness for c in lit}, {1.0}, t)
             t += 1.0 / config.FPS
+
+    def test_a_colourless_letter_still_lights_the_ring_and_only_the_ring(self):
+        # The pixel that carries the glyph, as the hardware sees it: ring at
+        # full, RGB extinguished. Both halves matter -- a lit ring is the white
+        # block, and any hue underneath it would tint the letter.
+        overlay = board.TextOverlay("C", 0.0, color=None)
+        frame = board.compose([], 0.0, [overlay])[: config.ENCODERS_PER_BANK]
+        lit = [c for c in frame if c.brightness > 0]
+        dark = [c for c in frame if c.brightness == 0]
+        self.assertTrue(lit and dark)
+        for cell in lit:
+            self.assertIsNone(cell.color)
+            self.assertEqual(cell.ring, 127)
+        for cell in dark:
+            self.assertIsNone(cell.color)
+            self.assertEqual(cell.ring, 0)
+
+    def test_a_banner_still_gets_to_be_a_colour(self):
+        # Colourless is the boot word's choice, not a property of TextOverlay:
+        # a banner shouting RATE at you is status, and status is a hue.
+        overlay = board.TextOverlay("RATE", 0.0, color="red")
+        frame = board.compose([], 0.0, [overlay])[: config.ENCODERS_PER_BANK]
+        lit = [c for c in frame if c.brightness > 0]
+        self.assertTrue(lit)
+        self.assertEqual({c.color for c in lit}, {"red"})
 
     def test_boot_letters_hard_cut_rather_than_fading(self):
         # Each letter is simply *there* for its whole slot: a 4x4 glyph is only

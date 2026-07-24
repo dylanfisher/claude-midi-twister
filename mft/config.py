@@ -380,13 +380,22 @@ BOOT_WORD = "CLAUDE"
 BOOT_FADE_SECONDS = 0.0
 BOOT_HOLD_SECONDS = 0.75
 BOOT_COLOR = "violet"
-#: White, every letter, at full. The word is the only thing on this device that
-#: is *text* rather than status, and colour is what everything else here means
-#: something with -- spelling it in six hues made it read as six coloured events
-#: that happened to be letter-shaped. White at full brightness reads as a
-#: display being written to, which is what it is. The letter boundary is carried
-#: by the hard cut instead. Cycled if the word outruns the sequence.
-BOOT_LETTER_COLORS = ("white",)
+#: No hue at all: the ring draws the glyph and the RGB stays extinguished.
+#:
+#: The word is the only thing on this device that is *text* rather than status,
+#: and colour is what everything else here means something with -- spelling it
+#: in six hues made it read as six coloured events that happened to be
+#: letter-shaped. So it wants white. But there is no white to ask for: the RGB
+#: channel is a hue wheel that never goes achromatic. It wraps, and both 48 and
+#: 127 land on green, so the top of the range is not "the hues run out", it is
+#: just more hues. Every value you can send it is a colour.
+#:
+#: The ring is not. A ring at full with the RGB switched off is a white block,
+#: which is precisely the glyph pixel this needs -- so the boot word is spelled
+#: in light rather than in colour, and the letter boundary is carried by the
+#: hard cut. ``None`` means exactly that; a hue or a sequence of them still
+#: works, cycled one letter at a time, for anything that wants to be a colour.
+BOOT_LETTER_COLORS = None
 #: Lamp test. It opens the aircraft way -- one arc sweep that lights every ring
 #: on all 16 encoders, once, on purpose -- and then dissolves into a generative
 #: interference field that keeps running while the board has nothing to say.

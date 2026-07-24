@@ -91,7 +91,11 @@ def _white(device) -> None:
     try:
         answer = input("encoder number (1-16), or blank to stop > ").strip()
     except (EOFError, KeyboardInterrupt):
-        print()
+        # No terminal to answer at -- piped, or run from something that is not
+        # a shell. The board stays lit either way, so this is not a failure:
+        # go and look, then read the value off the legend above.
+        print("\nno prompt available; the board is still lit -- read the")
+        print("legend above and export the value yourself.")
         return
     if not answer.isdigit() or not 1 <= int(answer) <= len(candidates):
         return
@@ -158,7 +162,11 @@ def main() -> int:
             except KeyboardInterrupt:
                 print()
     finally:
-        device.close()
+        # Not dark. Everything above exists to put something on the board for
+        # you to look at, and the answer is often "let me go and look" rather
+        # than a keypress at the prompt -- so the last frame stays up. The
+        # daemon overwrites it on its next start.
+        device.close(dark=False)
     return 0
 
 
