@@ -594,18 +594,30 @@ class Overlays(unittest.TestCase):
         self.assertFalse(overlay.done(overlay.duration - 0.01))
         self.assertTrue(overlay.done(overlay.duration))
 
-    def test_each_boot_letter_gets_its_own_hue(self):
-        # Six letters, six colours: the hue change is what carries the letter
-        # boundary when the glyph itself is only 16 pixels wide.
+    def test_each_boot_letter_strikes_full_then_decays_to_dark(self):
+        # The gap is what separates one letter from the next: a letter is at
+        # full the instant it appears and at nothing by the time the next one
+        # strikes, so two glyphs are never on the board together.
         overlay = board.TextOverlay(config.BOOT_WORD, 0.0)
-        seen = []
         for index in range(len(config.BOOT_WORD)):
-            frame = board.compose([], (index + 0.5) * overlay.step, [overlay])
-            lit = {c.color for c in frame[: config.ENCODERS_PER_BANK] if c.brightness > 0}
-            self.assertEqual(len(lit), 1, "one letter is one colour")
-            seen.append(lit.pop())
-        self.assertEqual(len(set(seen)), len(config.BOOT_WORD))
-        self.assertEqual(seen[-1], config.BOOT_COLOR, "lands on the resting hue")
+            start = board.compose([], index * overlay.step + 0.001, [overlay])
+            end = board.compose([], (index + 1) * overlay.step - 0.001, [overlay])
+            lit = [c.brightness for c in start[: config.ENCODERS_PER_BANK] if c.brightness > 0]
+            self.assertTrue(lit, f"letter {index} should strike")
+            self.assertAlmostEqual(max(lit), 1.0, places=2, msg="strikes at full")
+            self.assertTrue(
+                all(c.brightness < 0.02 for c in end[: config.ENCODERS_PER_BANK]),
+                "and is gone before the next letter",
+            )
+
+    def test_boot_letters_are_white(self):
+        # No hue at all: the RGB switch is left off and the word is spelled in
+        # the encoder rings, which are the only white light on the device.
+        overlay = board.TextOverlay(config.BOOT_WORD, 0.0)
+        frame = board.compose([], overlay.step * 0.1, [overlay])
+        lit = [c for c in frame[: config.ENCODERS_PER_BANK] if c.brightness > 0]
+        self.assertTrue(lit)
+        self.assertTrue(all(c.color is None and c.ring == 127 for c in lit))
 
     def test_boot_is_unhurried_and_shutdown_is_not(self):
         # Boot is the only time the device speaks in words, and a word you can

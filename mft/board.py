@@ -78,33 +78,38 @@ class Overlay:
 
 
 class TextOverlay(Overlay):
-    """Spell a word across a bank, one 4x4 glyph at a time, crossfading.
+    """Spell a word across a bank, one 4x4 glyph at a time.
 
     Used for the boot animation (CLAUDE), for shouting a short reason at you
     (RATE when a turn dies on a rate limit) and for showing a count.
 
-    ``color`` may be a single hue for the whole word, or a sequence of hues to
-    walk one letter at a time (cycled if the word outruns it), which is what
-    boot does: the colour change carries the letter boundary for you when the
-    glyph itself is 16 pixels wide.
+    Each letter **strikes in at full brightness and then decays to nothing**
+    before the next one strikes. Two letters are never on the board at once, so
+    the darkness between them is what separates them: a fade *out* leaves the
+    glyph legible for the whole time it is visible, where a crossfade spends its
+    middle showing a blend of two letters that is neither.
+
+    ``color`` of ``None`` is the boot default and means the white LED ring
+    alone, with the RGB switch underneath switched off -- the one thing on this
+    device that is a colour rather than a hue.
     """
 
     def __init__(
         self,
         text: str,
         started_at: float,
-        color: str | int | Sequence[str | int] = config.BOOT_LETTER_COLORS,
+        color: str | int | None = config.BOOT_COLOR,
         bank: int = 0,
         fade: float = config.BOOT_FADE_SECONDS,
         hold: float = config.BOOT_HOLD_SECONDS,
         reverse: bool = False,
     ) -> None:
         self.text = (text[::-1] if reverse else text) or " "
-        self.colors: tuple[str | int, ...] = (
-            (color,) if isinstance(color, (str, int)) else tuple(color) or (config.BOOT_COLOR,)
-        )
+        self.color = color
         self.bank = bank
+        #: How long a letter takes to decay from full to dark.
         self.fade = max(0.01, fade)
+        #: How long it sits at full before the decay starts.
         self.hold = max(0.0, hold)
         self.started_at = started_at
         self.step = self.fade + self.hold
@@ -123,25 +128,19 @@ class TextOverlay(Overlay):
 
         index = min(len(self.text) - 1, int(t / self.step))
         within = t - index * self.step
-        previous = self.text[index - 1] if index else " "
-        # Crossfade in, then hold: the fade is what makes 16 pixels read as
-        # letters rather than as a stutter of unrelated dots. Eased rather than
-        # linear, because the ambiguous middle of a linear blend -- where both
-        # glyphs are half-lit and neither is legible -- is exactly the part
-        # worth spending the least time in.
-        blend = font.crossfade(previous, self.text[index], _smoothstep(within / self.fade))
-        # The whole frame takes the incoming letter's hue. A cell can only hold
-        # one colour, so during a crossfade the outgoing glyph is already wearing
-        # the new one -- which is the right way round: the colour announces the
-        # letter arriving rather than trailing the one leaving.
-        color = self.colors[index % len(self.colors)]
+        # Full for `hold`, then an eased decay over `fade`. Eased rather than
+        # linear because a linear ramp on these LEDs reads as dropping off a
+        # cliff at the end; smoothstep keeps the tail of the fade visible, which
+        # is the part that separates one letter from the next.
+        level = 1.0 - _smoothstep(max(0.0, within - self.hold) / self.fade)
+        glyph = font.pixels(self.text[index])
         for offset, slot in enumerate(bank_slots(self.bank)):
-            level = blend[offset]
+            lit = glyph[offset] * level
             board[slot] = Cell(
-                color if level > 0.02 else None,
+                self.color if lit > 0.02 else None,
                 config.ANIM_NONE,
-                127 if level > 0.02 else 0,
-                level,
+                127 if lit > 0.02 else 0,
+                lit,
             )
 
 
@@ -295,7 +294,7 @@ class ShutdownOverlay(Overlay):
     Three movements, in order:
 
     * the **spiral** walks :func:`spiral_path` from the corner inwards, every
-      encoder it passes fading up in the same violet the device booted in;
+      encoder it passes fading up in the device's own violet;
     * the **cycle** then runs the full hue wheel with all sixteen encoders on
       *one* hue. Unison is the load-bearing part -- every other animation on
       this board is per-encoder, so sixteen knobs changing colour as a single
@@ -326,7 +325,7 @@ class ShutdownOverlay(Overlay):
         self.rise = max(0.01, min(rise, self.spiral * 0.5))
         self.cycle = max(0.0, cycle)
         self.fade = max(0.01, fade)
-        self.base_hue = config.COLORS.get(config.BOOT_COLOR, config.BOOT_COLOR)
+        self.base_hue = config.COLORS.get(config.SHUTDOWN_COLOR, config.SHUTDOWN_COLOR)
 
     @property
     def duration(self) -> float:

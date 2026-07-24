@@ -328,7 +328,9 @@ TOOL_COLOR_DEFAULT = "azure"
 
 # --- Boot / shutdown --------------------------------------------------------
 # 4x4 is a 16-pixel display and ring brightness is real grayscale per pixel, so
-# letters crossfade instead of hard-cutting. Shutdown does not spell anything --
+# a letter can strike at full and decay to black instead of hard-cutting off.
+# The gap that leaves is what separates one letter from the next. Shutdown does
+# not spell anything --
 # a colour wipe off both corners is how you know the daemon exited cleanly
 # rather than died, and it costs a fraction of the time a legible word does.
 
@@ -336,19 +338,18 @@ BOOT_WORD = "CLAUDE"
 #: Deliberately unhurried. The boot animation is the only time the device says
 #: anything in words, and a 0.3s-per-letter version reads as a flicker you catch
 #: the tail of rather than as CLAUDE: by the time you look up it is over. Each
-#: letter hard-cuts in and then *sits* there for two full seconds, which is what
-#: makes 16 pixels resolve into a glyph.
-#: Zero fade is a hard cut (TextOverlay clamps it to a single 0.01s frame).
-BOOT_FADE_SECONDS = 0.0
-BOOT_HOLD_SECONDS = 0.75
-BOOT_COLOR = "violet"
-#: One letter, one hue, walking the wheel: the word is spelled in six hard cuts
-#: and each cut changes colour as well as glyph, so even a glance that misses
-#: the letters still reads six distinct events rather than one violet flicker.
-#: It lands on BOOT_COLOR, which is where the shutdown spiral and the idle field
-#: both start from -- the device arrives at its resting hue rather than at a
-#: seventh unrelated one. Cycled if the word is ever longer than the palette.
-BOOT_LETTER_COLORS = ("red", "amber", "green", "cyan", "blue", "violet")
+#: letter strikes in at full brightness and then decays to black over a full
+#: second before the next one strikes, which is both what makes 16 pixels
+#: resolve into a glyph and what separates one letter from the next.
+BOOT_FADE_SECONDS = 1.0
+#: Time at full before the decay starts. Zero: the strike *is* the punctuation,
+#: and a plateau on top of it only makes the word longer, not more legible.
+BOOT_HOLD_SECONDS = 0.0
+#: ``None`` is not "no colour" here, it is white: it leaves the RGB switch LED
+#: switched off and spells the word in the encoder rings alone, which are the
+#: only genuinely white thing on the device (channel 2 is all hue and has no
+#: white in it). Set this to a name from COLORS to tint the word instead.
+BOOT_COLOR = None
 #: Lamp test. It opens the aircraft way -- one arc sweep that lights every ring
 #: on all 16 encoders, once, on purpose -- and then dissolves into a generative
 #: interference field that keeps running while the board has nothing to say.
@@ -366,7 +367,7 @@ LAMP_TEST_DISMISS_SECONDS = 0.8
 #: Hue band the field wanders inside, as raw 0-127 values (red -> violet, the
 #: long way round through magenta and purple). Bounded on purpose: a field that
 #: roams the entire wheel reads as a colour test, and this one has to still look
-#: like the same device that just spelled CLAUDE in violet.
+#: like the same device that just spelled CLAUDE in white.
 LAMP_TEST_HUES = (78, 122)
 BOOT_ANIMATION = _flag("MFT_BOOT_ANIMATION", True)
 
@@ -412,6 +413,10 @@ SHUTDOWN_FADE_SECONDS = 0.9
 #: Below this the encoder is switched off rather than dimmed further. Channel 3
 #: has no dark end: its bottom brightness value still glows.
 SHUTDOWN_DARK_LEVEL = 0.02
+#: Where the spiral starts on the wheel before the cycle carries it round. The
+#: boot word is white and has no hue to inherit, so the device's own violet is
+#: named here -- it is also where the idle field's hue band ends up.
+SHUTDOWN_COLOR = "violet"
 
 #: Banner colour for transient words pushed onto the board later (RATE on a
 #: rate-limited turn, a two-digit count, ...).
