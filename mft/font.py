@@ -7,8 +7,9 @@ only barely distinguishable. It is enough to spell a word you are expecting,
 which is the whole job: CLAUDE on boot, RATE when a turn dies on a rate limit, a
 two-digit number when you want a count.
 
-Ring brightness gives real grayscale per pixel, so :func:`crossfade` can blend
-two glyphs rather than hard-cutting between them.
+Ring brightness gives real grayscale per pixel, so a glyph can be dimmed
+smoothly -- boot strikes each letter at full and decays it to black -- and
+:func:`crossfade` can blend two of them where that is wanted instead.
 """
 
 from __future__ import annotations

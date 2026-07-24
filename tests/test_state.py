@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mft import board, config, context, font, twister  # noqa: E402
+from mft import board, config, context, twister  # noqa: E402
 from mft.render import attention_debt, render  # noqa: E402
 from mft.state import SessionTable, apply_event, classify_notification  # noqa: E402
 
@@ -611,7 +611,7 @@ class Overlays(unittest.TestCase):
         self.assertFalse(overlay.done(overlay.duration - 0.01))
         self.assertTrue(overlay.done(overlay.duration))
 
-    def test_the_boot_word_is_colourless_and_fully_lit_throughout(self):
+    def test_the_boot_word_is_colourless_all_the_way_through(self):
         # The word is the one thing on this device that is text rather than
         # status. Colour is how everything else here means something, so the
         # letters stay out of that vocabulary entirely -- and on this hardware
@@ -619,15 +619,19 @@ class Overlays(unittest.TestCase):
         # wheel with no achromatic value anywhere on it (it wraps; 48 and 127
         # are both green), so a colour of None is the only white there is: the
         # ring draws the glyph and the RGB stays dark.
+        #
+        # Brightness is the letter's own decay and is not asserted here; that is
+        # test_each_boot_letter_strikes_full_then_decays_to_dark's business.
         overlay = board.TextOverlay(config.BOOT_WORD, 0.0)
         t = 0.0
         while t < overlay.duration:
             frame = board.compose([], t, [overlay])[: config.ENCODERS_PER_BANK]
-            lit = [c for c in frame if c.brightness > 0]
-            self.assertTrue(lit, t)
-            self.assertEqual({c.color for c in lit}, {None}, t)
-            self.assertEqual({c.ring for c in lit}, {127}, t)
-            self.assertEqual({c.brightness for c in lit}, {1.0}, t)
+            # The overlay's own cutoff, below which a pixel is dark rather than
+            # very dim -- the tail of every letter's decay passes through it.
+            lit = [c for c in frame if c.brightness > 0.02]
+            self.assertEqual({c.color for c in frame}, {None}, t)
+            if lit:
+                self.assertEqual({c.ring for c in lit}, {127}, t)
             t += 1.0 / config.FPS
 
     def test_a_colourless_letter_still_lights_the_ring_and_only_the_ring(self):
@@ -729,27 +733,30 @@ class Overlays(unittest.TestCase):
             t += 1.0 / config.FPS
         self.assertEqual(seen, set(range(config.ENCODERS_PER_BANK)))
 
-    def test_boot_letters_hard_cut_rather_than_fading(self):
-        # Each letter is simply *there* for its whole slot: a 4x4 glyph is only
-        # legible with every pixel at full, so a blend between two of them is a
-        # frame of nonsense and a fade-out is an unreadable goodbye.
+    def test_each_boot_letter_strikes_full_then_decays_to_dark(self):
+        # The gap is what separates one letter from the next: a letter is at
+        # full the instant it appears and at nothing by the time the next one
+        # strikes, so two glyphs are never on the board together.
         overlay = board.TextOverlay(config.BOOT_WORD, 0.0)
-        self.assertEqual(overlay.fade, 0.0)
-        self.assertAlmostEqual(overlay.step, config.BOOT_HOLD_SECONDS)
-        for index, letter in enumerate(config.BOOT_WORD):
-            expected = {
-                offset for offset, level in enumerate(font.pixels(letter)) if level
-            }
-            # Start, middle and end of the letter's slot: the same pixels, at
-            # the same brightness, all the way through.
-            for when in (0.01, 0.5, 0.99):
-                frame = board.compose([], (index + when) * overlay.step, [overlay])
-                shown = {
-                    offset
-                    for offset in range(config.ENCODERS_PER_BANK)
-                    if frame[offset].brightness > 0
-                }
-                self.assertEqual(shown, expected, (letter, when))
+        for index in range(len(config.BOOT_WORD)):
+            start = board.compose([], index * overlay.step + 0.001, [overlay])
+            end = board.compose([], (index + 1) * overlay.step - 0.001, [overlay])
+            lit = [c.brightness for c in start[: config.ENCODERS_PER_BANK] if c.brightness > 0]
+            self.assertTrue(lit, f"letter {index} should strike")
+            self.assertAlmostEqual(max(lit), 1.0, places=2, msg="strikes at full")
+            self.assertTrue(
+                all(c.brightness < 0.02 for c in end[: config.ENCODERS_PER_BANK]),
+                "and is gone before the next letter",
+            )
+
+    def test_boot_letters_are_white(self):
+        # No hue at all: the RGB switch is left off and the word is spelled in
+        # the encoder rings, which are the only white light on the device.
+        overlay = board.TextOverlay(config.BOOT_WORD, 0.0)
+        frame = board.compose([], overlay.step * 0.1, [overlay])
+        lit = [c for c in frame[: config.ENCODERS_PER_BANK] if c.brightness > 0]
+        self.assertTrue(lit)
+        self.assertTrue(all(c.color is None and c.ring == 127 for c in lit))
 
     def test_boot_is_unhurried_and_shutdown_is_not(self):
         # Boot is the only time the device speaks in words, and a word you can

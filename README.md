@@ -50,13 +50,15 @@ otherwise the device drives its own LEDs and ignores you.
 .venv/bin/python -m mft.daemon
 ```
 
-Leave it running. It spells CLAUDE across the grid a letter at a time, in white
-at full brightness, each letter hard-cutting in and sitting there for its full
-three quarters of a second — unhurried on purpose, since a word you only catch
-the tail of may as well not be spelled, and a 4x4 glyph is only legible while
-every one of its pixels is lit. Then it lamp-tests every ring with one arc sweep and dissolves into a generative
-field: travelling sine waves at rates that share no common factor, so it never
-loops. That runs until a Claude turns up, fading out over a minute if none does.
+Leave it running. It spells CLAUDE across the grid a letter at a time, in white:
+each letter strikes at full brightness and decays to black before the next one
+strikes, so two glyphs are never on the board together and the darkness between
+them is what separates them. Unhurried on purpose — a word you only catch the
+tail of may as well not be spelled. Then it lamp-tests every ring with one arc
+sweep and dissolves into a generative field: travelling sine waves at rates that
+share no common factor, so it never loops. That runs until a Claude turns up,
+fading out over a minute if none does. None of it lights the RGB — the whole
+sequence is white light on a dark board.
 `MFT_BOOT_ANIMATION=0` skips the whole thing. Open Claude Code anywhere and its
 encoder lights up — the field gets out of the way and never paints over a live
 session.
@@ -117,14 +119,26 @@ Claude Code session ──hook──▶ POST localhost:7654/event ──▶ daem
        └──────────── AppleScript / tmux / wezterm ◀───────────┘  (encoder press)
 ```
 
-Every hook except two is `type: "http"`, so events cost a local POST and **no
-process spawn**. Connection failures are non-blocking — with the daemon down,
-Claude Code carries on and you just have no lights.
+Every hook is an `async` command hook that posts the event and exits `0` no
+matter what happens. Most of them run `hooks/notify.sh`, which is a `curl` and
+nothing else. With the daemon down the POST is refused, the hook exits `0`
+anyway, and you simply have no lights — nothing is printed, nothing is blocked.
 
-The exceptions are `SessionStart` and `UserPromptSubmit`, which run
-`hooks/register_session.py` as an `async` command hook. HTTP hooks post only the
-event JSON, and the thing we need — *which terminal tab is this?* — lives in the
-environment. It captures `TERM_SESSION_ID` / `ITERM_SESSION_ID` / `TMUX_PANE` /
+`type: "http"` hooks would be cheaper still — a local POST with **no process
+spawn** — and that is what this used to install. The problem is that Claude Code
+reports every failed HTTP hook to the user and offers no way to opt out, so a
+stopped daemon meant two `connect ECONNREFUSED` lines under every single tool
+call. A visualizer being off is not an error. `install_hooks.py --http-hooks`
+takes the old trade if your daemon is always up.
+
+`SessionEnd` is the one hook that isn't `async`: an async hook racing the
+process it was spawned from may never deliver, and that is the event that frees
+the encoder. It's a `curl` to localhost, so synchronous costs a millisecond.
+
+`SessionStart` and `UserPromptSubmit` run `hooks/register_session.py` instead,
+because posting the event JSON isn't enough — the thing we need, *which terminal
+tab is this?*, lives in the environment. It captures `TERM_SESSION_ID` /
+`ITERM_SESSION_ID` / `TMUX_PANE` /
 `WEZTERM_PANE` / `KITTY_WINDOW_ID` / `__CFBundleIdentifier` and the tty, and
 posts them alongside the event.
 
@@ -139,8 +153,8 @@ same ones, so believing that would key both to a tab neither is in.
 Every hook is notify-only and the daemon answers all of them `204`, with no body
 at all. Claude Code parses a hook's response body as hook control JSON — it's how
 a hook blocks a tool call or injects context — so a visualizer with no opinion
-has to say nothing whatsoever. No hook here carries a `timeout`, because nothing
-is ever waited on for an answer.
+has to say nothing whatsoever. Every hook carries a 5s `timeout` and a 2s one on
+the `curl` inside it, so a wedged daemon can't hold a session up either.
 
 State is inferred from the gaps between events, because hooks are discrete
 notifications rather than a telemetry stream:
@@ -407,8 +421,8 @@ other unambiguous.
 ## The frame buffer
 
 A bank is a 4×4 grid, which is to say a 16-pixel display, and channel 6's ring
-brightness is real grayscale per pixel — so letters can crossfade instead of
-hard-cutting. `mft/font.py` is a 4×4 bitmap alphabet and `mft/board.py` composes
+brightness is real grayscale per pixel — so a letter can strike at full and
+decay to black instead of hard-cutting off. `mft/font.py` is a 4×4 bitmap alphabet and `mft/board.py` composes
 the whole 64-cell board every frame:
 
 1. `mft/render.py` turns each session into one `Cell` (hue, animation, arc,

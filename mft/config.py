@@ -393,40 +393,41 @@ TOOL_COLORS = {
 TOOL_COLOR_DEFAULT = "azure"
 
 # --- Boot / shutdown --------------------------------------------------------
-# 4x4 is a 16-pixel display, so the boot word is six hard cuts: each letter
-# arrives whole, sits fully lit, and is replaced. No crossfade and no fade-out
-# -- a glyph this coarse is only legible while every one of its pixels is at
-# full, and a blend between two of them is just a smear of unrelated dots.
-# Shutdown does not spell anything -- a colour wipe is how you know the daemon
-# exited cleanly rather than died, and it costs a fraction of the time.
+# 4x4 is a 16-pixel display and ring brightness is real grayscale per pixel, so
+# a letter can strike at full and decay to black instead of hard-cutting off.
+# The gap that leaves is what separates one letter from the next. Shutdown does
+# not spell anything -- a colour wipe off both corners is how you know the
+# daemon exited cleanly rather than died, and it costs a fraction of the time a
+# legible word does.
+#
+# None of it lights the RGB: not the word, not the lamp test after it, not the
+# ambient layer underneath both. The boot sequence is white light moving on a
+# dark board from start to finish. Colour is how this device means things, and
+# the one stretch where it has nothing to say is the one stretch where the hue
+# channel has no business being on.
 
 BOOT_WORD = "CLAUDE"
 #: Deliberately unhurried. The boot animation is the only time the device says
 #: anything in words, and a 0.3s-per-letter version reads as a flicker you catch
 #: the tail of rather than as CLAUDE: by the time you look up it is over. Each
-#: letter hard-cuts in and then *sits* there, which is what makes 16 pixels
-#: resolve into a glyph.
-#: Zero is a hard cut: TextOverlay skips the blend entirely rather than
-#: compressing it into one frame.
-BOOT_FADE_SECONDS = 0.0
-BOOT_HOLD_SECONDS = 0.75
-BOOT_COLOR = "violet"
-#: No hue at all: the ring draws the glyph and the RGB stays extinguished.
+#: letter strikes in at full brightness and then decays to black over a full
+#: second before the next one strikes, which is both what makes 16 pixels
+#: resolve into a glyph and what separates one letter from the next.
+BOOT_FADE_SECONDS = 1.0
+#: Time at full before the decay starts. Zero: the strike *is* the punctuation,
+#: and a plateau on top of it only makes the word longer, not more legible.
+BOOT_HOLD_SECONDS = 0.0
+#: ``None`` is not "no colour" here, it is white -- and it is the only way to
+#: ask for white on this hardware. Channel 2 is a hue wheel with no achromatic
+#: value anywhere on it: it wraps, 48 and 127 both land on green, so the top of
+#: the range is not "the hues run out", it is just more hues. Every value you
+#: can send it is a colour, and a letter wearing one reads as a status rather
+#: than as text.
 #:
-#: The word is the only thing on this device that is *text* rather than status,
-#: and colour is what everything else here means something with -- spelling it
-#: in six hues made it read as six coloured events that happened to be
-#: letter-shaped. So it wants white. But there is no white to ask for: the RGB
-#: channel is a hue wheel that never goes achromatic. It wraps, and both 48 and
-#: 127 land on green, so the top of the range is not "the hues run out", it is
-#: just more hues. Every value you can send it is a colour.
-#:
-#: The ring is not. A ring at full with the RGB switched off is a white block,
-#: which is precisely the glyph pixel this needs -- so the boot word is spelled
-#: in light rather than in colour, and the letter boundary is carried by the
-#: hard cut. ``None`` means exactly that; a hue or a sequence of them still
-#: works, cycled one letter at a time, for anything that wants to be a colour.
-BOOT_LETTER_COLORS = None
+#: The ring is not a hue. A ring at full with the RGB switched off is a white
+#: block, which is exactly the glyph pixel this wants -- so the word is spelled
+#: in light rather than in colour. Set this to a name from COLORS to tint it.
+BOOT_COLOR = None
 #: Lamp test. It opens the aircraft way -- one arc sweep that lights every ring
 #: on all 16 encoders, once, on purpose -- and then dissolves into a generative
 #: interference field that keeps running while the board has nothing to say.
@@ -491,6 +492,10 @@ SHUTDOWN_FADE_SECONDS = 0.9
 #: dimmed further -- an encoder at the bottom of the fade is still an encoder
 #: wearing a hue, and the board has to end with nothing on it at all.
 SHUTDOWN_DARK_LEVEL = 0.02
+#: Where the spiral starts on the wheel before the cycle carries it round. The
+#: boot word is white and has no hue to inherit, so the device's own violet is
+#: named here -- it is also where the idle field's hue band ends up.
+SHUTDOWN_COLOR = "violet"
 
 #: Banner colour for transient words pushed onto the board later (RATE on a
 #: rate-limited turn, a two-digit count, ...).

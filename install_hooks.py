@@ -5,14 +5,20 @@
     python3 install_hooks.py               # merge it in, with a .bak backup
     python3 install_hooks.py --uninstall   # take it back out
 
-Every event except SessionStart and UserPromptSubmit is a ``type: "http"``
-hook, which posts the event JSON straight to the daemon with no process spawn.
-Those two run a command hook instead, because only a command hook can see the
-environment -- and the environment is the only thing that says which terminal
-tab the session lives in, which is what press-to-focus needs. Both are
-``async``, so neither is ever in the path of anything you are waiting for.
-Connection failures are non-blocking, so Claude Code carries on when the daemon
-is down.
+Every event runs a command hook that posts the event JSON to the daemon and
+exits 0 whatever happens. SessionStart and UserPromptSubmit run
+``register_session.py``, because only a command hook can see the environment --
+and the environment is the only thing that says which terminal tab the session
+lives in, which is what press-to-focus needs. The rest run ``notify.sh``, which
+is a `curl` and nothing else. All but SessionEnd are ``async``, so nothing you
+are waiting on is ever behind one; SessionEnd is synchronous because the
+process is about to go away and the board needs to hear about it.
+
+``type: "http"`` hooks would be cheaper -- they post with no process spawn at
+all -- but Claude Code reports every failed HTTP hook to the user, and offers
+no way to opt out, so a stopped daemon means two `connect ECONNREFUSED` lines
+per tool call. Pass ``--http-hooks`` to take that trade if the daemon is always
+up on your machine.
 
 Nothing installed here can influence a session: every hook is notify-only and
 the daemon answers all of them with a bodiless 204. Permissions in particular
@@ -24,12 +30,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
 REGISTER = REPO / "hooks" / "register_session.py"
+NOTIFY = REPO / "hooks" / "notify.sh"
 
 #: Marks our entries so --uninstall can find them again.
 TAG = "mft-twister"
@@ -44,7 +52,7 @@ TAG = "mft-twister"
 #: subagent events; the rest ignore them. `Notification` carries the thing we
 #: care about -- which of permission / idle / needs-input / completed this is --
 #: in its payload as `notification_type`, so it needs no matcher.
-HTTP_EVENTS = [
+NOTIFY_EVENTS = [
     ("PreToolUse", "*"),
     ("PostToolUse", "*"),
     ("PostToolUseFailure", "*"),
@@ -57,6 +65,12 @@ HTTP_EVENTS = [
     ("StopFailure", None),
     ("SessionEnd", None),
 ]
+
+#: The one event that isn't `async`. Everything else can be delivered late
+#: without anyone noticing; this one has to be delivered at all, and an async
+#: hook on the way out races the process it was spawned from. It's a `curl` to
+#: localhost, so "synchronous" is a millisecond or two.
+SYNCHRONOUS = {"SessionEnd"}
 
 #: Runs in the message render path -- opt in with --with-message-display once
 #: everything else works.
@@ -71,27 +85,30 @@ STREAMING_EVENT = ("MessageDisplay", None)
 REGISTER_EVENTS = ("SessionStart", "UserPromptSubmit")
 
 
-def build_hooks(url: str, with_message_display: bool) -> dict:
-    def register() -> dict:
-        return {
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": f"{sys.executable} {REGISTER} --url {url}",
-                    "timeout": 5,
-                    "async": True,
-                    "_source": TAG,
-                }
-            ]
-        }
+def build_hooks(url: str, with_message_display: bool, http: bool = False) -> dict:
+    def command(argv: str, is_async: bool = True) -> dict:
+        hook = {"type": "command", "command": argv, "timeout": 5, "_source": TAG}
+        if is_async:
+            hook["async"] = True
+        return {"hooks": [hook]}
 
-    hooks: dict[str, list] = {event: [register()] for event in REGISTER_EVENTS}
-    events = list(HTTP_EVENTS)
+    quote = shlex.quote
+    hooks: dict[str, list] = {
+        event: [command(f"{quote(sys.executable)} {quote(str(REGISTER))} --url {quote(url)}")]
+        for event in REGISTER_EVENTS
+    }
+    events = list(NOTIFY_EVENTS)
     if with_message_display:
         events.append(STREAMING_EVENT)
 
     for event, matcher in events:
-        entry: dict = {"hooks": [{"type": "http", "url": url, "_source": TAG}]}
+        if http:
+            entry: dict = {"hooks": [{"type": "http", "url": url, "_source": TAG}]}
+        else:
+            entry = command(
+                f"{quote(str(NOTIFY))} {quote(url)}",
+                is_async=event not in SYNCHRONOUS,
+            )
         if matcher:
             entry["matcher"] = matcher
         hooks[event] = [entry]
@@ -125,7 +142,7 @@ def missing_events(settings_path: str | os.PathLike = "") -> list[str]:
         # Nothing of ours is installed at all. That's "not set up", not "drift",
         # and reporting every event as missing would only bury the real message.
         return []
-    expected = list(REGISTER_EVENTS) + [event for event, _ in HTTP_EVENTS]
+    expected = list(REGISTER_EVENTS) + [event for event, _ in NOTIFY_EVENTS]
     return [event for event in expected if event not in installed]
 
 
@@ -162,6 +179,11 @@ def main() -> int:
     )
     parser.add_argument("--url", default="http://127.0.0.1:7654/event")
     parser.add_argument("--with-message-display", action="store_true")
+    parser.add_argument(
+        "--http-hooks",
+        action="store_true",
+        help="use type:http hooks (no process spawn, but noisy when the daemon is down)",
+    )
     parser.add_argument("--print", dest="dry", action="store_true")
     parser.add_argument(
         "--check",
@@ -171,7 +193,7 @@ def main() -> int:
     parser.add_argument("--uninstall", action="store_true")
     args = parser.parse_args()
 
-    hooks = build_hooks(args.url, args.with_message_display)
+    hooks = build_hooks(args.url, args.with_message_display, http=args.http_hooks)
     if args.dry:
         print(json.dumps({"hooks": hooks}, indent=2))
         return 0
