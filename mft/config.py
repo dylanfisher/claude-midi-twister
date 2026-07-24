@@ -79,8 +79,15 @@ COLOR_OFF = 0
 #: Used for the boot word and as the resting hue of an encoder with nothing to
 #: say -- the two places where the board should read as *lit* or *unlit* rather
 #: than as any particular colour. Which value is actually white varies by unit:
-#: run ``python -m mft.calibrate colors`` and set ``MFT_WHITE`` to the one that
+#: run ``python -m mft.calibrate white`` and set ``MFT_WHITE`` to the one that
 #: looks least like a colour.
+#:
+#: Judge it at full brightness. The wheel is only achromatic at one end, if at
+#: all, and a dim RGB LED reads blue whatever hue you send it -- so a value
+#: picked off a dark board is a blue that will announce itself the moment the
+#: boot word lights it at full. This one is worth getting right twice: it is
+#: both the word and the resting state of every unclaimed encoder, so an error
+#: here is not one wrong pixel, it is a tint on the entire device.
 WHITE = int(os.environ.get("MFT_WHITE", 127))
 
 COLORS = {
