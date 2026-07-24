@@ -78,15 +78,20 @@ class Overlay:
 
 
 class TextOverlay(Overlay):
-    """Spell a word across a bank, one 4x4 glyph at a time, crossfading.
+    """Spell a word across a bank, one 4x4 glyph at a time.
 
     Used for the boot animation (CLAUDE), for shouting a short reason at you
     (RATE when a turn dies on a rate limit) and for showing a count.
 
+    ``fade`` of zero -- what boot uses -- is a hard cut: each letter arrives
+    whole, sits fully lit for ``hold``, and is replaced by the next one. A 4x4
+    glyph is only legible while all of its pixels are at full, so a blend
+    between two of them is not a transition, it is a frame of nonsense; and a
+    letter that fades out spends its last moments as an unreadable version of
+    itself. Give it a nonzero ``fade`` and it crossfades instead.
+
     ``color`` may be a single hue for the whole word, or a sequence of hues to
-    walk one letter at a time (cycled if the word outruns it), which is what
-    boot does: the colour change carries the letter boundary for you when the
-    glyph itself is 16 pixels wide.
+    walk one letter at a time (cycled if the word outruns it).
     """
 
     def __init__(
@@ -104,10 +109,14 @@ class TextOverlay(Overlay):
             (color,) if isinstance(color, (str, int)) else tuple(color) or (config.BOOT_COLOR,)
         )
         self.bank = bank
-        self.fade = max(0.01, fade)
+        #: Zero stays zero -- see the class docstring. Anything else is a real
+        #: crossfade, floored so it can never be a divide by zero.
+        self.fade = 0.0 if fade <= 0 else max(0.01, fade)
         self.hold = max(0.0, hold)
         self.started_at = started_at
-        self.step = self.fade + self.hold
+        #: One letter's worth of time. Floored: a zero-fade, zero-hold overlay
+        #: would otherwise be a word of zero length divided by itself.
+        self.step = max(0.01, self.fade + self.hold)
 
     @property
     def duration(self) -> float:
@@ -124,12 +133,17 @@ class TextOverlay(Overlay):
         index = min(len(self.text) - 1, int(t / self.step))
         within = t - index * self.step
         previous = self.text[index - 1] if index else " "
-        # Crossfade in, then hold: the fade is what makes 16 pixels read as
-        # letters rather than as a stutter of unrelated dots. Eased rather than
-        # linear, because the ambiguous middle of a linear blend -- where both
-        # glyphs are half-lit and neither is legible -- is exactly the part
+        # Hard cut by default: the letter is simply *there*, at full, for its
+        # whole slot. With a fade it crossfades in and then holds -- eased
+        # rather than linear, because the ambiguous middle of a linear blend,
+        # where both glyphs are half-lit and neither is legible, is the part
         # worth spending the least time in.
-        blend = font.crossfade(previous, self.text[index], _smoothstep(within / self.fade))
+        if not self.fade:
+            blend = font.pixels(self.text[index])
+        else:
+            blend = font.crossfade(
+                previous, self.text[index], _smoothstep(within / self.fade)
+            )
         # The whole frame takes the incoming letter's hue. A cell can only hold
         # one colour, so during a crossfade the outgoing glyph is already wearing
         # the new one -- which is the right way round: the colour announces the

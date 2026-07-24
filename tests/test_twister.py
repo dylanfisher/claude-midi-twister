@@ -52,6 +52,16 @@ class GoingDark(unittest.TestCase):
         self.assertEqual(device.final(config.CH_RING_ANIM, 0), config.DARK_VALUE)
         self.assertNotEqual(config.DARK_VALUE, config.ANIM_NONE)
 
+    def test_a_dark_encoder_is_colourless_rather_than_blue(self):
+        # The switch LED cannot actually be extinguished on this hardware, so
+        # the next best thing is that it stops meaning anything: white at the
+        # bottom of the ramp, not whichever hue it happened to be wearing.
+        device = Recorder()
+        device.write(0, Cell(color="red", brightness=1.0))
+        device.write(0, Cell())
+        self.assertEqual(device.final(config.CH_SWITCH, 0), config.DARK_COLOR)
+        self.assertEqual(device.final(config.CH_SWITCH_ANIM, 0), config.DARK_VALUE)
+
     def test_nothing_relights_an_encoder_after_it_goes_off(self):
         # Brightness is the value holding the LED off, so it has to be the last
         # thing said about the encoder: a hue, a ring position or an animation
@@ -89,7 +99,8 @@ class GoingDark(unittest.TestCase):
         device.blackout()
         device.sent.clear()
         device.blackout()
-        self.assertEqual(len(device.sent), config.SLOT_COUNT * 3)
+        # Ring position, ring brightness, hue, RGB brightness -- per encoder.
+        self.assertEqual(len(device.sent), config.SLOT_COUNT * 4)
 
     def test_the_outro_ends_with_the_whole_board_off(self):
         # The gesture end to end, at the wire: every frame of the shutdown

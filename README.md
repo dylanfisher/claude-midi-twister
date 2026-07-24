@@ -50,9 +50,11 @@ otherwise the device drives its own LEDs and ignores you.
 .venv/bin/python -m mft.daemon
 ```
 
-Leave it running. It spells CLAUDE across the grid a letter at a time — unhurried
-on purpose, since a word you only catch the tail of may as well not be spelled —
-then lamp-tests every ring with one arc sweep and dissolves into a generative
+Leave it running. It spells CLAUDE across the grid a letter at a time, in white
+at full brightness, each letter hard-cutting in and sitting there for its full
+three quarters of a second — unhurried on purpose, since a word you only catch
+the tail of may as well not be spelled, and a 4x4 glyph is only legible while
+every one of its pixels is lit. Then it lamp-tests every ring with one arc sweep and dissolves into a generative
 field: travelling sine waves at rates that share no common factor, so it never
 loops. That runs until a Claude turns up, fading out over a minute if none does.
 `MFT_BOOT_ANIMATION=0` skips the whole thing. Open Claude Code anywhere and its
@@ -448,14 +450,25 @@ Note the *or*: on channels 3 and 6 the low value band is rate-based gate/pulse
 animations and the band above it is a plain brightness ramp, so a lit encoder can
 animate or dim, not both.
 
-There is also no *off* anywhere obvious. Channel 2 is hue all the way down (0 is
-blue, not dark), and value 0 on channels 3 and 6 means "no animation" — it stops
-overriding the device, which then goes back to showing its own inactive colour,
-so the board sits there glowing dimly at you. The only genuine off is the bottom
-of the brightness ramp: `config.DARK_VALUE`, 17 by default, overridable with
-`MFT_DARK_VALUE` if your unit's ramp starts somewhere else. That is what the
-shutdown wipe fades into and what the daemon forces onto all 64 encoders before
-it lets go of the port, so a stopped daemon leaves a completely dim board.
+There is also no *off*. Channel 2 is hue all the way down — 0 is blue, not dark.
+Value 0 on channels 3 and 6 means "no animation", which stops overriding the
+device, and it goes back to showing its own inactive colour. And the bottom of
+the brightness ramp does not extinguish the switch LED either; it just makes it
+faint. An encoder on this hardware is always lit to some degree.
+
+So "dark" here means *the least visible thing an encoder can be*: minimum
+brightness (`config.DARK_VALUE`, 17) wearing white (`config.DARK_COLOR`) rather
+than whatever hue it was last showing. A board that cannot go dark should at
+least go colourless — sixteen faint white pips read as a device at rest, where
+sixteen faint blue ones read as a device still trying to say something. That is
+what the shutdown wipe fades into, and the daemon forces it onto all 64 encoders
+before letting go of the port, so a stopped daemon leaves a uniformly dim board
+instead of the hue it happened to die on.
+
+Which channel-2 value is actually white varies by unit — `MFT_WHITE` overrides
+it, `MFT_DARK_COLOR` and `MFT_DARK_VALUE` override the resting appearance
+outright, and `python -m mft.calibrate dark` sweeps channel 3 sixteen values at
+a time if you want to see for yourself how far down it goes.
 
 The exact value→colour and value→animation numbers drift between firmware
 revisions, so `mft/config.py` ships anchors rather than gospel. Sweep your own:
@@ -471,7 +484,8 @@ Everything else worth tuning — frame rate, colours per state, fade durations,
 attention ramp, snooze steps, brightness floors — is in `mft/config.py` too, and
 the switches you'd most likely want at runtime are environment variables:
 `MFT_CLOCK_BPM`, `MFT_BOOT_ANIMATION`, `MFT_AMBIENT`, `MFT_SUBAGENT_STACK`,
-`MFT_ENCODER_MODE`, `MFT_CONTEXT_RING`, `MFT_DARK_VALUE`.
+`MFT_ENCODER_MODE`, `MFT_CONTEXT_RING`, `MFT_DARK_VALUE`, `MFT_DARK_COLOR`,
+`MFT_WHITE`.
 
 ## Tests
 

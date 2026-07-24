@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mft import board, config, context  # noqa: E402
+from mft import board, config, context, font  # noqa: E402
 from mft.render import attention_debt, render  # noqa: E402
 from mft.state import SessionTable, apply_event, classify_notification  # noqa: E402
 
@@ -594,18 +594,42 @@ class Overlays(unittest.TestCase):
         self.assertFalse(overlay.done(overlay.duration - 0.01))
         self.assertTrue(overlay.done(overlay.duration))
 
-    def test_each_boot_letter_gets_its_own_hue(self):
-        # Six letters, six colours: the hue change is what carries the letter
-        # boundary when the glyph itself is only 16 pixels wide.
+    def test_the_boot_word_is_white_and_fully_lit_throughout(self):
+        # The word is the one thing on this device that is text rather than
+        # status. Colour is how everything else here means something, so the
+        # letters stay out of that vocabulary entirely: white, at full, every
+        # frame -- no hue walking the wheel and nothing half-lit to squint at.
         overlay = board.TextOverlay(config.BOOT_WORD, 0.0)
-        seen = []
-        for index in range(len(config.BOOT_WORD)):
-            frame = board.compose([], (index + 0.5) * overlay.step, [overlay])
-            lit = {c.color for c in frame[: config.ENCODERS_PER_BANK] if c.brightness > 0}
-            self.assertEqual(len(lit), 1, "one letter is one colour")
-            seen.append(lit.pop())
-        self.assertEqual(len(set(seen)), len(config.BOOT_WORD))
-        self.assertEqual(seen[-1], config.BOOT_COLOR, "lands on the resting hue")
+        t = 0.0
+        while t < overlay.duration:
+            frame = board.compose([], t, [overlay])[: config.ENCODERS_PER_BANK]
+            lit = [c for c in frame if c.brightness > 0]
+            self.assertTrue(lit, t)
+            self.assertEqual({c.color for c in lit}, {"white"}, t)
+            self.assertEqual({c.brightness for c in lit}, {1.0}, t)
+            t += 1.0 / config.FPS
+
+    def test_boot_letters_hard_cut_rather_than_fading(self):
+        # Each letter is simply *there* for its whole slot: a 4x4 glyph is only
+        # legible with every pixel at full, so a blend between two of them is a
+        # frame of nonsense and a fade-out is an unreadable goodbye.
+        overlay = board.TextOverlay(config.BOOT_WORD, 0.0)
+        self.assertEqual(overlay.fade, 0.0)
+        self.assertAlmostEqual(overlay.step, config.BOOT_HOLD_SECONDS)
+        for index, letter in enumerate(config.BOOT_WORD):
+            expected = {
+                offset for offset, level in enumerate(font.pixels(letter)) if level
+            }
+            # Start, middle and end of the letter's slot: the same pixels, at
+            # the same brightness, all the way through.
+            for when in (0.01, 0.5, 0.99):
+                frame = board.compose([], (index + when) * overlay.step, [overlay])
+                shown = {
+                    offset
+                    for offset in range(config.ENCODERS_PER_BANK)
+                    if frame[offset].brightness > 0
+                }
+                self.assertEqual(shown, expected, (letter, when))
 
     def test_boot_is_unhurried_and_shutdown_is_not(self):
         # Boot is the only time the device speaks in words, and a word you can

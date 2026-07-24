@@ -74,7 +74,17 @@ GRID_ROWS = 4
 
 #: Only meaningful as a hue; see the note above before using it to mean "dark".
 COLOR_OFF = 0
+
+#: The top of the wheel, where the hues run out and the LED goes achromatic.
+#: Used for the boot word and as the resting hue of an encoder with nothing to
+#: say -- the two places where the board should read as *lit* or *unlit* rather
+#: than as any particular colour. Which value is actually white varies by unit:
+#: run ``python -m mft.calibrate colors`` and set ``MFT_WHITE`` to the one that
+#: looks least like a colour.
+WHITE = int(os.environ.get("MFT_WHITE", 127))
+
 COLORS = {
+    "white": WHITE,
     "blue": 1,
     "azure": 12,
     "cyan": 25,
@@ -122,16 +132,22 @@ ANIM_PULSE = {
 BRIGHTNESS_MIN = 17
 BRIGHTNESS_MAX = 47
 
-#: What "off" is on channels 3 and 6.
+#: What "off" is on channels 3 and 6 -- as close to it as this hardware gets.
 #:
-#: Not ``ANIM_NONE``. Value 0 on those channels means *no animation*, which
-#: hands the LED back to the device's own idea of what to show -- on a stock
-#: unit that is the inactive colour at low brightness, which is why a board that
-#: had been told to go dark sat there glowing blue after the daemon exited. The
-#: bottom of the brightness ramp is the only value that keeps the LED under our
-#: control *and* puts it at zero. Override if your unit's ramp starts elsewhere
-#: (find it with ``python -m mft.calibrate anim``).
+#: Not ``ANIM_NONE``: value 0 on those channels means *no animation*, which
+#: stops overriding the device, and it then shows its own inactive colour. That
+#: is the blue a stopped daemon used to leave glowing on the desk. But the
+#: bottom of the brightness ramp does not extinguish the switch LED either --
+#: on this unit it stays faintly lit whatever you send it. So "dark" here is
+#: not off, it is *the least visible thing the LED can be*: minimum brightness,
+#: and :data:`DARK_COLOR` rather than whatever hue it was last wearing.
 DARK_VALUE = int(os.environ.get("MFT_DARK_VALUE", BRIGHTNESS_MIN))
+
+#: The hue an extinguished-as-possible encoder wears. White, because a board
+#: that cannot go dark should at least go *colourless*: sixteen faint white
+#: pips read as a device at rest, where sixteen faint blue ones read as a device
+#: still trying to tell you something.
+DARK_COLOR = int(os.environ.get("MFT_DARK_COLOR", WHITE))
 
 #: Every gate and pulse rate above is measured in beats, and the Twister takes
 #: its beat from incoming MIDI clock. Without a clock each encoder free-runs off
@@ -339,28 +355,31 @@ TOOL_COLORS = {
 TOOL_COLOR_DEFAULT = "azure"
 
 # --- Boot / shutdown --------------------------------------------------------
-# 4x4 is a 16-pixel display and ring brightness is real grayscale per pixel, so
-# letters crossfade instead of hard-cutting. Shutdown does not spell anything --
-# a colour wipe off both corners is how you know the daemon exited cleanly
-# rather than died, and it costs a fraction of the time a legible word does.
+# 4x4 is a 16-pixel display, so the boot word is six hard cuts: each letter
+# arrives whole, sits fully lit, and is replaced. No crossfade and no fade-out
+# -- a glyph this coarse is only legible while every one of its pixels is at
+# full, and a blend between two of them is just a smear of unrelated dots.
+# Shutdown does not spell anything -- a colour wipe is how you know the daemon
+# exited cleanly rather than died, and it costs a fraction of the time.
 
 BOOT_WORD = "CLAUDE"
 #: Deliberately unhurried. The boot animation is the only time the device says
 #: anything in words, and a 0.3s-per-letter version reads as a flicker you catch
 #: the tail of rather than as CLAUDE: by the time you look up it is over. Each
-#: letter hard-cuts in and then *sits* there for two full seconds, which is what
-#: makes 16 pixels resolve into a glyph.
-#: Zero fade is a hard cut (TextOverlay clamps it to a single 0.01s frame).
+#: letter hard-cuts in and then *sits* there, which is what makes 16 pixels
+#: resolve into a glyph.
+#: Zero is a hard cut: TextOverlay skips the blend entirely rather than
+#: compressing it into one frame.
 BOOT_FADE_SECONDS = 0.0
 BOOT_HOLD_SECONDS = 0.75
 BOOT_COLOR = "violet"
-#: One letter, one hue, walking the wheel: the word is spelled in six hard cuts
-#: and each cut changes colour as well as glyph, so even a glance that misses
-#: the letters still reads six distinct events rather than one violet flicker.
-#: It lands on BOOT_COLOR, which is where the shutdown spiral and the idle field
-#: both start from -- the device arrives at its resting hue rather than at a
-#: seventh unrelated one. Cycled if the word is ever longer than the palette.
-BOOT_LETTER_COLORS = ("red", "amber", "green", "cyan", "blue", "violet")
+#: White, every letter, at full. The word is the only thing on this device that
+#: is *text* rather than status, and colour is what everything else here means
+#: something with -- spelling it in six hues made it read as six coloured events
+#: that happened to be letter-shaped. White at full brightness reads as a
+#: display being written to, which is what it is. The letter boundary is carried
+#: by the hard cut instead. Cycled if the word outruns the sequence.
+BOOT_LETTER_COLORS = ("white",)
 #: Lamp test. It opens the aircraft way -- one arc sweep that lights every ring
 #: on all 16 encoders, once, on purpose -- and then dissolves into a generative
 #: interference field that keeps running while the board has nothing to say.

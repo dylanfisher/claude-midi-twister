@@ -94,15 +94,19 @@ class Twister:
         self.cc(config.CH_SWITCH_ANIM, slot_to_cc(slot), value)
 
     def rgb_off(self, slot: Slot, force: bool = False) -> None:
-        """Extinguish the switch LED completely.
+        """Take the switch LED as close to off as this hardware goes.
 
-        Channel 2 has no "off" -- its whole 0-127 range is hue, and 0 is blue.
-        Channel 3 does, but it is *not* ``ANIM_NONE``: value 0 there means "no
-        animation", which stops overriding the device and lets it fall back to
-        its own inactive colour, so the encoder keeps glowing dimly. Zero
-        brightness (:data:`config.DARK_VALUE`) is the value that is actually
-        dark, and nothing may set a hue or brightness after it.
+        Which is not off. Channel 2 has no dark end -- the whole 0-127 range is
+        hue, and 0 is blue. Channel 3 has no dark end either: ``ANIM_NONE``
+        stops overriding the device and lets it show its own inactive colour,
+        and the bottom of the brightness ramp is still faintly lit. So this
+        does the next best thing and makes the encoder *colourless*: white at
+        minimum brightness, which is a knob you have to look for rather than a
+        blue one glowing at you from across the desk.
+
+        Hue first, brightness last -- the brightness is what holds it down.
         """
+        self.cc(config.CH_SWITCH, slot_to_cc(slot), config.DARK_COLOR, force=force)
         self.cc(config.CH_SWITCH_ANIM, slot_to_cc(slot), config.DARK_VALUE, force=force)
 
     def ring_off(self, slot: Slot, force: bool = False) -> None:
