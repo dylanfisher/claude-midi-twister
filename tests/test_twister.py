@@ -49,30 +49,50 @@ class GoingDark(unittest.TestCase):
         device = Recorder()
         device.clear(0)
         self.assertEqual(device.final(config.CH_SWITCH_ANIM, 0), config.DARK_VALUE)
-        self.assertEqual(device.final(config.CH_RING_ANIM, 0), config.DARK_VALUE)
+        self.assertEqual(device.final(config.CH_RING_ANIM, 0), config.RING_DARK_VALUE)
         self.assertNotEqual(config.DARK_VALUE, config.ANIM_NONE)
 
+    def test_off_is_past_the_pulse_band_and_not_the_bottom_of_it(self):
+        # The two channels do not agree on where brightness starts, and channel
+        # 3's ramp begins one value later than it looks like it should: 9-17 is
+        # pulse and 18 is 0%. Sending 17 to mean off is therefore not a dim LED,
+        # it is the slowest breathe on the device -- clock-locked, so every
+        # encoder does it in unison, which is what put a blue swell behind the
+        # boot word. Assert the constant is clear of the animation bands
+        # entirely; that is the property, and 18 is only today's value for it.
+        animations = set(config.ANIM_GATE.values()) | set(config.ANIM_PULSE.values())
+        self.assertNotIn(config.DARK_VALUE, animations)
+        self.assertGreater(config.DARK_VALUE, max(animations))
+        self.assertEqual(config.DARK_VALUE, config.RGB_BRIGHTNESS_MIN)
+
     def test_a_dark_encoder_is_colourless_rather_than_blue(self):
-        # The switch LED cannot actually be extinguished on this hardware, so
-        # the next best thing is that it stops meaning anything: white at the
-        # bottom of the ramp, not whichever hue it happened to be wearing.
+        # Belt and braces on top of a real off: the hue an extinguished encoder
+        # is left holding is the colourless one, not whichever it was wearing.
         device = Recorder()
         device.write(0, Cell(color="red", brightness=1.0))
         device.write(0, Cell())
         self.assertEqual(device.final(config.CH_SWITCH, 0), config.DARK_COLOR)
         self.assertEqual(device.final(config.CH_SWITCH_ANIM, 0), config.DARK_VALUE)
 
-    def test_nothing_relights_an_encoder_after_it_goes_off(self):
-        # Brightness is the value holding the LED off, so it has to be the last
-        # thing said about the encoder: a hue, a ring position or an animation
-        # sent afterwards lights it straight back up.
+    def test_going_dark_dims_before_it_recolours(self):
+        # Ordering, and it matters in one place: at startup channel 3 holds
+        # whatever it held before we opened the port, so a hue sent first lands
+        # on a lit LED and flashes it. Off first, then the hue, onto an encoder
+        # that is already dark. (Colour and brightness are independent here --
+        # a state change that only alters the hue does not reset brightness --
+        # so nothing is relit by arriving second.)
         device = Recorder()
         device.clear(3)
-        tail = [(ch, v) for ch, cc, v in device.sent if cc == 3]
-        self.assertEqual(tail[-2:], [
-            (config.CH_SWITCH_ANIM, config.DARK_VALUE),
-            (config.CH_RING_ANIM, config.DARK_VALUE),
-        ])
+        order = [ch for ch, cc, _ in device.sent if cc == 3]
+        self.assertEqual(
+            order,
+            [
+                config.CH_ENCODER,
+                config.CH_SWITCH_ANIM,
+                config.CH_SWITCH,
+                config.CH_RING_ANIM,
+            ],
+        )
 
     def test_an_unlit_cell_renders_dark_on_both_channels(self):
         # The shutdown overlay's own last frames are colour-free cells; they go
@@ -80,7 +100,7 @@ class GoingDark(unittest.TestCase):
         device = Recorder()
         device.write(7, Cell())
         self.assertEqual(device.final(config.CH_SWITCH_ANIM, 7), config.DARK_VALUE)
-        self.assertEqual(device.final(config.CH_RING_ANIM, 7), config.DARK_VALUE)
+        self.assertEqual(device.final(config.CH_RING_ANIM, 7), config.RING_DARK_VALUE)
         self.assertEqual(device.final(config.CH_ENCODER, 7), 0)
 
     def test_blackout_covers_every_encoder_on_every_bank(self):
@@ -88,7 +108,7 @@ class GoingDark(unittest.TestCase):
         device.blackout()
         for slot in range(config.SLOT_COUNT):
             self.assertEqual(device.final(config.CH_SWITCH_ANIM, slot), config.DARK_VALUE)
-            self.assertEqual(device.final(config.CH_RING_ANIM, slot), config.DARK_VALUE)
+            self.assertEqual(device.final(config.CH_RING_ANIM, slot), config.RING_DARK_VALUE)
 
     def test_blackout_ignores_the_dedup_cache(self):
         # The de-dup cache is an optimisation for a 30Hz render loop; on the way
@@ -117,7 +137,7 @@ class GoingDark(unittest.TestCase):
         device.blackout()
         for slot in range(config.SLOT_COUNT):
             self.assertEqual(device.final(config.CH_SWITCH_ANIM, slot), config.DARK_VALUE)
-            self.assertEqual(device.final(config.CH_RING_ANIM, slot), config.DARK_VALUE)
+            self.assertEqual(device.final(config.CH_RING_ANIM, slot), config.RING_DARK_VALUE)
             self.assertEqual(device.final(config.CH_ENCODER, slot), 0)
 
     def test_closing_the_port_leaves_the_board_dark(self):
@@ -127,7 +147,7 @@ class GoingDark(unittest.TestCase):
         device.write(0, Cell(color="violet", brightness=1.0, ring=90))
         Twister.close(device)  # NullTwister.close is a no-op; the real one blacks out
         self.assertEqual(device.final(config.CH_SWITCH_ANIM, 0), config.DARK_VALUE)
-        self.assertEqual(device.final(config.CH_RING_ANIM, 0), config.DARK_VALUE)
+        self.assertEqual(device.final(config.CH_RING_ANIM, 0), config.RING_DARK_VALUE)
 
 
 if __name__ == "__main__":

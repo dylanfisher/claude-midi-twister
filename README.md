@@ -450,25 +450,32 @@ Note the *or*: on channels 3 and 6 the low value band is rate-based gate/pulse
 animations and the band above it is a plain brightness ramp, so a lit encoder can
 animate or dim, not both.
 
-There is also no *off*. Channel 2 is hue all the way down — 0 is blue, not dark.
-Value 0 on channels 3 and 6 means "no animation", which stops overriding the
-device, and it goes back to showing its own inactive colour. And the bottom of
-the brightness ramp does not extinguish the switch LED either; it just makes it
-faint. An encoder on this hardware is always lit to some degree.
+Off is a specific number and it is not the obvious one. Channel 2 is hue all the
+way down — 0 is blue, not dark — so the RGB can only be switched off on channel
+3, and value 0 there means "no animation", which stops overriding the device and
+lets it show its own inactive colour. The off is the bottom of channel 3's
+brightness ramp: **18**, `config.DARK_VALUE`.
 
-So "dark" here means *the least visible thing an encoder can be*: minimum
-brightness (`config.DARK_VALUE`, 17) wearing white (`config.DARK_COLOR`) rather
-than whatever hue it was last showing. A board that cannot go dark should at
-least go colourless — sixteen faint white pips read as a device at rest, where
-sixteen faint blue ones read as a device still trying to say something. That is
-what the shutdown wipe fades into, and the daemon forces it onto all 64 encoders
-before letting go of the port, so a stopped daemon leaves a uniformly dim board
-instead of the hue it happened to die on.
+Not 17. The two channels do not put their brightness ramps in the same place.
+Channel 3 runs 0 none, 1–8 gate, **9–17 pulse**, 18 brightness 0%, 19–47
+brightness 1–30; the ring's floor on channel 6 is 17 (`config.RING_DARK_VALUE`).
+Sending 17 to the RGB is not a dim encoder, it is the slowest pulse on the
+device — "brightness cycles over 16 beats" — and since the daemon supplies the
+MIDI clock, all sixteen encoders breathe it in unison from the moment it starts.
+This board did exactly that for a while: the boot word played over sixteen RGBs
+swelling and fading together, reading blue because a dim RGB always does.
+
+A dark encoder is also left wearing `config.DARK_COLOR` (white) rather than
+whichever hue it last had. Moot while the LED is genuinely off, but it costs one
+CC and it is the difference between a device at rest and a device still trying
+to say something on any unit where the off turns out not to be.
 
 Which channel-2 value is actually white varies by unit — `MFT_WHITE` overrides
-it, `MFT_DARK_COLOR` and `MFT_DARK_VALUE` override the resting appearance
-outright, and `python -m mft.calibrate dark` sweeps channel 3 sixteen values at
-a time if you want to see for yourself how far down it goes.
+it, `MFT_DARK_COLOR` / `MFT_DARK_VALUE` / `MFT_RING_DARK_VALUE` override the
+resting appearance outright, and `python -m mft.calibrate dark` sweeps channel 3
+sixteen values at a time if a firmware revision moves the ramp. Watch a candidate
+for a few seconds before calling it off: the pulse rates just below it look dark
+at a glance and then swell back up.
 
 The exact value→colour and value→animation numbers drift between firmware
 revisions, so `mft/config.py` ships anchors rather than gospel. Sweep your own:
@@ -484,8 +491,8 @@ Everything else worth tuning — frame rate, colours per state, fade durations,
 attention ramp, snooze steps, brightness floors — is in `mft/config.py` too, and
 the switches you'd most likely want at runtime are environment variables:
 `MFT_CLOCK_BPM`, `MFT_BOOT_ANIMATION`, `MFT_AMBIENT`, `MFT_SUBAGENT_STACK`,
-`MFT_ENCODER_MODE`, `MFT_CONTEXT_RING`, `MFT_DARK_VALUE`, `MFT_DARK_COLOR`,
-`MFT_WHITE`.
+`MFT_ENCODER_MODE`, `MFT_CONTEXT_RING`, `MFT_DARK_VALUE`, `MFT_RING_DARK_VALUE`,
+`MFT_DARK_COLOR`, `MFT_WHITE`.
 
 ## Tests
 

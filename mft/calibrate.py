@@ -60,8 +60,8 @@ def _hue_stage(device) -> None:
     """
     for slot in range(config.ENCODERS_PER_BANK):
         device.ring(slot, 0, force=True)
-        device.cc(config.CH_RING_ANIM, slot, config.DARK_VALUE, force=True)
-        device.cc(config.CH_SWITCH_ANIM, slot, config.BRIGHTNESS_MAX, force=True)
+        device.cc(config.CH_RING_ANIM, slot, config.BRIGHTNESS_MIN, force=True)
+        device.cc(config.CH_SWITCH_ANIM, slot, config.RGB_BRIGHTNESS_MAX, force=True)
 
 
 def _white(device) -> None:
@@ -142,11 +142,15 @@ def main() -> int:
             for slot in range(config.ENCODERS_PER_BANK):
                 device.color(slot, args.color)
                 device.ring(slot, 0)
-                device.cc(config.CH_RING_ANIM, slot, config.DARK_VALUE, force=True)
+                device.cc(config.CH_RING_ANIM, slot, config.BRIGHTNESS_MIN, force=True)
             print(
                 "every encoder is lit; each page sets a different channel-3 value.\n"
                 "look for the ones that go COMPLETELY dark (not just dim), and put\n"
-                "that value in MFT_DARK_VALUE / config.DARK_VALUE."
+                f"that value in MFT_DARK_VALUE (currently {config.DARK_VALUE}).\n"
+                "note the page with 9-17 on it: those are pulse rates, so an encoder\n"
+                "there is not dim, it is breathing -- watch it for a few seconds\n"
+                "before calling it off. 17 in particular looks off at a glance and\n"
+                "swells back up over 16 beats."
             )
             _pages(device, config.CH_SWITCH_ANIM, 0, 127, "dark")
 

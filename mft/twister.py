@@ -30,11 +30,23 @@ def slot_bank(slot: Slot) -> int:
     return slot // config.ENCODERS_PER_BANK
 
 
-def _brightness_value(fraction: float) -> int:
-    """Map 0.0-1.0 onto the hardware's brightness band."""
+def _ramp(fraction: float, low: int, high: int) -> int:
+    """Map 0.0-1.0 onto one of the hardware's brightness bands."""
     fraction = max(0.0, min(1.0, fraction))
-    span = config.BRIGHTNESS_MAX - config.BRIGHTNESS_MIN
-    return config.BRIGHTNESS_MIN + round(fraction * span)
+    return low + round(fraction * (high - low))
+
+
+def _brightness_value(fraction: float) -> int:
+    """Ring brightness, channel 6."""
+    return _ramp(fraction, config.BRIGHTNESS_MIN, config.BRIGHTNESS_MAX)
+
+
+def _rgb_brightness_value(fraction: float) -> int:
+    """RGB brightness, channel 3 -- a *different* band to the ring's, and one
+    that starts one value further up than it looks like it should. See
+    :data:`config.RGB_BRIGHTNESS_MIN`; below it is the pulse band, not a dimmer
+    lamp."""
+    return _ramp(fraction, config.RGB_BRIGHTNESS_MIN, config.RGB_BRIGHTNESS_MAX)
 
 
 class Twister:
@@ -94,27 +106,36 @@ class Twister:
         self.cc(config.CH_SWITCH_ANIM, slot_to_cc(slot), value)
 
     def rgb_off(self, slot: Slot, force: bool = False) -> None:
-        """Take the switch LED as close to off as this hardware goes.
+        """Switch the RGB off.
 
-        Which is not off. Channel 2 has no dark end -- the whole 0-127 range is
-        hue, and 0 is blue. Channel 3 has no dark end either: ``ANIM_NONE``
-        stops overriding the device and lets it show its own inactive colour,
-        and the bottom of the brightness ramp is still faintly lit. So this
-        does the next best thing and makes the encoder *colourless*: white at
-        minimum brightness, which is a knob you have to look for rather than a
-        blue one glowing at you from across the desk.
+        Off, not dim. Channel 2 has no dark end -- the whole 0-127 range is hue,
+        and 0 is blue -- and ``ANIM_NONE`` on channel 3 is not it either: value
+        0 stops overriding the device and hands the LED back to its own inactive
+        colour, which is the blue a stopped daemon used to leave glowing on the
+        desk. The off is the bottom of channel 3's brightness ramp,
+        :data:`config.DARK_VALUE`, which is one value further up than the ring's
+        -- see :data:`config.RGB_BRIGHTNESS_MIN`.
 
-        Hue first, brightness last -- the brightness is what holds it down.
+        Brightness first, hue second, and that order matters exactly once: at
+        startup the device's channel 3 is at whatever it was before we opened
+        the port, so a hue sent first lands on a fully lit LED and flashes it.
+        Sending the off first means the hue arrives at an LED that is already
+        dark. Nothing is relit by it -- colour and brightness are independent on
+        this hardware, which is why a state change that only alters the hue does
+        not also reset the encoder to full.
         """
-        self.cc(config.CH_SWITCH, slot_to_cc(slot), config.DARK_COLOR, force=force)
         self.cc(config.CH_SWITCH_ANIM, slot_to_cc(slot), config.DARK_VALUE, force=force)
+        self.cc(config.CH_SWITCH, slot_to_cc(slot), config.DARK_COLOR, force=force)
 
     def ring_off(self, slot: Slot, force: bool = False) -> None:
-        """Same story one channel over: zero brightness, not "no animation"."""
-        self.cc(config.CH_RING_ANIM, slot_to_cc(slot), config.DARK_VALUE, force=force)
+        """Same story one channel over: zero brightness, not "no animation" --
+        but the ring's own floor, which is not the RGB's."""
+        self.cc(
+            config.CH_RING_ANIM, slot_to_cc(slot), config.RING_DARK_VALUE, force=force
+        )
 
     def rgb_brightness(self, slot: Slot, fraction: float) -> None:
-        self.cc(config.CH_SWITCH_ANIM, slot_to_cc(slot), _brightness_value(fraction))
+        self.cc(config.CH_SWITCH_ANIM, slot_to_cc(slot), _rgb_brightness_value(fraction))
 
     def ring_anim(self, slot: Slot, value: int) -> None:
         self.cc(config.CH_RING_ANIM, slot_to_cc(slot), value)
@@ -180,9 +201,9 @@ class Twister:
     def clear(self, slot: Slot, force: bool = False) -> None:
         """One encoder, dark on both channels.
 
-        Brightness goes last on each channel: it is the value that holds the LED
-        off, so anything sent after it (a hue, a ring position, an animation)
-        would light the encoder back up.
+        Position before brightness on the ring, and brightness before hue on the
+        RGB (see :meth:`rgb_off`): in both cases the message that darkens the LED
+        goes after the one that would otherwise be seen on a lit one.
         """
         self.ring(slot, 0, force=force)
         self.rgb_off(slot, force=force)

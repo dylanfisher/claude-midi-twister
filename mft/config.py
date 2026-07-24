@@ -134,26 +134,57 @@ ANIM_PULSE = {
     "8": 15,
     "16": 16,
 }
-#: Brightness ramp: BRIGHTNESS_MIN..BRIGHTNESS_MAX is a linear fade, and its
-#: bottom value is 0% -- an extinguished LED rather than a merely dim one.
+#: Ring brightness ramp on channel 6: a linear fade from dimmest to full.
+#:
+#: Not the same band as the RGB's. The two channels share a layout in spirit and
+#: not in numbers, which is exactly the trap below.
 BRIGHTNESS_MIN = 17
 BRIGHTNESS_MAX = 47
 
-#: What "off" is on channels 3 and 6 -- as close to it as this hardware gets.
+#: RGB brightness ramp on channel 3, and the one number on this device it is
+#: worth reading the manual twice for.
 #:
-#: Not ``ANIM_NONE``: value 0 on those channels means *no animation*, which
-#: stops overriding the device, and it then shows its own inactive colour. That
-#: is the blue a stopped daemon used to leave glowing on the desk. But the
-#: bottom of the brightness ramp does not extinguish the switch LED either --
-#: on this unit it stays faintly lit whatever you send it. So "dark" here is
-#: not off, it is *the least visible thing the LED can be*: minimum brightness,
-#: and :data:`DARK_COLOR` rather than whatever hue it was last wearing.
-DARK_VALUE = int(os.environ.get("MFT_DARK_VALUE", BRIGHTNESS_MIN))
+#: The animation table does not start the brightness ramp where the ring's does.
+#: Channel 3 goes: 0 none, 1-8 gate, **9-17 pulse**, 18 brightness 0% (off),
+#: 19-47 brightness 1..30. So 17 is not the bottom of the ramp at all -- it is
+#: the *slowest pulse rate*, "brightness cycles over 16 beats".
+#:
+#: This board used to send 17 to mean off, which is why an idle encoder was
+#: never actually dark: it was breathing, on a clock the daemon itself supplies,
+#: so all sixteen of them started their cycle together the moment the daemon
+#: came up and swelled and faded in unison behind the boot word. A dim RGB reads
+#: blue whatever hue you send it, so what that looked like was a blue glow that
+#: starts bright and dims. Not a colour bug: a value one below the one that
+#: means off.
+#:
+#: 18 is off. Sourced from the Midi Fighter Twister user guide's animation
+#: appendix ("Pulse | Value 9 - 17"; 18 = "RGB Brightness, 0 - Off"), and
+#: overridable per unit if a firmware revision moves it --
+#: ``python -m mft.calibrate dark`` sweeps the channel and shows you.
+RGB_BRIGHTNESS_MIN = int(os.environ.get("MFT_RGB_BRIGHTNESS_MIN", 18))
+RGB_BRIGHTNESS_MAX = int(os.environ.get("MFT_RGB_BRIGHTNESS_MAX", 47))
 
-#: The hue an extinguished-as-possible encoder wears. White, because a board
-#: that cannot go dark should at least go *colourless*: sixteen faint white
-#: pips read as a device at rest, where sixteen faint blue ones read as a device
-#: still trying to tell you something.
+#: What "off" is on the RGB: genuinely off, the bottom of the ramp above.
+#:
+#: Not ``ANIM_NONE``: value 0 on that channel means *no animation*, which stops
+#: overriding the device and lets it show its own inactive colour -- the blue a
+#: stopped daemon used to leave glowing on the desk. And not 17, for the whole
+#: reason above.
+DARK_VALUE = int(os.environ.get("MFT_DARK_VALUE", RGB_BRIGHTNESS_MIN))
+
+#: And what "off" is on the ring, which is a different channel with a different
+#: table and therefore a different number. Named separately from
+#: :data:`DARK_VALUE` because the two being the same integer was the assumption
+#: that hid the pulse: one constant for two channels means the first one you get
+#: right makes the second one look right too.
+RING_DARK_VALUE = int(os.environ.get("MFT_RING_DARK_VALUE", BRIGHTNESS_MIN))
+
+#: The hue a dark encoder wears. Moot while :data:`DARK_VALUE` is a real off --
+#: an unlit LED has no colour -- but it is what the encoder wears for the one
+#: message between the hue and the brightness landing, and if a unit turns out
+#: to have no true off after all it is the difference between sixteen faint
+#: white pips (a device at rest) and sixteen faint blue ones (a device still
+#: trying to tell you something).
 DARK_COLOR = int(os.environ.get("MFT_DARK_COLOR", WHITE))
 
 #: Every gate and pulse rate above is measured in beats, and the Twister takes

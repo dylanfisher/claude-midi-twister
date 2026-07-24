@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mft import board, config, context, font  # noqa: E402
+from mft import board, config, context, font, twister  # noqa: E402
 from mft.render import attention_debt, render  # noqa: E402
 from mft.state import SessionTable, apply_event, classify_notification  # noqa: E402
 
@@ -586,6 +586,23 @@ class Board(unittest.TestCase):
         self.assertTrue(lit)
 
 
+class _RecordingTwister(twister.NullTwister):
+    """A device that keeps every CC it would have put on the wire, so a test can
+    assert about what the hardware receives rather than about what the board
+    meant. De-duplication is left in place: it is part of what gets sent."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent: list[tuple[int, int, int]] = []
+
+    def cc(self, channel: int, control: int, value: int, force: bool = False) -> None:
+        key = (channel, control)
+        if not force and self._last.get(key) == value:
+            return
+        self._last[key] = value
+        self.sent.append((channel, control, value))
+
+
 class Overlays(unittest.TestCase):
     def test_boot_animation_spells_something_then_ends(self):
         overlay = board.TextOverlay("CLAUDE", 0.0)
@@ -658,6 +675,46 @@ class Overlays(unittest.TestCase):
         # which is what you are left looking at.
         for cell in board.compose([], end + 1.0, []):
             self.assertIsNone(cell.color)
+
+    def test_the_boot_sequence_switches_the_rgb_off_on_the_wire(self):
+        # The board saying "no colour" is only half of it. This is the other
+        # half: what channel 3 actually carries for all 64 encoders, every
+        # frame, from clear_all through the word and the lamp test.
+        #
+        # It is a separate test because the bug it exists for was invisible from
+        # the Cell side. Every cell said color=None all the way through, and the
+        # value that None turned into was 17 -- which is not the bottom of the
+        # brightness ramp, it is the slowest *pulse* rate. Sixteen encoders
+        # breathing in unison off the daemon's own MIDI clock, reading blue
+        # because a dim RGB always does. The board was right and the wire was
+        # wrong, so only a test at this level catches it coming back.
+        recorder = _RecordingTwister()
+        recorder.clear_all()
+        word = board.TextOverlay(config.BOOT_WORD, 0.0)
+        lamp = board.LampTestOverlay(word.duration)
+        t = 0.0
+        while t < word.duration + 5.0:
+            overlays = [word] if t < word.duration else [lamp]
+            for slot, cell in enumerate(board.compose([], t, overlays)):
+                recorder.write(slot, cell)
+            t += 1.0 / config.FPS
+
+        rgb = {v for ch, _, v in recorder.sent if ch == config.CH_SWITCH_ANIM}
+        self.assertEqual(rgb, {config.DARK_VALUE})
+        # And spelled out, so a future edit to DARK_VALUE has to face it: the
+        # off value is above the pulse band, not at the bottom of it.
+        self.assertEqual(config.DARK_VALUE, 18)
+        self.assertGreater(config.DARK_VALUE, max(config.ANIM_PULSE.values()))
+        self.assertNotIn(config.DARK_VALUE, set(config.ANIM_GATE.values()))
+
+    def test_switching_the_rgb_off_dims_before_it_recolours(self):
+        # At startup channel 3 is at whatever it was before we opened the port,
+        # so a hue sent first lands on a lit LED and flashes it. The off has to
+        # go first.
+        recorder = _RecordingTwister()
+        recorder.rgb_off(0)
+        channels = [ch for ch, _, _ in recorder.sent]
+        self.assertEqual(channels, [config.CH_SWITCH_ANIM, config.CH_SWITCH])
 
     def test_the_lamp_test_still_lights_every_ring(self):
         # Colourless is not the same as absent. The sweep is a lamp test in the
