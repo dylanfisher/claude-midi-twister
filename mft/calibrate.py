@@ -8,6 +8,7 @@ trusting a table, sweep them and write down what you see.
     python -m mft.calibrate anim      # channel 3 animation/brightness band
     python -m mft.calibrate ring      # channel 6 ring animation/brightness
     python -m mft.calibrate ramp      # ring positions 0..127
+    python -m mft.calibrate dark      # which channel-3 value is actually *off*
 
 Paste the values you like into mft/config.py.
 """
@@ -45,7 +46,7 @@ def _pages(device, channel: int, start: int, end: int, label: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["colors", "anim", "ring", "ramp"])
+    parser.add_argument("mode", choices=["colors", "anim", "ring", "ramp", "dark"])
     parser.add_argument("--color", default="green", help="base colour for anim sweeps")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -65,6 +66,23 @@ def main() -> int:
             channel = config.CH_SWITCH_ANIM if args.mode == "anim" else config.CH_RING_ANIM
             print("low values are gate/pulse rates, higher ones are a brightness ramp")
             _pages(device, channel, 0, 127, args.mode)
+
+        elif args.mode == "dark":
+            # Which channel-3 value actually extinguishes the switch LED, as
+            # opposed to merely dimming it or handing it back to the device's
+            # own inactive colour. Every encoder starts lit and full, so the
+            # only thing that changes per page is the candidate "off" value --
+            # the answer is whichever encoders you cannot see.
+            for slot in range(config.ENCODERS_PER_BANK):
+                device.color(slot, args.color)
+                device.ring(slot, 0)
+                device.cc(config.CH_RING_ANIM, slot, config.DARK_VALUE, force=True)
+            print(
+                "every encoder is lit; each page sets a different channel-3 value.\n"
+                "look for the ones that go COMPLETELY dark (not just dim), and put\n"
+                "that value in MFT_DARK_VALUE / config.DARK_VALUE."
+            )
+            _pages(device, config.CH_SWITCH_ANIM, 0, 127, "dark")
 
         elif args.mode == "ramp":
             for slot in range(config.ENCODERS_PER_BANK):
