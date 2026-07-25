@@ -899,22 +899,32 @@ class Overlays(unittest.TestCase):
         self.assertEqual(landed.color, idle.color)
         self.assertAlmostEqual(landed.brightness, idle.brightness, places=2)
 
-    def test_spawn_is_brief_and_moves_the_whole_way(self):
+    def test_spawn_is_brief_and_blinks_a_countable_number_of_times(self):
         session = SessionTable().ensure("s", "/tmp/p")
         overlay = board.SpawnOverlay(session, 0.0)
         self.assertLess(config.SPAWN_SECONDS, 2.0, "punctuation, not a status")
-        rings = [
-            board.compose([session], t / 100, [overlay])[session.slot].ring
-            for t in range(int(config.SPAWN_SECONDS * 100))
+        cells = [
+            board.compose([session], t / 200, [overlay])[session.slot]
+            for t in range(int(config.SPAWN_SECONDS * 200))
         ]
-        self.assertGreater(len(set(rings)), 20, "the ring should actually travel")
-        # One sweep out to full, then back down onto the session's own ring --
-        # never a lap. A ring that laps itself is how activity reads on this
-        # board, and a session starting is one event, not an activity.
-        peak = rings.index(max(rings))
-        self.assertGreaterEqual(max(rings), 126)
-        self.assertEqual(rings[:peak], sorted(rings[:peak]))
-        self.assertEqual(rings[peak:], sorted(rings[peak:], reverse=True))
+        flashing = cells[: int(config.SPAWN_SECONDS * config.SPAWN_SETTLE * 200)]
+
+        # Full on or fully dark, never in between: an eased blink reads as
+        # breathing, and breathing is a state rather than an event.
+        self.assertEqual({c.ring for c in flashing}, {0, 127})
+        # Three flashes, countable at a glance -- rising edges, so a run that
+        # starts lit is still one flash rather than two.
+        edges = sum(
+            1
+            for prev, cell in zip(flashing, flashing[1:])
+            if prev.ring == 0 and cell.ring == 127
+        )
+        self.assertEqual(edges + (1 if flashing[0].ring else 0), config.SPAWN_FLASHES)
+        # Bright red RGB held across the whole strike, including the dark half
+        # of each blink: the ring blinks, the colour does not.
+        self.assertTrue(all(c.color == config.SPAWN_COLOR for c in flashing))
+        self.assertTrue(all(abs(c.brightness - 1.0) < 1e-6 for c in flashing))
+
         self.assertFalse(overlay.done(config.SPAWN_SECONDS - 0.01))
         self.assertTrue(overlay.done(config.SPAWN_SECONDS))
 

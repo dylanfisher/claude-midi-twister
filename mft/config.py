@@ -460,13 +460,17 @@ BOOT_ANIMATION = _flag("MFT_BOOT_ANIMATION", True)
 SPAWN_ANIMATION = _flag("MFT_SPAWN_ANIMATION", True)
 #: Total length of the strike. Under two seconds: this is punctuation.
 SPAWN_SECONDS = 1.8
-#: The hue sweeps the whole wheel once, which nothing else on the board does --
-#: a static colour would just look like some other state having a moment.
-SPAWN_HUES = (0, 127)
-#: Fraction of the animation the ring spends filling from empty to full. One
-#: unhurried sweep, not a spin: a ring that laps itself reads as an activity
-#: indicator, and this has to read as a single event that happened once.
-#: The remainder is the handover to the session's own steady state.
+#: Held for the whole strike at full brightness. Red is otherwise reserved for
+#: permission and error, but neither of those blinks the *ring* -- and three
+#: hard flashes in a row is a shape nothing else on the board makes, so there is
+#: nothing for it to be confused with even sharing the hue.
+SPAWN_COLOR = "red"
+#: The ring blinks full-on/full-off this many times before the handover. A
+#: count, not a sweep: you can read "three" out of the corner of your eye
+#: without having watched the whole thing.
+SPAWN_FLASHES = 3
+#: Fraction of the animation spent flashing. The remainder is the handover to
+#: the session's own steady state.
 SPAWN_SETTLE = 0.55
 
 #: Shutdown is a colour wipe, not a word. One head leaves the top-left corner

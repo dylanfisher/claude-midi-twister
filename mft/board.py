@@ -376,12 +376,11 @@ class SpawnOverlay(Overlay):
     The arrival of a Claude is otherwise the quietest thing that happens on the
     board -- a new session renders as `idle`, which is a dim green pip
     indistinguishable at a glance from the dim green pip beside it. So the
-    claiming gets a gesture of its own: the ring fills once from empty to full,
-    decelerating into it, while the hue runs the entire colour wheel at full
-    brightness. One sweep rather than a spin -- a ring that laps itself is how
-    every *activity* signal on this board works, and this is a single event that
-    happened once. Nothing else here sweeps its hue, so there is no other thing
-    on the board it can be confused for.
+    claiming gets a gesture of its own: the ring blinks full-on/full-off three
+    times over bright red RGB. Three hard flashes is a countable shape -- you
+    can read it out of the corner of your eye without having watched it start --
+    and nothing else on this board blinks its ring, so the red is not confusable
+    with the permission and error states that own that hue.
 
     It ends by crossfading into whatever is underneath rather than cutting, so
     the encoder is seen *becoming* its steady state instead of flashing and then
@@ -412,16 +411,17 @@ class SpawnOverlay(Overlay):
             return
         under = board[slot]
 
-        # Ease-out, so the fill arrives quickly and decelerates into full rather
-        # than stopping dead: the deceleration is what makes it read as landing.
-        fill = min(1.0, u / config.SPAWN_SETTLE)
-        fill = 1 - (1 - fill) ** 2
-        low, high = config.SPAWN_HUES
-        color: str | int | None = int(low + (high - low) * u)
+        # Square wave, deliberately: an eased blink reads as breathing, and
+        # breathing is a state. The last flash ends dark so the ring is empty at
+        # the moment the handover starts and can be seen rising onto the
+        # session's own position rather than falling onto it.
+        phase = min(1.0, u / config.SPAWN_SETTLE) * config.SPAWN_FLASHES
+        fill = 1.0 if (phase % 1.0) < 0.5 and phase < config.SPAWN_FLASHES else 0.0
+        color: str | int | None = config.SPAWN_COLOR
 
         # The tail is a handover, not a cut: brightness, hue and ring all arrive
-        # at whatever is underneath, so the full ring visibly recedes onto the
-        # session's own ring position instead of snapping to it.
+        # at whatever is underneath, so the encoder is seen becoming its steady
+        # state rather than the red simply switching off and green appearing.
         settle = _smoothstep(max(0.0, u - config.SPAWN_SETTLE) / (1 - config.SPAWN_SETTLE))
         brightness = 1.0 + (under.brightness - 1.0) * settle
         ring = 127 * fill + (under.ring - 127 * fill) * settle
