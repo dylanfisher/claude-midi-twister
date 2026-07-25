@@ -142,6 +142,9 @@ class Visualizer:
         #: loop can sleep long between static frames without an event having to
         #: wait out that sleep. See :meth:`run`.
         self._wake = threading.Event()
+        #: How lit the board is, given how long since anyone was here. Touched by
+        #: every hook event and every press; read once per frame.
+        self._sleep = board_mod.Sleep(time.monotonic())
         self._press_started: dict[int, float] = {}
         self._overlays: list[board_mod.Overlay] = []
         #: Keyed by session, not slot: the board compacts under sessions that
@@ -243,10 +246,15 @@ class Visualizer:
         one early frame, while an event whose wake was forgotten leaves the
         board a quarter-second behind the agent it is supposed to be reporting
         on. Only one of those is worth being careful about.
+
+        The sleep timer is reset in the same place and for the same reason. Note
+        that it counts *any* event, including ones dropped as unknown: something
+        out there is running, which is the only question sleep is asking.
         """
         try:
             return self._apply_hook_event(event)
         finally:
+            self._sleep.touch(time.monotonic())
             self._wake.set()
 
     def _apply_hook_event(self, event: dict) -> dict:
@@ -310,6 +318,9 @@ class Visualizer:
         now = time.monotonic()
         return {
             "device": type(self.device).__name__,
+            # Why the desk is dark, which is otherwise indistinguishable from a
+            # daemon that died with the lights off.
+            "sleep": round(self._sleep.gain(now), 2),
             "sessions": [
                 {
                     "session_id": s.session_id,
@@ -347,20 +358,26 @@ class Visualizer:
     def on_midi(self, msg) -> None:
         if msg.type != "control_change":
             return
+        # Any CC at all, turn or press, is a hand on the hardware -- the one
+        # activity sleep can see that has nothing to do with any agent, and if
+        # the board is dark it is very likely the whole reason for it. Waking
+        # the loop is right for a turn on its own terms too: the ring the knob
+        # lit locally is undone by the next frame, and "next" should mean now.
+        self._sleep.touch(time.monotonic())
+        self._wake.set()
         if msg.channel == config.CH_SWITCH:
             self._on_switch(msg.control, msg.value)
-        # A turn is deliberately ignored: the board is a display, not a control
-        # surface, and the ring it lit locally is undone by the next frame --
-        # see :meth:`Twister.forget_rings`.
+        # A turn is otherwise deliberately ignored: the board is a display, not
+        # a control surface -- see :meth:`Twister.forget_rings`.
 
     def _on_switch(self, slot: int, value: int) -> None:
         session = self.table.by_slot(slot)
         now = time.monotonic()
-        # A press forgives an unattended session, and a board full of nothing
-        # but unattended sessions is exactly the static one the loop will have
+        # The wake for this landed in :meth:`on_midi`, and it matters here: a
+        # press forgives an unattended session, and a board full of nothing but
+        # unattended sessions is exactly the static one the loop will have
         # slowed down for. The dimming has to land on the press, not a quarter
         # second after it.
-        self._wake.set()
         if value >= 64:  # press down
             self._press_started[slot] = now
             if session is not None:
@@ -513,6 +530,7 @@ class Visualizer:
                 self.table.all(),
                 now,
                 self._live_overlays(now) if overlays is None else overlays,
+                sleep=self._sleep.gain(now),
             )
             for slot, cell in enumerate(cells):
                 self.device.write(slot, cell)
@@ -553,6 +571,10 @@ class Visualizer:
             self.refresh_context(session, now)
         self.table.compact()
         if adopted:
+            # These sessions have been running without us and none of them has
+            # sent us an event yet. A daemon started onto a live board starts
+            # awake, and its first half hour is measured from now.
+            self._sleep.touch(now)
             log.info(
                 "adopted %d running session%s: %s",
                 len(adopted),
@@ -579,6 +601,9 @@ class Visualizer:
             self._lamp = board_mod.LampTestOverlay(time.monotonic())
             self.push_overlay(self._lamp)
 
+        # After the boot word, not before it: the word blocks for a couple of
+        # seconds and the clock the sleep timer runs on does not stop for it.
+        self._sleep.touch(time.monotonic())
         active = 1.0 / config.FPS
         idle = 1.0 / config.IDLE_FPS
         still = 0  # consecutive frames that composed to the same board

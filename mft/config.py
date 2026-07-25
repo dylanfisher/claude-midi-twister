@@ -63,6 +63,50 @@ DONE_FADE_SECONDS = 90.0
 #: full quit-and-restart in the same tab.
 SLOT_LINGER_SECONDS = 120.0
 
+# --- Sleep ------------------------------------------------------------------
+# The board reports on agents, but it is lit for *you*, and the one thing it has
+# no way of knowing is whether you are there. Every other fade here is about a
+# session getting older; this one is about the room being empty. Nothing on the
+# board wakes it -- an agent that works all night keeps sending events, so an
+# empty desk is the only thing that ever reaches these timings.
+
+#: Master switch. `MFT_SLEEP=0` if you want the board lit whatever happens.
+SLEEP = _flag("MFT_SLEEP", True)
+
+#: Nothing from any hook and no hand on any knob for this long: dim. Half an
+#: hour is well past a pause in your own work -- reading a diff, a phone call --
+#: and comfortably short of a lunch break, which is the first stretch where a
+#: glowing board is decoration nobody is reading.
+SLEEP_DIM_SECONDS = float(os.environ.get("MFT_SLEEP_SECONDS", 30 * 60))
+
+#: And this long: off. The second stage exists because dim is still a board you
+#: can read from the doorway, which is worth having when you step out, and is
+#: still a lamp on your desk at 3am, which is not.
+SLEEP_DARK_SECONDS = 60.0 * 60
+
+#: Where the first stage lands. Low enough to read as asleep across the room,
+#: high enough that the colours and ring positions all survive it, because the
+#: point of stopping here rather than going straight out is that a dimmed board
+#: is still a board.
+SLEEP_DIM_LEVEL = 0.10
+
+#: Each stage's fade. Slow on purpose, and much slower than anything else here:
+#: every other fade is reporting something that happened, so it has to keep up
+#: with the event. This one is reporting that nothing happened, and a board that
+#: visibly snaps to a new level is a board that just said something.
+SLEEP_FADE_SECONDS = 20.0
+
+#: The way back up. Not instant -- a hard cut is the one transition this board
+#: never makes, and coming back with a visible rise reads as waking rather than
+#: as a frame dropping in -- but fast enough to be over before you have finished
+#: turning to look at the knob you just pressed.
+SLEEP_WAKE_SECONDS = 0.4
+
+#: Below this the encoder is blanked rather than dimmed further, for the same
+#: reason as SHUTDOWN_DARK_LEVEL: a hue at brightness zero is still a lit LED on
+#: this hardware, and the tail of the fade has to reach an actual off.
+SLEEP_DARK_LEVEL = 0.02
+
 # --- MIDI channel layout (0-indexed, as mido wants) -------------------------
 
 CH_ENCODER = 0  # ch1: encoder value / LED ring position

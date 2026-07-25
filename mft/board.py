@@ -675,6 +675,99 @@ def stack_subagents(
             )
 
 
+class Sleep:
+    """How lit the board should be, given how long since anyone was here.
+
+    Every other fade on this board is a session getting older. This one is the
+    room being empty: it runs off hook events and hands on knobs, and an agent
+    that works through the night keeps sending events, so the only thing that
+    ever reaches these timings is an unattended desk.
+
+    Two stages, because they answer two different questions. Dim answers "is
+    anything waiting for me?" from the doorway and keeps every colour and ring
+    position intact to answer it with. Off answers "is this thing still on?" at
+    three in the morning, and the only right answer then is no light at all.
+
+    Not an :class:`Overlay`. Overlays are transient -- they expire, and the board
+    underneath is what they were covering. This is a standing condition of the
+    whole board that reverses, and it belongs *under* the overlays rather than
+    beside them; see :func:`compose`.
+    """
+
+    def __init__(self, started_at: float = 0.0) -> None:
+        self.last_activity = started_at
+        #: When the board was last woken while it was already fading, and the
+        #: gain it was at when that happened -- so the ramp back up starts from
+        #: where the fade had got to rather than jumping to the floor and rising
+        #: from there. The same bookkeeping as
+        #: :attr:`LampTestOverlay._dismiss_gain`, in the other direction.
+        self._woke_at: Optional[float] = None
+        self._woke_from = 1.0
+
+    def touch(self, now: float) -> None:
+        """Something happened: a hook event, or a hand on a knob."""
+        level = self.gain(now)
+        if level < 1.0:
+            # Anchored on wherever we actually are, which covers being touched
+            # again part-way up as well as part-way down -- both are a ramp from
+            # here to full, and neither may show a step.
+            self._woke_at = now
+            self._woke_from = level
+        else:
+            self._woke_at = None
+        self.last_activity = now
+
+    def gain(self, now: float) -> float:
+        """1.0 awake, falling to ``SLEEP_DIM_LEVEL`` and then to 0.0.
+
+        Pure: the daemon's `/status` handler reads this off the HTTP thread while
+        the render loop is reading it too, so it settles nothing and stores
+        nothing. A finished wake ramp is left in place rather than cleared,
+        because falling through it lands on 1.0 anyway.
+        """
+        if not config.SLEEP:
+            return 1.0
+        if self._woke_at is not None:
+            rising = (now - self._woke_at) / config.SLEEP_WAKE_SECONDS
+            if rising < 1.0:
+                return self._woke_from + (1.0 - self._woke_from) * _smoothstep(rising)
+
+        away = now - self.last_activity
+        dark = (away - config.SLEEP_DARK_SECONDS) / config.SLEEP_FADE_SECONDS
+        if dark > 0:
+            return config.SLEEP_DIM_LEVEL * (1.0 - _smoothstep(dark))
+        dim = (away - config.SLEEP_DIM_SECONDS) / config.SLEEP_FADE_SECONDS
+        if dim > 0:
+            return 1.0 - (1.0 - config.SLEEP_DIM_LEVEL) * _smoothstep(dim)
+        return 1.0
+
+
+def dim(board: list[Cell], gain: float, spared: frozenset[int] = frozenset()) -> None:
+    """Scale the whole board toward dark, leaving the encoders in `spared` lit.
+
+    `spared` is how a sleeping board still knows how to shout: an encoder with a
+    permission prompt open is asking for a human, and going dark because the
+    human left is precisely the wrong answer. Everything else goes down together.
+
+    The animation is dropped on the way down, which is not cosmetic: channels 3
+    and 6 carry *either* an animation or a brightness and never both
+    (:meth:`mft.twister.Twister.write`), so an encoder that keeps its animation
+    cannot be dimmed at all. A dim that silently doesn't dim would be worse than
+    one that costs a strobe -- and in practice every animated state is either
+    spared or means someone is working, so nothing reaches here still moving.
+    """
+    for slot, cell in enumerate(board):
+        if slot in spared or cell is BLANK:
+            continue
+        level = cell.brightness * gain
+        # Colour-free below the floor rather than merely dim, as in
+        # ShutdownOverlay: brightness zero on a hue is still a lit encoder.
+        if level <= config.SLEEP_DARK_LEVEL:
+            board[slot] = BLANK
+            continue
+        board[slot] = Cell(cell.color, config.ANIM_NONE, int(cell.ring * gain), level)
+
+
 def ambient(board: list[Cell], now: float) -> None:
     """Nothing is running, so the board breathes rather than going dark.
 
@@ -704,6 +797,7 @@ def compose(
     now: Optional[float] = None,
     overlays: Iterable[Overlay] = (),
     slot_count: int = config.SLOT_COUNT,
+    sleep: float = 1.0,
 ) -> list[Cell]:
     """Steady state, then subagents, then arbitration, then overlays on top."""
     now = time.monotonic() if now is None else now
@@ -722,6 +816,14 @@ def compose(
 
     if config.AMBIENT and not claimed:
         ambient(board, now)
+
+    # Under the overlays, not among them. Every overlay is a gesture -- a spawn
+    # strike, a banner, a `/clear` wipe, a press-and-hold peek -- and every one
+    # of those is itself the activity that wakes the board, so dimming them
+    # would be the sleep arguing with its own wake. It also means quitting a
+    # dark daemon still plays the shutdown spiral at full brightness.
+    if sleep < 1.0:
+        dim(board, sleep, frozenset(s.slot for s in sessions if s.alert))
 
     frozen = frozenset(claimed)
     for overlay in overlays:

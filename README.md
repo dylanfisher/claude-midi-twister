@@ -330,7 +330,7 @@ work is capped well below a live block, so it can never outshout one.
 |---|---|
 | press | focus that terminal tab, and forgive its attention debt |
 | hold | peek: the rest of the bank becomes that session's last 15 tool calls |
-| turn | nothing |
+| turn | nothing, beyond waking a sleeping board |
 
 That's the whole input surface, and it's meant to be. Both gestures affect the
 *board* — what you're looking at, what it's allowed to nag you about — and
@@ -350,6 +350,37 @@ by tool kind — edits orange, bash magenta, searches cyan, reads blue. Release 
 the board snaps back. "This agent has done nothing but grep for four minutes" is
 legible from across the room, and there's no other way to learn it without
 opening the tab.
+
+## Sleep
+
+Every other fade on this board is a session getting older. This one is the room
+being empty.
+
+Half an hour with no hook event from anywhere and no hand on any knob, and the
+whole board fades over 20 seconds to 10% — dim enough to read as asleep from
+across the room, bright enough that every colour and ring position survives, so
+it's still a board you can check from the doorway. At an hour it fades the rest
+of the way to actual off: not the hardware's floor brightness, which is still a
+lit encoder wearing a colour, but dark.
+
+Nothing on the board can wake it, because an agent doing anything at all is
+sending events — the timings are only ever reached by an unattended desk. Any
+event, or a hand on any knob, ramps it back to full over 0.4 seconds, starting
+from wherever the fade had got to rather than snapping. A turn wakes the board
+and does nothing else — it's the gesture with no second meaning. A press is
+still a press, so waking a dark board on a *claimed* encoder also brings that
+session's terminal forward; an empty one wakes it and leaves you where you are.
+
+**An encoder asking for you is exempt.** A permission prompt, a plan approval, a
+rate-limit error — anything that set an alert and hasn't been attended to — stays
+at full brightness while the rest of the board goes out around it. Going dark
+because the human left is precisely the wrong answer to "a human is needed here."
+A session that merely *finished* is not an alert, and sleeps with everything else.
+
+`MFT_SLEEP=0` turns it off; `MFT_SLEEP_SECONDS` moves the first stage (which is
+also how you watch it happen without waiting half an hour). `GET /status` reports
+the current level as `sleep`, so a dark desk is distinguishable from a dead
+daemon.
 
 ## Subagents
 
@@ -534,8 +565,8 @@ Everything else worth tuning — frame rate, colours per state, fade durations,
 attention ramp, brightness floors — is in `mft/config.py` too, and
 the switches you'd most likely want at runtime are environment variables:
 `MFT_CLOCK_BPM`, `MFT_BOOT_ANIMATION`, `MFT_AMBIENT`, `MFT_SUBAGENT_STACK`,
-`MFT_CONTEXT_RING`, `MFT_DARK_VALUE`, `MFT_RING_DARK_VALUE`,
-`MFT_DARK_COLOR`, `MFT_WHITE`.
+`MFT_CONTEXT_RING`, `MFT_SLEEP`, `MFT_SLEEP_SECONDS`, `MFT_DARK_VALUE`,
+`MFT_RING_DARK_VALUE`, `MFT_DARK_COLOR`, `MFT_WHITE`.
 
 ## Tests
 

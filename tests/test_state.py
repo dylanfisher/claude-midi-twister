@@ -6,6 +6,7 @@ import dataclasses
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -719,6 +720,143 @@ class Board(unittest.TestCase):
         self.assertTrue(lit)
 
 
+class Sleeping(unittest.TestCase):
+    """Nobody has been here for half an hour: the board dims, then goes out.
+
+    Every other fade on this board is a session getting older. This one is the
+    room being empty, so what it has to get right is coming *back*: a board that
+    cannot be woken is a board that has broken, and one that wakes with a step
+    is one that just said something it didn't mean.
+    """
+
+    def dark_at(self) -> float:
+        """Far enough into the second stage to be genuinely dark, whatever the
+        configured timings happen to be."""
+        return config.SLEEP_DARK_SECONDS + config.SLEEP_FADE_SECONDS
+
+    def setUp(self):
+        self.sleep = board.Sleep(0.0)
+        self.table = SessionTable()
+
+    def test_a_board_nobody_touches_dims_and_then_goes_out(self):
+        levels = []
+        t = 0.0
+        while t <= self.dark_at() + 1.0:
+            levels.append(self.sleep.gain(t))
+            t += 1.0
+        # Never brighter than it was: the whole gesture is one direction.
+        for here, then in zip(levels, levels[1:]):
+            self.assertLessEqual(then, here + 1e-9)
+        self.assertEqual(levels[0], 1.0)
+        self.assertEqual(levels[-1], 0.0)
+
+    def test_it_holds_full_brightness_until_the_timeout_and_pauses_at_the_floor(self):
+        # Not a slow sag from the first second -- for half an hour nothing has
+        # happened yet, and the board should not be reporting that.
+        self.assertEqual(self.sleep.gain(config.SLEEP_DIM_SECONDS - 1.0), 1.0)
+        # The first stage lands on the floor and stays there, so there is a
+        # readable board for the whole stretch between the two timings.
+        settled = config.SLEEP_DIM_SECONDS + config.SLEEP_FADE_SECONDS
+        self.assertAlmostEqual(self.sleep.gain(settled), config.SLEEP_DIM_LEVEL, places=5)
+        midway = (settled + config.SLEEP_DARK_SECONDS) / 2
+        self.assertAlmostEqual(self.sleep.gain(midway), config.SLEEP_DIM_LEVEL, places=5)
+
+    def test_the_fade_is_slow_enough_not_to_read_as_an_event(self):
+        # A step this board can see is a step it means. Nothing in either stage
+        # may move more than a few percent in a frame.
+        t = config.SLEEP_DIM_SECONDS
+        while t <= self.dark_at():
+            step = abs(self.sleep.gain(t + 1 / config.FPS) - self.sleep.gain(t))
+            self.assertLess(step, 0.02, t)
+            t += 0.1
+
+    def test_a_touch_brings_it_back_from_wherever_the_fade_had_got_to(self):
+        part_way = config.SLEEP_DIM_SECONDS + config.SLEEP_FADE_SECONDS * 0.5
+        level = self.sleep.gain(part_way)
+        self.assertLess(level, 1.0)
+        self.sleep.touch(part_way)
+        # Rising from *here*, not from the floor and not from full: a wake that
+        # jumps in either direction is a visible glitch.
+        self.assertAlmostEqual(self.sleep.gain(part_way), level, places=5)
+        self.assertGreater(self.sleep.gain(part_way + config.SLEEP_WAKE_SECONDS / 2), level)
+        self.assertEqual(self.sleep.gain(part_way + config.SLEEP_WAKE_SECONDS), 1.0)
+
+    def test_a_touch_part_way_up_does_not_start_over(self):
+        """Two events in quick succession on a dark board: the second must not
+        drop the brightness back to where the first one started from."""
+        self.sleep.touch(self.dark_at())
+        early = self.dark_at() + config.SLEEP_WAKE_SECONDS * 0.5
+        level = self.sleep.gain(early)
+        self.sleep.touch(early)
+        self.assertGreaterEqual(self.sleep.gain(early), level - 1e-9)
+
+    def test_waking_restarts_the_clock(self):
+        self.sleep.touch(self.dark_at())
+        awake = self.dark_at() + config.SLEEP_DIM_SECONDS - 1.0
+        self.assertEqual(self.sleep.gain(awake), 1.0)
+        self.assertLess(self.sleep.gain(awake + config.SLEEP_FADE_SECONDS * 2), 1.0)
+
+    def test_the_switch_pins_it_awake(self):
+        config.SLEEP = False
+        try:
+            self.assertEqual(self.sleep.gain(self.dark_at()), 1.0)
+        finally:
+            config.SLEEP = True
+
+    # -- what it does to the board ------------------------------------------
+
+    def slept(self, t: float):
+        return board.compose(self.table.all(), 1.0, sleep=self.sleep.gain(t))
+
+    def test_an_idle_encoder_sleeps_and_a_permission_prompt_does_not(self):
+        quiet = self.table.ensure("a", "/tmp/a", {"tty": "/dev/a"})
+        quiet.state = "idle"
+        asking = self.table.ensure("b", "/tmp/b", {"tty": "/dev/b"})
+        asking.state = "permission"
+        asking.alert = True
+        cells = self.slept(self.dark_at())
+        # The board is out, except for the one encoder that is asking for a
+        # human. Going dark because the human left is the wrong answer to that.
+        self.assertEqual(cells[quiet.slot], board.BLANK)
+        self.assertEqual(cells[asking.slot], render(asking, 1.0))
+
+    def test_a_finished_session_is_not_an_alert_and_sleeps(self):
+        done = self.table.ensure("a", "/tmp/a")
+        done.state = "done"
+        done.state_since = 1.0
+        self.assertGreater(board.compose(self.table.all(), 1.0)[done.slot].brightness, 0)
+        self.assertEqual(self.slept(self.dark_at())[done.slot], board.BLANK)
+
+    def test_the_empty_board_stops_breathing_once_it_is_asleep(self):
+        self.assertTrue([c for c in board.compose([], 1.0) if c.brightness > 0])
+        cells = self.slept(self.dark_at())
+        self.assertTrue(all(c is board.BLANK for c in cells))
+
+    def test_a_dimmed_encoder_carries_no_animation(self):
+        """Channels 3 and 6 hold either an animation or a brightness, never
+        both, so an encoder that keeps its animation cannot be dimmed at all."""
+        session = self.table.ensure("a", "/tmp/a")
+        session.state = "streaming"
+        lit = board.compose(self.table.all(), 1.0)[session.slot]
+        self.assertTrue(lit.rgb_anim)
+        dozing = self.slept(config.SLEEP_DIM_SECONDS + config.SLEEP_FADE_SECONDS)
+        cell = dozing[session.slot]
+        self.assertEqual(cell.rgb_anim, config.ANIM_NONE)
+        self.assertLess(cell.brightness, lit.brightness)
+        # Dim, not dark: the first stage is still a board you can read.
+        self.assertGreater(cell.brightness, 0.0)
+        self.assertEqual(cell.color, lit.color)
+
+    def test_overlays_are_not_dimmed(self):
+        """Every overlay is a gesture, and every gesture is the activity that
+        wakes the board -- including the shutdown spiral on the way out."""
+        overlay = board.ShutdownOverlay(0.0)
+        cells = board.compose(
+            [], overlay.spiral, [overlay], sleep=self.sleep.gain(self.dark_at())
+        )
+        self.assertTrue(all(c.brightness > 0.95 for c in cells[:16]))
+
+
 class _RecordingTwister(twister.NullTwister):
     """A device that keeps every CC it would have put on the wire, so a test can
     assert about what the hardware receives rather than about what the board
@@ -1221,7 +1359,8 @@ class Overlays(unittest.TestCase):
 
 
 class EncoderTurns(unittest.TestCase):
-    """A knob is not a control. Turning one changes nothing and is undone."""
+    """A knob is not a control. Turning one changes nothing about the session
+    and is undone; all it can do is wake a sleeping board."""
 
     def visualizer(self):
         from mft.daemon import Visualizer
@@ -1242,6 +1381,24 @@ class EncoderTurns(unittest.TestCase):
             )
         )
         self.assertEqual(dataclasses.asdict(vis.table.by_slot(0)), before)
+
+    def test_a_turn_wakes_a_sleeping_board(self):
+        """The one thing a turn does, and the only gesture that does *only*
+        this: a hand on the hardware is the one activity sleep can see that has
+        nothing to do with any agent, and a dark board is the likeliest reason
+        for the hand. A press would wake it too, but a press on a claimed
+        encoder also goes and focuses that terminal."""
+        vis = self.visualizer()
+        vis._sleep.last_activity = time.monotonic() - 2 * config.SLEEP_DARK_SECONDS
+        self.assertEqual(vis._sleep.gain(time.monotonic()), 0.0)
+        vis.on_midi(
+            SimpleNamespace(
+                type="control_change", channel=config.CH_ENCODER, control=0, value=65
+            )
+        )
+        self.assertEqual(
+            vis._sleep.gain(time.monotonic() + config.SLEEP_WAKE_SECONDS), 1.0
+        )
 
     def recorder_visualizer(self):
         from mft.daemon import Visualizer
