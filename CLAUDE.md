@@ -54,6 +54,7 @@ hooks/notify.sh, hooks/register_session.py  ──POST /event──►  mft/daem
         mft/board.py  (64 Cells + overlays + arbitration)         │
         mft/twister.py (CC writes, de-duplicated)  ───────────────┘
         mft/focus.py  (encoder press -> raise a terminal tab)
+        mft/tab.py    (state glyph -> that tab's title, via OSC on its tty)
 ```
 
 - `config.py` — every tunable, all env-overridable (`MFT_*`). Colours,
@@ -64,14 +65,22 @@ hooks/notify.sh, hooks/register_session.py  ──POST /event──►  mft/daem
 - `render.py` — pure `(session, clock) -> Cell`. One session's appearance.
 - `board.py` — everything only decidable across the whole board: motion
   arbitration, the subagent stack, overlays, ambient field.
-- `context.py` — context-window fullness, tailed out of `transcript_path`.
+- `context.py` — context-window fullness and Claude's own generated title, both
+  tailed out of `transcript_path`.
+- `tab.py` — the board's second display: a state glyph prefixed to the terminal
+  tab's title. Deliberately coarser than `render.py` (the three busy states
+  share a glyph) because every change is a write down someone's tty; see the
+  README section.
 - `discover.py` — adopt sessions that predate the daemon (transcripts joined
   with the process table).
 - `font.py` — 4×4 bitmap alphabet; a bank is a 16-pixel display.
 
 The daemon does all I/O; `state`/`render`/`board`/`font` are pure and that is
 what makes them testable. Keep it that way — if a new feature wants a
-subprocess or a socket, it belongs in `daemon.py` or `focus.py`.
+subprocess or a socket, it belongs in `daemon.py`, `focus.py` or `tab.py`.
+Those last two are the only places that touch something outside this process,
+and `tab.py` is the only one that *writes* there — a tty it does not own, which
+is why the write is short, non-blocking, and handed back when the session ends.
 
 ## Invariants
 

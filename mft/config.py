@@ -386,6 +386,55 @@ CONTEXT_LIMITS = (
 #: agent with a nearly empty context still shows a legible pip.
 CONTEXT_RING_FLOOR = 4
 
+# --- Terminal tab -----------------------------------------------------------
+# The same state, in the one other place you are already looking: the tab strip.
+# See :mod:`mft.tab` for how the title is written and why Claude Code has to be
+# told to stop writing its own.
+
+TAB_TITLE = _flag("MFT_TAB_TITLE", True)
+
+#: One glyph per state, prefixed to the title. Deliberately *coarser* than
+#: STATE_COLORS: `thinking`, `working` and `streaming` share a glyph because
+#: they churn several times a second inside one turn, and every change is a
+#: write down someone's tty. Collapsed, a normal turn costs three writes -- busy,
+#: done, idle -- instead of a few dozen. What survives the collapse is the only
+#: distinction a tab strip is any good at: is it asking me for something, is it
+#: busy, is it finished.
+#:
+#: Circles for the ones that pass on their own and squares for the two that
+#: don't, so the difference is legible in monochrome and at tab-strip size.
+TAB_GLYPHS = {
+    "permission": "\N{LARGE RED SQUARE}",
+    "plan": "\N{LARGE YELLOW SQUARE}",
+    "error": "\N{LARGE RED CIRCLE}",
+    "waiting": "\N{LARGE ORANGE CIRCLE}",
+    "thinking": "\N{LARGE BLUE CIRCLE}",
+    "working": "\N{LARGE BLUE CIRCLE}",
+    "streaming": "\N{LARGE BLUE CIRCLE}",
+    "done": "\N{LARGE GREEN CIRCLE}",
+    # Not green: `done` and `idle` are one colour on the board because the fade
+    # between them *is* the transition, and a tab strip has no fade. Here they
+    # have to be two glyphs or the distinction is lost -- and "finished
+    # something you haven't looked at" is most of why you'd glance at the tab.
+    "idle": "\N{MEDIUM WHITE CIRCLE}",
+    #: No glyph, and the bare title written back: an ended session's tab is not
+    #: ours to keep painting.
+    "ended": "",
+}
+#: As on the board: reserved for nothing else, on every state.
+TAB_UNSUPERVISED_GLYPH = "\N{LARGE PURPLE CIRCLE}"
+
+#: Repaint at most this often. Nothing here is animated and a tab strip is not
+#: something you watch, so this runs two orders of magnitude slower than the
+#: board -- and even then it usually writes nothing, because the composed title
+#: is compared against the last one sent.
+TAB_POLL_SECONDS = 5.0
+
+#: Titles are truncated to this many characters before the glyph goes on. Tab
+#: strips truncate anyway; doing it here keeps the escape sequence short enough
+#: to be one atomic write down a tty someone else is also writing to.
+TAB_TITLE_MAX = int(os.environ.get("MFT_TAB_TITLE_MAX", "64"))
+
 # --- Discovery on startup ---------------------------------------------------
 # Hooks only push, so a session that was already running when the daemon started
 # stays invisible until it happens to fire its next event -- which, for an agent

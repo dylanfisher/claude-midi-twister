@@ -23,6 +23,12 @@ no way to opt out, so a stopped daemon means two `connect ECONNREFUSED` lines
 per tool call. Pass ``--http-hooks`` to take that trade if the daemon is always
 up on your machine.
 
+One environment variable goes in alongside them, and it is the only thing this
+script installs that changes how a session behaves:
+``CLAUDE_CODE_DISABLE_TERMINAL_TITLE`` hands the terminal title to the daemon,
+which paints the session's state there as a glyph. See ``ENV`` below for the
+whole argument, and ``mft/tab.py`` for what it buys.
+
 Nothing installed here can influence a session: every hook is notify-only and
 the daemon answers all of them with a bodiless 204. Permissions in particular
 are shown and never answered -- the device is a display, not a control surface.
@@ -44,6 +50,20 @@ NOTIFY = REPO / "hooks" / "notify.sh"
 
 #: Marks our entries so --uninstall can find them again.
 TAG = "mft-twister"
+
+#: Environment the daemon needs sessions to start with, and why.
+#:
+#: Claude Code writes its own terminal title, with an animated spinner in front
+#: of it, so while a turn runs it rewrites that title several times a second.
+#: The daemon puts a state glyph there instead (see :mod:`mft.tab`) and cannot
+#: win a race it loses every frame -- so it takes the title over rather than
+#: sharing it, and pays that back by reading Claude Code's *own* generated title
+#: out of the transcript and prefixing that. What you lose is the spinner, and
+#: the title while the daemon is down; `--uninstall` puts both back.
+#:
+#: Set here rather than in the app bundle because it has to be in the
+#: environment of every `claude`, however it was launched.
+ENV = {"CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1"}
 
 #: `PermissionRequest` is deliberately *not* installed. An HTTP hook on it sits
 #: in the path between Claude Code and its own permission prompt, and a
@@ -154,6 +174,28 @@ def missing_events(settings_path: str | os.PathLike = "") -> list[str]:
     return [event for event in expected if event not in installed]
 
 
+def missing_env(settings_path: str | os.PathLike = "") -> list[str]:
+    """Variables in ENV that the settings file doesn't set to our value.
+
+    Same argument as :func:`missing_events`, and a worse failure: the hooks
+    still work without it, the board is still right, and the only symptom is a
+    tab strip whose glyph flickers in and out under Claude Code's own title.
+    Reported only once something of ours is installed, so an untouched settings
+    file isn't diagnosed as drift.
+    """
+    path = Path(settings_path or os.path.expanduser("~/.claude/settings.json"))
+    try:
+        settings = json.loads(path.read_text() or "{}")
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not any(
+        _is_ours(e) for entries in settings.get("hooks", {}).values() for e in entries
+    ):
+        return []
+    env = settings.get("env") or {}
+    return [name for name, value in ENV.items() if env.get(name) != value]
+
+
 def merge(settings: dict, new_hooks: dict) -> dict:
     # Strip first, so an event we used to install and no longer do
     # (PermissionRequest) doesn't survive an upgrade as an orphan pointing at an
@@ -162,6 +204,7 @@ def merge(settings: dict, new_hooks: dict) -> dict:
     for event, entries in new_hooks.items():
         current = [e for e in existing.get(event, []) if not _is_ours(e)]
         existing[event] = current + entries
+    settings.setdefault("env", {}).update(ENV)
     return settings
 
 
@@ -175,6 +218,18 @@ def strip(settings: dict) -> dict:
             del existing[event]
     if not existing:
         settings.pop("hooks", None)
+
+    # Only the variables we set, and only where they still hold the value we
+    # set them to. `env` is a flat map with nowhere to record who wrote an
+    # entry, so a user who has since set one of these deliberately keeps it --
+    # the cost of guessing wrong here is silently changing how their sessions
+    # run, long after they have forgotten this script touched the file.
+    env = settings.get("env", {})
+    for name, value in ENV.items():
+        if env.get(name) == value:
+            del env[name]
+    if not env:
+        settings.pop("env", None)
     return settings
 
 
@@ -203,17 +258,23 @@ def main() -> int:
 
     hooks = build_hooks(args.url, args.with_message_display, http=args.http_hooks)
     if args.dry:
-        print(json.dumps({"hooks": hooks}, indent=2))
+        print(json.dumps({"hooks": hooks, "env": ENV}, indent=2))
         return 0
 
     if args.check:
         missing = missing_events(args.settings)
-        if not missing:
+        env = missing_env(args.settings)
+        if not missing and not env:
             print(f"{args.settings}: up to date")
             return 0
-        print(f"{args.settings} is missing {len(missing)} event(s):")
-        for event in missing:
-            print(f"  {event}")
+        if missing:
+            print(f"{args.settings} is missing {len(missing)} event(s):")
+            for event in missing:
+                print(f"  {event}")
+        if env:
+            print(f"{args.settings} is missing {len(env)} env var(s):")
+            for name in env:
+                print(f"  {name}={ENV[name]}")
         print("re-run install_hooks.py to add them.")
         return 1
 

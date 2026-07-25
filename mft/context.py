@@ -110,6 +110,40 @@ def read_usage(path: str) -> Optional[tuple[int, str]]:
     return None
 
 
+def read_title(path: str) -> str:
+    """The title Claude Code generated for this session, or "".
+
+    It writes one as an ``ai-title`` record whenever it regenerates it, which is
+    roughly once a prompt, so the last one in the file is the current one. This
+    is the same string it would have put in the terminal tab itself -- see
+    :mod:`mft.tab`, which puts a state glyph in front of it instead.
+
+    Cheap by the same trick as :func:`read_usage`: the string test runs on every
+    line and the JSON parse only on the handful that could match.
+    """
+    if not path:
+        return ""
+    try:
+        lines = tail_lines(path)
+    except OSError as exc:
+        log.debug("no transcript at %s: %s", path, exc)
+        return ""
+
+    for line in reversed(lines):
+        if '"ai-title"' not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("type") != "ai-title":
+            continue
+        title = entry.get("aiTitle")
+        if title:
+            return str(title)
+    return ""
+
+
 def fraction(tokens: Optional[int], limit: int) -> Optional[float]:
     """0.0-1.0 fill, or ``None`` when there is nothing to report."""
     if not tokens or limit <= 0:

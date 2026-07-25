@@ -29,6 +29,7 @@ from . import (
     discover as discover_mod,
     focus as focus_mod,
     render as render_mod,
+    tab as tab_mod,
     twister as twister_mod,
 )
 from .state import (
@@ -125,6 +126,7 @@ def warn_about_hook_drift() -> None:
         module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
         spec.loader.exec_module(module)  # type: ignore[union-attr]
         missing = module.missing_events()
+        env = module.missing_env()
     except Exception:
         return
     if missing:
@@ -132,6 +134,12 @@ def warn_about_hook_drift() -> None:
             "hooks out of date: %s not installed, so those events never arrive "
             "-- re-run install_hooks.py",
             ", ".join(missing),
+        )
+    if env and config.TAB_TITLE:
+        log.warning(
+            "settings are missing %s, so Claude Code will keep overwriting the "
+            "tab titles this daemon paints -- re-run install_hooks.py",
+            ", ".join(env),
         )
 
 
@@ -207,6 +215,9 @@ class Visualizer:
         #: The cells the last frame composed, to tell a board that is animating
         #: from one that is merely lit. `None` until the first frame.
         self._last_cells: list[render_mod.Cell] | None = None
+        #: When the tab strip was last considered. Nothing there animates, so it
+        #: is decoupled from the frame rate entirely; see :meth:`paint_tabs`.
+        self._last_tab_paint = float("-inf")
 
     # -- overlays -----------------------------------------------------------
 
@@ -272,6 +283,98 @@ class Visualizer:
         if model:
             session.model = model
         session.context_limit = context_mod.limit_for_model(session.model)
+
+    # -- terminal tab -------------------------------------------------------
+
+    def refresh_tab_title(self, session: Session, now: float) -> None:
+        """Top up our copy of the title Claude Code generated for this session.
+
+        On the HTTP thread with the context read, and for the same reason: this
+        is a file read, and the render loop has a frame to make. Once a turn is
+        as often as it can change, and the rate limit only matters for the
+        session that has no title yet -- which asks again every few seconds
+        until one exists, because until then the tab says nothing but a
+        directory name.
+
+        A read that comes back empty leaves `tab_title_turn` alone, so the next
+        event tries again; a read that succeeds is trusted even though it may be
+        the previous turn's title, since it is about to be overwritten anyway
+        and a turn of lag on a tab strip is not a thing anyone can see.
+        """
+        if not config.TAB_TITLE or not session.transcript_path:
+            return
+        if session.tab_title and session.tab_title_turn == session.turn_count:
+            return
+        if now - session.tab_title_at < config.TAB_POLL_SECONDS:
+            return
+        session.tab_title_at = now
+        try:
+            title = context_mod.read_title(session.transcript_path)
+        except Exception:
+            log.exception("title read failed for %s", session.label)
+            return
+        if title:
+            session.tab_title = title
+            session.tab_title_turn = session.turn_count
+
+    def paint_tabs(self, now: float) -> None:
+        """Put each session's state glyph in front of its tab title.
+
+        Rate-limited to a twentieth of the board's frame rate and then, past
+        that, gated on the composed line having actually changed -- so a session
+        that spends ten minutes working costs one write, not eighteen thousand.
+        The comparison is against what we last *sent*, not against the state, so
+        a title that changed while the glyph didn't still gets through.
+        """
+        if not config.TAB_TITLE:
+            return
+        if now - self._last_tab_paint < config.TAB_POLL_SECONDS:
+            return
+        self._last_tab_paint = now
+        for session in self.table.all():
+            self._paint_tab(session, tab_mod.glyph_for(session))
+
+    def _paint_tab(self, session: Session, glyph: str) -> None:
+        tty = tab_mod.tty_of(session)
+        if not tty:
+            return
+        # The directory name until Claude Code has generated a title. It is a
+        # worse label but it is never wrong, and a tab reading "🔴" alone tells
+        # you a session wants you without telling you which one.
+        title = session.tab_title or os.path.basename(session.cwd)
+        line = tab_mod.compose(glyph, title)
+        if line == session.tab_painted:
+            return
+        if tab_mod.write(tty, line):
+            session.tab_painted = line
+
+    def restore_tabs(self, sessions: list[Session] | None = None) -> None:
+        """Hand the tab back: the same title, without our glyph on it.
+
+        For sessions that ended, and for every session when the daemon exits. A
+        glyph outlives the thing it describes otherwise, and a green dot on a
+        tab whose daemon died an hour ago is precisely the phantom encoder this
+        project spends its time avoiding.
+
+        A tty another live session is still on is left alone. That happens when
+        two records turn out to describe one tab and the duplicate is dropped
+        (`SessionTable.reconcile`) -- restoring there would strip the glyph off
+        a session that is still running, and the survivor believes it already
+        painted that tab, so nothing would put it back.
+        """
+        if not config.TAB_TITLE:
+            return
+        sessions = self.table.all() if sessions is None else sessions
+        retiring = {id(s) for s in sessions}
+        claimed = {
+            tab_mod.tty_of(s)
+            for s in self.table.all()
+            if id(s) not in retiring and s.state != "ended"
+        } - {""}
+        for session in sessions:
+            if tab_mod.tty_of(session) in claimed:
+                continue
+            self._paint_tab(session, "")
 
     # -- hook events --------------------------------------------------------
 
@@ -349,7 +452,9 @@ class Visualizer:
         # is a no-op that still does all the work. See COMPACTING_EVENTS.
         if name in COMPACTING_EVENTS:
             self.table.compact()
-        self.refresh_context(session, time.monotonic())
+        now = time.monotonic()
+        self.refresh_context(session, now)
+        self.refresh_tab_title(session, now)
         if effects:
             self._apply_effects(session, effects)
         return {"ok": True, "slot": session.slot + 1, "state": session.state}
@@ -665,8 +770,11 @@ class Visualizer:
             now = time.monotonic()
             self._check_lamp_test(now)
             still = 0 if self.paint(now) else still + 1
+            # Before the reap, so an ended session's tab is handed back while
+            # the record that knows which tty it was on still exists.
+            self.paint_tabs(now)
             if now - last_reap > REAP_INTERVAL_SECONDS:
-                self.table.reap()
+                self.restore_tabs(self.table.reap())
                 # Alongside the reaper, and for the same reason it exists: what
                 # this catches is a board that looks entirely plausible and is
                 # quietly wrong -- one tab on two encoders -- and would stay that
@@ -862,6 +970,9 @@ def main() -> int:
     try:
         visualizer.run()
     finally:
+        # Before the animation, which takes a couple of seconds: the tabs are
+        # the part of this that outlives the process, and the board is not.
+        visualizer.restore_tabs()
         visualizer.shutdown_animation()
         server.shutdown()
         device.close()

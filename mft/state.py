@@ -67,6 +67,15 @@ class Session:
     context_tokens: int = 0
     context_limit: int = 0
     context_checked_at: float = 0.0
+    #: The tab strip's copy of all this; see :mod:`mft.tab`. `tab_title` is
+    #: Claude Code's own generated title, re-read from the transcript once a
+    #: turn (`tab_title_turn` is the turn it was read on), and `tab_painted` is
+    #: the last line actually written down the tty -- which is what makes the
+    #: repaint a comparison instead of a write.
+    tab_title: str = ""
+    tab_title_turn: int = -1
+    tab_title_at: float = 0.0
+    tab_painted: str = ""
     #: Recent tool names, oldest first, for the press-and-hold detail view.
     tool_history: deque[str] = field(
         default_factory=lambda: deque(maxlen=config.PEEK_HISTORY)

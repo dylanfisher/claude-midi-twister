@@ -39,6 +39,12 @@ removes exactly what it added and leaves your other hooks alone. It writes to
 `git pull`: a hook that was added to the code and never installed is invisible
 rather than broken.
 
+It also sets one environment variable, `CLAUDE_CODE_DISABLE_TERMINAL_TITLE`,
+which is the only thing here that changes how a session behaves — it hands the
+terminal title to the daemon, which paints the session's state there too. See
+[the tab strip](#the-same-state-in-the-tab-strip), or `MFT_TAB_TITLE=0` if you'd
+rather keep Claude Code's.
+
 Then, in the Midi Fighter Utility, set the encoders to accept host LED control —
 otherwise the device drives its own LEDs and ignores you.
 
@@ -391,6 +397,61 @@ table (`ps -E`), matched on working directory. Two Claudes in one directory are
 indistinguishable from out there, so they get their shared application and no
 tab, until one of them is pinned by a hook.
 
+## The same state, in the tab strip
+
+An encoder tells you a session wants you. It does not tell you *which window*,
+once you have eight of them tiled — and the thing that does is already on
+screen. So `mft/tab.py` puts a coloured glyph in front of each session's
+terminal tab title:
+
+| | State |
+|---|---|
+| 🟥 | permission gate — a tool call is waiting on you |
+| 🟨 | a plan is written and wants a yes |
+| 🔴 | error: rate limit, overload, billing |
+| 🟠 | idle-waiting for input |
+| 🔵 | busy — thinking, working, streaming |
+| 🟢 | finished, and you haven't looked |
+| ⚪ | idle |
+| 🟣 | `bypassPermissions`, in every state, as on the board |
+
+The mechanism is one `ESC ] 0 ; <title> BEL` written straight to the session's
+tty. The daemon isn't that session's process, but it runs as the same user, so
+opening `/dev/ttys004` and writing to it puts bytes into the emulator's parser
+exactly as if the session had printed them — and OSC isn't printable, so nothing
+appears on screen. Every terminal worth naming honours it, which is why this is
+one code path and not an adapter table like focus.
+
+**It is deliberately coarser than the board.** `thinking`, `working` and
+`streaming` share one glyph, because they churn several times a second inside a
+turn and every change is a write down someone's tty. Collapsed, a turn costs
+three writes — busy, done, idle — instead of a few dozen. The repaint tick runs
+at 5s (a two-hundredth of the frame rate) and then still compares against the
+last line it *sent* before writing anything. What survives the collapse is the
+only distinction a tab strip is any good at: is it asking me for something, is
+it busy, is it finished.
+
+**The title is Claude's own.** Claude Code writes its generated title into the
+transcript as an `ai-title` record — the same string it would have put in the
+tab — so the glyph goes in front of the real thing rather than something we
+invented. Until a session has one, the directory name stands in. It's
+model-written text going into an escape sequence, so it's stripped of C0
+controls on the way through: a title containing a BEL would otherwise terminate
+the sequence early and spill the rest of itself onto the screen.
+
+**Claude Code has to be told to stop writing its own title**, and
+`install_hooks.py` sets `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` to do it. Its
+title carries an animated spinner, so while a turn runs it rewrites the title
+several times a second and a glyph of ours survives for about a frame. Racing it
+is exactly as bad as it sounds. This is the only thing installed here that
+changes how a session behaves, and `--uninstall` puts it back; what you trade is
+the spinner, and the title while the daemon is down.
+
+Tabs are handed back — same title, no glyph — when a session ends and when the
+daemon exits. A green dot on a tab whose daemon died an hour ago is precisely
+the phantom this project spends its time avoiding. `MFT_TAB_TITLE=0` turns the
+whole thing off.
+
 ## Configuration
 
 Every tunable is in `mft/config.py` and env-overridable. The switches you'd most
@@ -401,6 +462,7 @@ likely want at runtime:
 | `MFT_SLEEP`, `MFT_SLEEP_SECONDS` | board sleep, and when the first stage lands |
 | `MFT_CONTEXT_RING` | ring is a context gauge (`0` = tool-call arc everywhere) |
 | `MFT_SUBAGENT_STACK` | the violet pile in the corner |
+| `MFT_TAB_TITLE`, `MFT_TAB_TITLE_MAX` | the glyph in the terminal tab strip |
 | `MFT_CLOCK_BPM` | MIDI clock; `0` stops sending it |
 | `MFT_BOOT_ANIMATION`, `MFT_CLEAR_ANIMATION`, `MFT_SPAWN_ANIMATION`, `MFT_AMBIENT` | the decorative layers |
 | `MFT_WHITE`, `MFT_DARK_COLOR`, `MFT_DARK_VALUE`, `MFT_RING_DARK_VALUE` | per-unit colour calibration |
