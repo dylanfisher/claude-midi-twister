@@ -176,10 +176,29 @@ TERMINAL_KEYS = (
     "TERM_SESSION_ID",
     "tty",
     "pid",  # the claude process itself: survives /clear, not a restart
+    # The process a session with no terminal at all is running inside; see
+    # :func:`is_hostless`. Weakest of the lot because it is not one of the tab's
+    # names: it identifies this session's events and nothing else, which is why a
+    # session that was handed off into such a process can hold one of these *and*
+    # the pid of the tab it came from without the two contradicting each other.
+    "host",
 )
 
 
 _KEY_RANK = {name: index for index, name in enumerate(TERMINAL_KEYS)}
+
+
+def is_hostless(terminal: dict[str, Any]) -> bool:
+    """Does this payload describe a bare process rather than a terminal tab?
+
+    Both hooks drop every environment variable when they can find no controlling
+    tty, and for the same reason: a session running under Claude Code's own
+    background daemon -- a pre-warmed spare, a fork, a resume, a desktop-app
+    window -- *inherits* the variables of whatever launched that daemon, so
+    reporting them would key the encoder on a stranger's tab. What survives is
+    exactly ``{"pid": ...}``, and that is the tell.
+    """
+    return set(terminal) == {"pid"}
 
 
 def terminal_keys(terminal: dict[str, Any], cwd: str = "") -> list[str]:
@@ -195,6 +214,12 @@ def terminal_keys(terminal: dict[str, Any], cwd: str = "") -> list[str]:
     at its terminal. Matching on the whole set, a single field in common is
     enough to recognise the tab.
     """
+    if is_hostless(terminal):
+        # Under ``host:`` rather than ``pid:``, because that is what it is. A pid
+        # with a tab behind it is one of the tab's names and outlives a `/clear`;
+        # this one names a process the daemon handed a conversation to, and the
+        # tab it came from -- if there was one -- keeps its own.
+        return [f"host:{terminal['pid']}"]
     keys = [f"{name}:{terminal[name]}" for name in TERMINAL_KEYS if terminal.get(name)]
     if not keys and cwd:
         keys = [f"cwd:{cwd}"]
@@ -214,6 +239,13 @@ def merge_terminal(
     different values -- one tab cannot be two ttys, so what we stored describes
     some other tab and the arriving payload is the entire truth about this one.
     """
+    if is_hostless(arriving) and not is_hostless(stored) and stored:
+        # A bare pid is not a description of a tab (:func:`is_hostless`), so it
+        # cannot be the truth about one either: taking it whole would throw away
+        # the tty a press needs and leave the encoder pointing at a pty host with
+        # no window. The session keeps a ``host:`` token for matching, which is
+        # all this payload can honestly contribute.
+        return dict(stored)
     contradicted = any(
         name in stored and stored[name] != value
         for name, value in arriving.items()
@@ -235,6 +267,16 @@ def key_rank(key: str) -> tuple[int, str]:
     a tab exactly until that process exits and the number comes back around.
     """
     return (_KEY_RANK.get(key_name(key), len(TERMINAL_KEYS)), key)
+
+
+def _hostless_keys(keys: Sequence[str]) -> bool:
+    """Is this everything a payload with no terminal behind it could offer?"""
+    return bool(keys) and all(key_name(key) == "host" for key in keys)
+
+
+def _names_tab(session: Session) -> bool:
+    """Does this record hold a token that names a terminal, not just a process?"""
+    return any(key_rank(key)[0] < _KEY_RANK["pid"] for key in session.keys)
 
 
 def best_key(keys: Iterable[str]) -> Optional[str]:
@@ -432,6 +474,60 @@ class SessionTable:
             return None
         return max(candidates, key=lambda s: s.cleared_at or 0.0)
 
+    def _handed_off(
+        self, cwd: str, now: float, exclude: Optional[Session] = None
+    ) -> Optional[Session]:
+        """The tab whose conversation just moved into a process with no terminal.
+
+        Claude Code no longer necessarily runs your session in the process you
+        started: it pre-warms spares under a shared background daemon and hands
+        the conversation to one, under a *new* session id, in a process with no
+        tty. Nothing announces the move. The tab's own encoder therefore freezes
+        on the last state it heard -- dim green, an hour of it -- while the live
+        session lights a second knob that cannot be pressed, because the only
+        token it has is the pid of its host.
+
+        Ancestry cannot repair this: the daemon that owns the spare was spawned by
+        whichever tab happened to start it first, so walking up from the host
+        lands on someone else's terminal. The transcripts carry no lineage
+        either. What is left is the directory and the timing, so those are what
+        this matches on -- the same evidence, and the same narrowness, as
+        :meth:`_cleared_ghost`:
+
+        * the same working directory,
+        * a tab that named itself properly (a token stronger than a bare pid),
+        * with no turn in flight, because a session mid-turn has not gone
+          anywhere -- and a turn whose `Stop` never arrived counts as over once
+          it has stalled, or one missed hook would block the repair for as long
+          as the record lives,
+        * and quiet for less than :data:`~mft.config.HANDOFF_ADOPT_SECONDS`.
+
+        The most recently active such tab wins, since two tabs in one repository
+        are told apart by nothing else here. Being wrong costs a background agent
+        painting on the knob of an idle tab in its own repository, and a press
+        that raises that tab -- which is the near-miss, not a lie. Being right is
+        the difference between the board tracking your session and pointing at
+        where it used to be.
+        """
+        if not cwd:
+            return None
+        candidates = [
+            s
+            for s in self._sessions.values()
+            if s is not exclude
+            and s.cwd == cwd
+            and s.ended_at is None
+            and (
+                s.turn_started_at is None
+                or now - s.last_event_at > config.STALL_SECONDS
+            )
+            and now - s.last_event_at <= config.HANDOFF_ADOPT_SECONDS
+            and _names_tab(s)
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda s: s.last_event_at)
+
     def _evict(self, slot: int) -> None:
         """Drop whatever currently holds ``slot``, keys included."""
         previous = self._slots.get(slot)
@@ -484,6 +580,15 @@ class SessionTable:
                     # arrived may belong to a *different* record -- which means
                     # one tab is on the board twice, and now we can prove it.
                     owner = self._owner(keys)
+                    hostless = _hostless_keys(keys) and not _names_tab(session)
+                    if owner is None and hostless:
+                        # This record was created by an event that could not name
+                        # anything at all -- `notify.sh` beating the hook that
+                        # reads the environment, which it routinely does -- and
+                        # the identity now arriving says it is running in a bare
+                        # process. If a tab here just went quiet, the two are one
+                        # session and this is a second encoder for it.
+                        owner = self._handed_off(session.cwd, now, exclude=session)
                     if owner is not None and owner is not session:
                         session = self._absorb(session, owner)
                     self._bind(session, keys)
@@ -506,6 +611,25 @@ class SessionTable:
                         owner.key,
                     )
                     return owner
+
+            if _hostless_keys(keys):
+                # A new session id whose only name is the process it runs in, in
+                # a directory whose tab just went quiet: the same conversation,
+                # moved. Keep the tab's encoder.
+                tab = self._handed_off(cwd, now)
+                if tab is not None:
+                    self._rekey(tab, session_id)
+                    tab.cwd = cwd or tab.cwd
+                    tab.last_event_at = now
+                    self._bind(tab, keys)
+                    log.info(
+                        "session %s adopted encoder %d (%s): handed off into a "
+                        "process with no terminal of its own",
+                        tab.short_id,
+                        tab.slot + 1,
+                        tab.key,
+                    )
+                    return tab
 
             # Only for an event with nothing to go on. One that named a tab and
             # matched no slot is a new tab, whatever else is going on in this

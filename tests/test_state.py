@@ -227,6 +227,141 @@ class ClearedSlots(unittest.TestCase):
         self.assertIsNot(table.ensure("new", "/tmp/p"), old)
 
 
+class HandedOff(unittest.TestCase):
+    """Claude Code hands a conversation to a pre-warmed process under its own
+    background daemon: new session id, no tty, and an environment inherited from
+    whichever tab started that daemon. Nothing announces the move, so the tab's
+    encoder would freeze on the last state it heard while the live session lit a
+    second knob nobody can press."""
+
+    TERM = {"TERM_PROGRAM": "Apple_Terminal", "tty": "/dev/ttys005", "pid": "26655"}
+    HOST = {"pid": "27843"}
+
+    def quiet_tab(self):
+        """A tab at rest: it finished a turn a moment ago and went silent."""
+        table = SessionTable()
+        tab = table.ensure("old", "/tmp/p", self.TERM)
+        tab.terminal = dict(self.TERM)
+        apply_event(tab, {"hook_event_name": "Stop"})
+        return table, tab
+
+    def test_a_bare_pid_is_not_a_tab(self):
+        self.assertEqual(terminal_keys(self.HOST), ["host:27843"])
+        self.assertEqual(terminal_keys({"pid": "9", "tty": "/dev/ttys004"})[-1], "pid:9")
+
+    def test_the_moved_session_keeps_the_tab_s_encoder(self):
+        table, tab = self.quiet_tab()
+        moved = table.ensure("new", "/tmp/p", self.HOST)
+        self.assertIs(moved, tab)
+        self.assertEqual(moved.session_id, "new")
+        self.assertEqual(moved.slot, 0)
+        self.assertEqual(len(table.all()), 1, "one tab, one encoder")
+        # The tab's own pid is not contradicted by the host's, so the record can
+        # be both the session that is running and the terminal it is shown in.
+        self.assertIn("pid:26655", moved.keys)
+        self.assertIn("host:27843", moved.keys)
+        self.assertEqual(moved.key, "tty:/dev/ttys005", "still names the tab")
+
+    def test_the_host_s_events_land_on_that_encoder_too(self):
+        table, tab = self.quiet_tab()
+        table.ensure("new", "/tmp/p", self.HOST)
+        self.assertIs(table.ensure("new", "/tmp/p", self.HOST), tab)
+        # ...and so does the tab, if it starts speaking for itself again.
+        self.assertIs(table.ensure("newer", "/tmp/p", self.TERM), tab)
+        self.assertEqual(len(table.all()), 1)
+
+    def test_the_tab_stays_focusable(self):
+        # The whole risk of merging these: a bare pid taken as the truth about
+        # the terminal would leave the encoder pointing at a pty host with no
+        # window, so a press would raise nothing.
+        self.assertEqual(merge_terminal(self.TERM, self.HOST), self.TERM)
+        # Two descriptions of the *same* bare process still replace each other.
+        self.assertEqual(merge_terminal({"pid": "1"}, {"pid": "2"}), {"pid": "2"})
+
+    def test_a_tab_mid_turn_has_not_handed_off(self):
+        table = SessionTable()
+        busy = table.ensure("old", "/tmp/p", self.TERM)
+        apply_event(busy, {"hook_event_name": "UserPromptSubmit"})
+        moved = table.ensure("new", "/tmp/p", self.HOST)
+        self.assertIsNot(moved, busy)
+        self.assertEqual(len(table.all()), 2)
+
+    def test_a_stalled_turn_counts_as_over(self):
+        # `Stop` is the only thing that ends a turn, and it can go missing. A
+        # record stuck mid-turn forever would never be repairable.
+        table = SessionTable()
+        busy = table.ensure("old", "/tmp/p", self.TERM)
+        apply_event(busy, {"hook_event_name": "UserPromptSubmit"})
+        busy.last_event_at = time.monotonic() - config.STALL_SECONDS - 1
+        self.assertIs(table.ensure("new", "/tmp/p", self.HOST), busy)
+
+    def test_the_window_closes(self):
+        table, tab = self.quiet_tab()
+        tab.last_event_at = time.monotonic() - config.HANDOFF_ADOPT_SECONDS - 1
+        self.assertIsNot(table.ensure("new", "/tmp/p", self.HOST), tab)
+
+    def test_a_session_with_no_tab_in_its_directory_gets_its_own_encoder(self):
+        # The desktop app, which has no terminal at all and never did.
+        table = SessionTable()
+        table.ensure("old", "/tmp/p", self.TERM)
+        app = table.ensure("new", "/tmp/q", self.HOST)
+        self.assertEqual(app.slot, 1)
+        self.assertEqual(app.key, "host:27843")
+
+    def test_the_identity_may_arrive_after_the_encoder_did(self):
+        # `notify.sh` reports nothing at all for a session with no tty, and it
+        # routinely beats the hook that reports the pid, so the moved session can
+        # already have a knob of its own by the time anything can be matched.
+        table, tab = self.quiet_tab()
+        blind = table.ensure("new", "/tmp/p")
+        self.assertIsNot(blind, tab, "nothing to go on yet")
+        merged = table.ensure("new", "/tmp/p", self.HOST)
+        self.assertEqual(len(table.all()), 1)
+        self.assertEqual(merged.session_id, "new")
+        self.assertEqual(merged.slot, 0, "on the encoder the tab was using")
+        self.assertEqual(merged.terminal, self.TERM, "and focusable")
+
+    def test_the_reported_failure_end_to_end(self):
+        """Knob 3 dim green while the session it is showing works on knob 6."""
+        from mft.daemon import Visualizer
+        from mft.twister import NullTwister
+
+        vis = Visualizer(NullTwister())
+        for name in ("SessionStart", "UserPromptSubmit", "Stop"):
+            vis.handle_event(
+                {
+                    "session_id": "old",
+                    "cwd": "/tmp/p",
+                    "hook_event_name": name,
+                    "terminal": self.TERM,
+                }
+            )
+        # The conversation moves into a spare process, which announces itself and
+        # then gets to work.
+        vis.handle_event(
+            {
+                "session_id": "new",
+                "cwd": "/tmp/p",
+                "hook_event_name": "SessionStart",
+                "terminal": self.HOST,
+            }
+        )
+        vis.handle_event(
+            {
+                "session_id": "new",
+                "cwd": "/tmp/p",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "terminal": self.HOST,
+            }
+        )
+        sessions = vis.table.all()
+        self.assertEqual(len(sessions), 1, "one tab, one encoder")
+        self.assertEqual(sessions[0].session_id, "new")
+        self.assertEqual(sessions[0].state, "working", "and it is the live state")
+        self.assertEqual(sessions[0].terminal["tty"], "/dev/ttys005")
+
+
 class NoOrphans(unittest.TestCase):
     """The fallback sweep. Whatever gets past `ensure`, a tab may not hold two
     encoders -- and an orphaned record is invisible from across the room, so it

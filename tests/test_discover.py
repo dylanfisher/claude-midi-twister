@@ -285,6 +285,20 @@ class Orphans(unittest.TestCase):
         session.keys.update({"pid:8", "pid:7"})
         self.assertEqual(self.sweep(), [])
 
+    def test_the_host_of_a_handed_off_session_counts_as_alive(self):
+        """A session handed off into a process under Claude Code's background
+        daemon is described by its tab's terminal and running somewhere else.
+        The tab's own claude exiting is not that session ending -- consulting
+        only the terminal reaped a working encoder."""
+        session = self.add("moved", pid="8", tty="/dev/ttys001")
+        session.keys.add("host:7")
+        self.assertEqual(self.sweep(), [])
+
+    def test_a_host_that_is_gone_too_is_still_a_death(self):
+        session = self.add("moved", pid="8", tty="/dev/ttys001")
+        session.keys.add("host:9")
+        self.assertEqual(self.sweep(), ["moved"])
+
     def test_the_terminal_settles_a_stale_key(self):
         session = self.add("restarted", pid="7", tty="/dev/ttys001")
         session.keys.add("pid:8")  # what it was before the restart

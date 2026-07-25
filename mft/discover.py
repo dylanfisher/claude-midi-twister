@@ -341,10 +341,20 @@ def _recorded_pids(session: Session) -> list[int]:
     the same tab can hold the pid it used to be as well as the one it is. Any
     one of them alive is enough, which is why the caller asks whether they are
     all dead rather than whether one is.
+
+    A ``host:`` token is added to whichever of those two answers, never instead
+    of it: a session handed off into a process under Claude Code's background
+    daemon (:meth:`mft.state.SessionTable._handed_off`) is described by its
+    tab's terminal and running in someone else's process, so the record names
+    two live things and the death of the tab's own is not the session ending.
+    Leaving it out reaped the encoder of a working session the moment the
+    terminal's claude exited -- the exact lie this function exists to prevent,
+    through the other door.
     """
     raw = [session.terminal.get("pid")] if session.terminal.get("pid") else []
     if not raw:
         raw = [key.split(":", 1)[1] for key in session.keys if key.startswith("pid:")]
+    raw += [key.split(":", 1)[1] for key in session.keys if key.startswith("host:")]
     pids = []
     for value in raw:
         try:

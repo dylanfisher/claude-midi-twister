@@ -846,6 +846,20 @@ CLEAR_DEBOUNCE_SECONDS = 5.0
 #: same directory a minute later is still a new session.
 CLEAR_ADOPT_SECONDS = 30.0
 
+#: How long after a tab's session goes quiet a session running in a process with
+#: no terminal of its own, in that same directory, is taken for its continuation
+#: rather than given an encoder of its own; see
+#: :meth:`mft.state.SessionTable._handed_off`. Claude Code hands a conversation
+#: off to a pre-warmed spare under its background daemon, which has no tty and
+#: inherits some other tab's environment, so the new session id arrives naming
+#: nothing but a pid and the tab's own encoder would otherwise sit frozen on the
+#: last state it heard for the full `SESSION_TTL_SECONDS`. Longer than
+#: `CLEAR_ADOPT_SECONDS` because the handoff is not announced by anything and the
+#: gap either side of it is a human's, not a hook's; short enough that a
+#: background agent started in a repo you have not touched for a minute still
+#: gets a knob of its own.
+HANDOFF_ADOPT_SECONDS = 90.0
+
 # --- Subagents --------------------------------------------------------------
 # Subagents are not sessions and must never be mistaken for one. They own no
 # encoder of their own, they answer only their parent's gesture, and they vanish

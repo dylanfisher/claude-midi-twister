@@ -197,6 +197,40 @@ session no longer has. Other end reasons (`logout`, `prompt_input_exit`,
 The moment gets a brief white ring wipe — the agent forgot everything.
 `MFT_CLEAR_ANIMATION=0` turns it off.
 
+### When the session moves out of the tab
+
+Claude Code doesn't necessarily run your session in the process you started. It
+pre-warms spare processes under a shared background daemon and hands a
+conversation to one of them — same tab, same conversation, **new session id, no
+tty**. This is the one that looks worst on the board: the tab's knob sits frozen
+on the last state it heard, decaying to dim green, while the session that is
+actually running lights a second knob you can't press.
+
+Nothing announces the move and nothing you can read reconstructs it. The hooks
+deliberately report *no* environment when they find no tty — a process under that
+daemon inherits the variables of whichever tab happened to start it, so quoting
+them would key the encoder on a stranger's tab — which leaves a bare pid. Walking
+up the process tree lands on that same first tab, and the transcripts carry no
+lineage between the two session ids.
+
+What's left is the directory and the timing, so that's what the handoff is
+matched on. A session that names nothing but a pid, in the directory of a tab
+that named itself properly, has no turn in flight and went quiet less than
+`HANDOFF_ADOPT_SECONDS` ago, is taken for that tab's conversation continuing and
+adopts its encoder. The pid is recorded as a `host:` token rather than a `pid:`
+one — it names a process, not one of the tab's names — so the tab keeps its own
+tty and pid, and pressing the knob still raises the right window.
+
+One record then names two live processes, and the orphan sweep below wants
+either of them alive: the tab's own `claude` exiting is a handoff completing,
+not a session ending, and reaping on it alone put out the encoder of a session
+that was working.
+
+Being wrong here costs a background agent painting on the knob of an idle tab in
+its own repository, and a press that raises that tab: the near miss, not a lie.
+A session with no tab in its directory — the desktop app — still gets an encoder
+of its own and the ancestor focus adapter raises the app it lives in.
+
 ## Sessions that predate the daemon
 
 Hooks only push, and nothing in Claude Code answers questions, so a session
