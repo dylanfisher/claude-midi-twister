@@ -413,7 +413,7 @@ BOOT_WORD = "CLAUDE"
 #: letter strikes in at full brightness and then decays to black over a full
 #: second before the next one strikes, which is both what makes 16 pixels
 #: resolve into a glyph and what separates one letter from the next.
-BOOT_FADE_SECONDS = 1.0
+BOOT_FADE_SECONDS = 0.75
 #: Time at full before the decay starts. Zero: the strike *is* the punctuation,
 #: and a plateau on top of it only makes the word longer, not more legible.
 BOOT_HOLD_SECONDS = 0.0
