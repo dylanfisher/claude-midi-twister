@@ -502,6 +502,10 @@ class Visualizer:
             # or the port stopped taking writes and is waiting to be reopened.
             "suspended": self._suspended.is_set(),
             "port_failing": self.device.failing(),
+            # Terminals macOS has refused us Automation access to. Non-empty
+            # means press-to-focus is raising apps rather than tabs, and the
+            # remedy is a permission, not a code change.
+            "focus_denied": focus_mod.denied_apps(),
             # Which sixteen of the sixty-four encoders are actually on the front
             # panel. The other reason a board looks empty: everything is on a bank
             # you are not looking at. Compare against each session's own `bank`.

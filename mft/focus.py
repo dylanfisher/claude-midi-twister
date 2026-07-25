@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -44,6 +45,40 @@ def _run(cmd: list[str], timeout: float = 4.0) -> bool:
         log.warning("focus command %s exited %d: %s", cmd[0], proc.returncode, proc.stderr.strip())
         return False
     return True
+
+
+_NOT_AUTHORISED = re.compile(r"Not authorized to send Apple events to ([^.]+)\.")
+
+#: Apps we have already explained a TCC denial for. Nothing changes between one
+#: press and the next, so the explanation is worth saying once at a level you
+#: will notice rather than forty times as a warning you won't.
+_denied: set[str] = set()
+
+
+def denied_apps() -> list[str]:
+    """Terminals macOS has refused to let us drive, for `/status`.
+
+    Worth surfacing because the symptom is so much milder than the cause: every
+    tab-level adapter here is AppleScript, so a denial doesn't break the press,
+    it just quietly demotes it to the chain's tail -- "raised something" instead
+    of "raised your tab". Without this you'd read the logs to find that out.
+    """
+    return sorted(_denied)
+
+
+def _authorisation_error(stderr: str) -> str:
+    """The app we were refused, when macOS was the one refusing. "" otherwise.
+
+    ``-1743`` is TCC talking, not AppleScript: the *responsible* process for
+    the daemon -- the terminal it was started from, or its app bundle -- has no
+    Automation grant for the terminal being raised. Nothing about the script is
+    wrong and nothing about it can be fixed from in here, which is why this
+    short-circuits the retry: a second attempt is refused exactly as fast.
+    """
+    if "-1743" not in stderr:
+        return ""
+    match = _NOT_AUTHORISED.search(stderr)
+    return match.group(1).strip() if match else "that terminal"
 
 
 def _osascript(script: str, retries: int = 1) -> str:
@@ -71,6 +106,20 @@ def _osascript(script: str, retries: int = 1) -> str:
             return ""
         if proc.returncode == 0:
             return proc.stdout.strip()
+        refused = _authorisation_error(proc.stderr)
+        if refused:
+            if refused not in _denied:
+                _denied.add(refused)
+                log.error(
+                    "macOS won't let this daemon control %s, so a press can only "
+                    "raise the app -- never the tab. Allow it under System "
+                    "Settings > Privacy & Security > Automation, beneath "
+                    "whichever app started the daemon (the terminal you ran it "
+                    "in, or Claude Twister); `tccutil reset AppleEvents` brings "
+                    "the prompt back if the entry isn't there to toggle.",
+                    refused,
+                )
+            return ""
         log.warning(
             "osascript exited %d%s: %s",
             proc.returncode,
