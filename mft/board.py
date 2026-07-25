@@ -642,18 +642,27 @@ def arbitrate_motion(board: list[Cell], sessions: Sequence[Session]) -> None:
         )
 
 
-def stack_subagents(
-    board: list[Cell], sessions: Sequence[Session], claimed: set[int]
-) -> None:
-    """Pile in-flight subagents into the bottom-right of their parent's bank.
+def subagent_owners(
+    sessions: Sequence[Session],
+    claimed: Iterable[int] = (),
+    slot_count: int = config.SLOT_COUNT,
+) -> dict[int, Session]:
+    """Which parent each piled subagent slot belongs to.
 
-    They get a hue used for nothing else, a stub ring and the slowest pulse on
-    the board, because the one thing you must never do is mistake a subagent for
-    a session: it owns no encoder, answers no gesture, and disappears when the
-    parent's turn ends. Anything already claimed -- a real session, another
-    parent's subagents -- is skipped rather than trampled, so the pile shrinks
+    Placement only -- no `Cell` is built here -- because the answer is wanted in
+    two places that must not disagree: the painter below, and the daemon
+    resolving a press. Anything already claimed, a real session or another
+    parent's subagents, is skipped rather than trampled, so the pile shrinks
     into whatever room is left instead of stealing someone's slot.
+
+    The mapping is the *parent*, and it can never be anything finer. A subagent
+    has no identity beyond an opaque key in ``subagents_in_flight`` -- no cwd,
+    no tty, no pid -- and it wouldn't help if it did: a subagent runs inside its
+    parent's terminal, so the only window a press could ever raise is the one
+    the parent is already sitting in.
     """
+    taken = set(claimed)
+    owners: dict[int, Session] = {}
     # Deterministic across frames: parents are served in encoder order, so a
     # subagent doesn't hop to a different knob because a dict reordered.
     for session in sorted(sessions, key=lambda s: s.slot):
@@ -663,16 +672,32 @@ def stack_subagents(
         free = (
             s
             for s in spawn_order(bank_of(session.slot))
-            if s not in claimed and s < len(board)
+            if s not in taken and s < slot_count
         )
         for slot in islice(free, count):
-            claimed.add(slot)
-            board[slot] = Cell(
-                config.SUBAGENT_COLOR,
-                config.SUBAGENT_ANIM,
-                config.SUBAGENT_RING,
-                config.SUBAGENT_BRIGHTNESS,
-            )
+            taken.add(slot)
+            owners[slot] = session
+    return owners
+
+
+def stack_subagents(
+    board: list[Cell], sessions: Sequence[Session], claimed: set[int]
+) -> None:
+    """Pile in-flight subagents into the bottom-right of their parent's bank.
+
+    They get a hue used for nothing else, a stub ring and no animation at all,
+    because the one thing you must never do is mistake a subagent for a session:
+    it owns no encoder of its own, it answers only the one gesture its parent
+    would have answered, and it disappears when the parent's turn ends.
+    """
+    for slot in subagent_owners(sessions, claimed, len(board)):
+        claimed.add(slot)
+        board[slot] = Cell(
+            config.SUBAGENT_COLOR,
+            config.SUBAGENT_ANIM,
+            config.SUBAGENT_RING,
+            config.SUBAGENT_BRIGHTNESS,
+        )
 
 
 class Sleep:

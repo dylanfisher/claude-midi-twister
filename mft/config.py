@@ -425,10 +425,10 @@ TAB_GLYPHS = {
 TAB_UNSUPERVISED_GLYPH = "\N{LARGE PURPLE CIRCLE}"
 
 #: Repaint at most this often. Nothing here is animated and a tab strip is not
-#: something you watch, so this runs two orders of magnitude slower than the
+#: something you watch, so this runs much slower than the
 #: board -- and even then it usually writes nothing, because the composed title
 #: is compared against the last one sent.
-TAB_POLL_SECONDS = 5.0
+TAB_POLL_SECONDS = 2.0
 
 #: Titles are truncated to this many characters before the glyph goes on. Tab
 #: strips truncate anyway; doing it here keeps the escape sequence short enough
@@ -668,13 +668,19 @@ CLEAR_ADOPT_SECONDS = 30.0
 
 # --- Subagents --------------------------------------------------------------
 # Subagents are not sessions and must never be mistaken for one. They own no
-# encoder, they answer no gesture, and they vanish when the parent's turn ends.
-# So they get their own corner of the board and their own hue rather than
-# borrowing the parent's: they stack up from the bottom-right of the parent's
-# bank, filling backwards, and the pile grows toward the sessions rather than
-# through them. Parallelism is physically visible and then collapses back.
+# encoder of their own, they answer only their parent's gesture, and they vanish
+# when the parent's turn ends. So they get their own corner of the board and
+# their own hue rather than borrowing the parent's: they stack up from the
+# bottom-right of the parent's bank, filling backwards, and the pile grows
+# toward the sessions rather than through them. Parallelism is physically
+# visible and then collapses back.
 
 SUBAGENT_STACK = _flag("MFT_SUBAGENT_STACK", True)
+#: Whether a press on a violet dot does what a press on its parent would: raise
+#: the parent's tab, hold to peek at the parent. There is nothing finer to aim
+#: at -- a subagent runs inside its parent's terminal -- so the choice is only
+#: between a live target and a dead knob. Off, the pile is inert paint again.
+SUBAGENT_PRESS = _flag("MFT_SUBAGENT_PRESS", True)
 #: Tools whose call *is* a subagent, so a PreToolUse for one counts as a spawn.
 #: SubagentStart says the same thing more directly, but it is a recent hook and
 #: a settings file installed before it exists reports no subagents whatsoever --

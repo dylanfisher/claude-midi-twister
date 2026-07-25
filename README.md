@@ -352,9 +352,19 @@ ones after it slide up to close the gap.
 
 Subagents are not sessions and never look like one: violet — a hue used for
 nothing else — held at a steady mid brightness, with a stub ring. They own no
-encoder, answer no gesture, never take a claimed slot, and collapse back when
-the parent's turn ends. The stub ring is deliberate: a subagent has no context
+encoder of their own, never take a claimed slot, and collapse back when the
+parent's turn ends. The stub ring is deliberate: a subagent has no context
 reading of its own. `MFT_SUBAGENT_STACK=0` turns them off.
+
+Pressing one raises the **parent's** tab, and holding one peeks at the parent —
+the same two gestures the parent's own encoder answers. There is nothing finer
+to aim at and there never will be: a subagent's whole identity here is an opaque
+key on the parent, no subagent hook event carries a terminal, and it would not
+matter if one did, because a subagent runs inside the parent's terminal. The
+window a press could raise is the window the parent is already sitting in. So
+the choice was only ever between a live target and four dead knobs — and a
+fanned-out session is exactly the one you most want a big target for.
+`MFT_SUBAGENT_PRESS=0` makes the pile inert paint again.
 
 They used to breathe, on the slowest pulse the board had. That was a mistake for
 a reason worth writing down: channel 3 carries an animation *or* a brightness

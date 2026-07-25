@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -987,6 +988,64 @@ class Board(unittest.TestCase):
         # subagent can never compete with one for the eye.
         self.assertLess(cell.rgb_anim, config.SLOW_ANIM)
 
+    def test_every_dot_in_the_pile_knows_which_parent_it_belongs_to(self):
+        """The daemon resolves a press through this, so it has to agree with
+        the paint exactly -- a dot owned by nobody is a knob that does nothing
+        while looking identical to one that works."""
+        last = config.ENCODERS_PER_BANK - 1
+        parents = {}
+        for name, count in (("a", 1), ("b", 2)):
+            parent = self.table.ensure(name, f"/tmp/{name}", {"tty": f"/dev/{name}"})
+            parent.state = "working"
+            set_subagents(parent, count)
+            parents[name] = parent
+        sessions = self.table.all()
+        claimed = {s.slot for s in sessions}
+        owners = board.subagent_owners(sessions, claimed)
+        # Served in encoder order from the corner backwards: a's one dot takes
+        # the corner, b's two grow back from it.
+        self.assertEqual(
+            owners,
+            {
+                last: parents["a"],
+                last - 1: parents["b"],
+                last - 2: parents["b"],
+            },
+        )
+        self.assertEqual(
+            sorted(owners), self.subagent_slots(board.compose(sessions, 1.0))
+        )
+
+    def test_nobody_owns_a_slot_that_a_session_owns(self):
+        last = config.ENCODERS_PER_BANK - 1
+        parent = self.table.ensure("a", "/tmp/p")
+        parent.state = "working"
+        set_subagents(parent, 2)
+        squatter = self.table.ensure("b", "/tmp/q", {"tty": "/dev/b"})
+        squatter.slot = last
+        squatter.state = "working"
+        sessions = self.table.all()
+        owners = board.subagent_owners(sessions, {s.slot for s in sessions})
+        self.assertEqual(sorted(owners), [last - 2, last - 1])
+
+    def test_no_subagents_in_flight_is_an_empty_map(self):
+        session = self.table.ensure("a", "/tmp/p")
+        self.assertEqual(board.subagent_owners([session], {session.slot}), {})
+
+    def test_painting_the_pile_claims_it(self):
+        """`compose` freezes `claimed` for the overlays and checks it before
+        breathing, so a painted slot that stayed unclaimed would be paint an
+        overlay felt free to write over."""
+        parent = self.table.ensure("a", "/tmp/p")
+        parent.state = "working"
+        set_subagents(parent, 2)
+        cells = board.blank_board()
+        claimed = {parent.slot}
+        board.stack_subagents(cells, [parent], claimed)
+        painted = set(self.subagent_slots(cells))
+        self.assertTrue(painted)
+        self.assertTrue(painted <= claimed)
+
     def test_an_empty_board_breathes_rather_than_going_dark(self):
         lit = [c for c in board.compose([], 1.0) if c.brightness > 0]
         self.assertTrue(lit)
@@ -1806,6 +1865,62 @@ class NothingAnswersBack(unittest.TestCase):
         from mft.daemon import Visualizer
 
         self.assertFalse(hasattr(Visualizer, "handle_permission"))
+
+
+class PressingASubagent(unittest.TestCase):
+    """A violet dot is a second target for its parent's tab.
+
+    There is nothing finer to aim at: a subagent runs inside its parent's
+    terminal, so the parent is the only window a press could raise -- and the
+    alternative was four dead knobs on the busiest session on the board."""
+
+    def setUp(self):
+        from mft.daemon import Visualizer
+        from mft.twister import NullTwister
+
+        self.vis = Visualizer(NullTwister())
+        self.focused = []
+        self.vis.focus_session = self.focused.append
+        self.parent = self.vis.table.ensure("parent", "/tmp/p")
+        self.parent.state = "working"
+        set_subagents(self.parent, 1)
+        self.pile = config.ENCODERS_PER_BANK - 1
+
+    def press(self, slot: int) -> None:
+        self.vis._on_switch(slot, 127)
+        self.vis._on_switch(slot, 0)
+
+    def test_a_press_on_the_pile_raises_the_parents_tab(self):
+        self.press(self.pile)
+        self.assertEqual(self.focused, [self.parent])
+
+    def test_a_hold_peeks_at_the_parent_not_the_knob_you_held(self):
+        self.vis._on_switch(self.pile, 127)
+        peek = self.vis._peeks[self.pile]
+        self.assertIs(peek.session, self.parent)
+        self.vis._on_switch(self.pile, 0)
+        self.assertTrue(peek.done(0.0), "the peek is spring-loaded")
+
+    def test_a_subagent_that_finishes_mid_press_still_raises_the_parent(self):
+        # The pile is recomputed every frame, so the dot under your finger can
+        # be gone by the time you let go. The aim was taken on the way down.
+        self.vis._on_switch(self.pile, 127)
+        set_subagents(self.parent, 0)
+        self.vis._on_switch(self.pile, 0)
+        self.assertEqual(self.focused, [self.parent])
+
+    def test_a_dark_encoder_is_still_nothing(self):
+        self.press(self.pile - 1)
+        self.assertEqual(self.focused, [])
+
+    def test_the_pile_is_inert_when_the_gesture_is_turned_off(self):
+        with mock.patch.object(config, "SUBAGENT_PRESS", False):
+            self.press(self.pile)
+        self.assertEqual(self.focused, [])
+
+    def test_a_press_on_the_parent_is_unchanged(self):
+        self.press(self.parent.slot)
+        self.assertEqual(self.focused, [self.parent])
 
 
 class SubagentRouting(unittest.TestCase):

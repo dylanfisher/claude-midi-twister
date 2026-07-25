@@ -21,6 +21,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Optional
 
 from . import (
     board as board_mod,
@@ -191,6 +192,11 @@ class Visualizer:
         #: every hook event and every press; read once per frame.
         self._sleep = board_mod.Sleep(time.monotonic())
         self._press_started: dict[int, float] = {}
+        #: What each held encoder was aimed at when it went down. Resolved once,
+        #: on the press, because a subagent's knob is only its parent's for as
+        #: long as the pile stands: a subagent that finishes mid-press must
+        #: still raise the tab you were reaching for, not nothing at all.
+        self._press_targets: dict[int, Session] = {}
         self._overlays: list[board_mod.Overlay] = []
         #: Keyed by session, not slot: the board compacts under sessions that
         #: end, so a slot is not a stable handle for anything long-lived.
@@ -519,8 +525,27 @@ class Visualizer:
         # A turn is otherwise deliberately ignored: the board is a display, not
         # a control surface -- see :meth:`Twister.forget_rings`.
 
-    def _on_switch(self, slot: int, value: int) -> None:
+    def _press_target(self, slot: int) -> Optional[Session]:
+        """The session a press on this encoder is aimed at, if any.
+
+        Usually the one that owns the slot. Failing that it may be a subagent's
+        knob, and a subagent is not a thing you can raise -- it runs inside its
+        parent's terminal, so the parent is both the only answer and the right
+        one. The pile is recomputed here rather than remembered from the last
+        frame: :func:`board.compose` is pure and keeps nothing, and this runs
+        once per press rather than thirty times a second.
+        """
         session = self.table.by_slot(slot)
+        if session is not None:
+            return session
+        if not (config.SUBAGENT_STACK and config.SUBAGENT_PRESS):
+            return None
+        sessions = self.table.all()
+        claimed = {s.slot for s in sessions if 0 <= s.slot < config.SLOT_COUNT}
+        return board_mod.subagent_owners(sessions, claimed).get(slot)
+
+    def _on_switch(self, slot: int, value: int) -> None:
+        session = self._press_target(slot)
         now = time.monotonic()
         # The wake for this landed in :meth:`on_midi`, and it matters here: a
         # press forgives an unattended session, and a board full of nothing but
@@ -530,14 +555,18 @@ class Visualizer:
         if value >= 64:  # press down
             self._press_started[slot] = now
             if session is not None:
+                self._press_targets[slot] = session
                 # Hold to peek. The overlay goes up now but only paints once the
                 # press has lasted HOLD_SECONDS, and it comes down on release --
                 # a spring-loaded modal view, not a mode you can get stuck in.
+                # Held on a subagent's knob it paints the *parent's* bank, which
+                # is the honest answer to what you were asking by holding it.
                 peek = board_mod.PeekOverlay(session, now)
                 self._peeks[slot] = peek
                 self.push_overlay(peek)
             return
 
+        session = self._press_targets.pop(slot, None)
         started = self._press_started.pop(slot, None)
         peek = self._peeks.pop(slot, None)
         if peek is not None:
