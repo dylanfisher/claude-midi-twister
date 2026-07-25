@@ -432,6 +432,54 @@ class SpawnOverlay(Overlay):
         board[slot] = Cell(color, config.ANIM_NONE, int(ring), brightness)
 
 
+class ClearOverlay(Overlay):
+    """`/clear`: the agent on this encoder just forgot everything.
+
+    The ring strikes white and unwinds to nothing, then hands the encoder back
+    to a steady state that is by now an idle pip with an empty gauge. White on a
+    dark RGB is the boot vocabulary -- it is what this device does when it is
+    saying something that is not a status, and forgetting is exactly that.
+
+    Deliberately the same family as :class:`CompactOverlay` and deliberately not
+    the same gesture: compaction drains the arc and *refills* it, because the
+    agent keeps what mattered. This one drains and stops.
+    """
+
+    def __init__(
+        self,
+        session: Session,
+        started_at: float,
+        duration: float = config.CLEAR_SECONDS,
+    ) -> None:
+        #: The session, not its slot: the id on this slot changes in the middle
+        #: of the very event being animated.
+        self.session = session
+        self.started_at = started_at
+        self.duration = max(0.01, duration)
+
+    def done(self, now: float) -> bool:
+        return now - self.started_at >= self.duration
+
+    def apply(self, board: list[Cell], now: float, claimed=frozenset()) -> None:
+        u = (now - self.started_at) / self.duration
+        if not 0.0 <= u < 1.0:
+            return
+        slot = self.session.slot
+        if not 0 <= slot < len(board):
+            return
+        under = board[slot]
+
+        fill = 1.0 - _smoothstep(min(1.0, u / config.CLEAR_SETTLE))
+        # Same handover as the spawn strike: brightness, ring and hue all arrive
+        # at whatever is underneath, so the encoder is seen becoming its new
+        # steady state rather than the wipe cutting out and green appearing.
+        settle = _smoothstep(max(0.0, u - config.CLEAR_SETTLE) / (1 - config.CLEAR_SETTLE))
+        ring = 127 * fill + (under.ring - 127 * fill) * settle
+        brightness = 1.0 + (under.brightness - 1.0) * settle
+        color = under.color if settle > 0.5 else None
+        board[slot] = Cell(color, config.ANIM_NONE, int(ring), brightness)
+
+
 class CompactOverlay(Overlay):
     """Compaction, made visible: the arc drains to zero, sits desaturated for a
     beat, then refills.

@@ -63,6 +63,11 @@ NOTIFY_EVENTS = [
     ("SubagentStop", "*"),
     ("Stop", None),
     ("StopFailure", None),
+    # Deliberately unmatched. `SessionEnd` matches on the *reason* a session
+    # ended, and `"matcher": "clear"` would install a hook that fires on `/clear`
+    # and nothing else. We want every ending, and the reason is in the payload:
+    # one hook, and the branch lives in `state.apply_event` where the difference
+    # between "the tab is still there" and "the session is gone" is meaningful.
     ("SessionEnd", None),
 ]
 

@@ -317,6 +317,132 @@ class StateMachine(unittest.TestCase):
         self.assertEqual(self.session.state, "thinking")
 
 
+class Clearing(unittest.TestCase):
+    """`/clear` has no hook of its own. It arrives as a *pair* -- SessionEnd
+    with reason `clear`, then SessionStart with source `clear` and a brand new
+    session id in the same tab -- and the encoder has to sit still through it."""
+
+    TERM = {"TMUX_PANE": "%3"}
+
+    def visualizer(self):
+        from mft.daemon import Visualizer
+        from mft.twister import NullTwister
+
+        return Visualizer(NullTwister())
+
+    def start(self, vis, sid, **kw):
+        return vis.handle_event(
+            {
+                "session_id": sid,
+                "hook_event_name": "SessionStart",
+                "cwd": "/tmp/p",
+                "terminal": self.TERM,
+                **kw,
+            }
+        )
+
+    def end(self, vis, sid, reason):
+        return vis.handle_event(
+            {"session_id": sid, "hook_event_name": "SessionEnd", "reason": reason}
+        )
+
+    def test_clearing_keeps_the_encoder_and_the_session_that_owns_it(self):
+        vis = self.visualizer()
+        self.start(vis, "old")
+        other = vis.table.ensure("other", "/tmp/q", {"TMUX_PANE": "%9"})
+        first = vis.table.get("old")
+        first.turn_count = 4
+
+        self.end(vis, "old", "clear")
+        self.assertIsNone(first.ended_at, "a /clear is not the end of anything")
+        self.assertEqual(first.slot, 0, "and it does not move")
+        self.assertEqual(other.slot, 1)
+
+        self.start(vis, "new", source="clear")
+        session = vis.table.get("new")
+        self.assertIs(session, first)
+        self.assertEqual(session.slot, 0)
+        self.assertEqual(len(vis.table.all()), 2, "one tab, one encoder")
+        self.assertEqual(session.turn_count, 4, "the slot's history is the tab's")
+
+    def test_clearing_resets_what_the_agent_forgot(self):
+        vis = self.visualizer()
+        self.start(vis, "old")
+        session = vis.table.get("old")
+        session.tool_history.extend(["Read", "Bash"])
+        session.arc, session.tool_calls, session.context_tokens = 5, 9, 120_000
+        session.subagents_in_flight.add("agent:x")
+        session.alert = True
+        session.attention_since = 0.0
+
+        self.end(vis, "old", "clear")
+        self.assertEqual(list(session.tool_history), [])
+        self.assertEqual((session.arc, session.tool_calls), (0, 0))
+        self.assertEqual(session.subagents, 0)
+        self.assertEqual(session.context_tokens, 0, "the gauge is not the tab's")
+        self.assertFalse(session.alert)
+        self.assertIsNone(session.attention_since)
+        self.assertEqual(session.state, "idle")
+
+    def test_a_real_ending_still_releases(self):
+        for reason in ("logout", "prompt_input_exit", "other", ""):
+            with self.subTest(reason=reason):
+                vis = self.visualizer()
+                self.start(vis, "s")
+                self.end(vis, "s", reason)
+                session = vis.table.get("s")
+                self.assertIsNotNone(session.ended_at)
+                self.assertEqual(session.state, "ended")
+
+    def test_the_pair_wipes_once_however_it_is_ordered(self):
+        def wipes(vis):
+            return [
+                o for o in vis._live_overlays(0.0) if isinstance(o, board.ClearOverlay)
+            ]
+
+        forwards = self.visualizer()
+        self.start(forwards, "old")
+        self.end(forwards, "old", "clear")
+        self.start(forwards, "new", source="clear")
+        self.assertEqual(len(wipes(forwards)), 1)
+
+        # SessionStart first, its SessionEnd trailing behind with an id nothing
+        # on the board answers to any more. One tab, one encoder, one wipe.
+        backwards = self.visualizer()
+        self.start(backwards, "old")
+        self.start(backwards, "new", source="clear")
+        self.end(backwards, "old", "clear")
+        self.assertEqual(len(wipes(backwards)), 1)
+        self.assertEqual(len(backwards.table.all()), 1)
+        self.assertEqual(backwards.table.get("new").slot, 0)
+
+    def test_a_stale_session_end_never_lights_an_encoder(self):
+        # It carries no terminal, so `ensure` could only answer it by allocating
+        # a fresh slot -- a phantom session for a tab that has already moved on.
+        vis = self.visualizer()
+        self.end(vis, "never-seen", "other")
+        self.assertEqual(vis.table.all(), [])
+
+    def test_clearing_is_a_wipe_rather_than_an_arrival(self):
+        vis = self.visualizer()
+        self.start(vis, "old")
+        vis._overlays.clear()  # the arrival's own flash, which is not in question
+        self.start(vis, "new", source="clear")
+        live = vis._live_overlays(0.0)
+        self.assertTrue(any(isinstance(o, board.ClearOverlay) for o in live))
+        self.assertFalse(
+            any(isinstance(o, board.SpawnOverlay) for o in live),
+            "nothing claimed an encoder here; an agent on one forgot everything",
+        )
+
+    def test_a_resume_is_still_an_arrival(self):
+        vis = self.visualizer()
+        self.start(vis, "s", source="resume")
+        self.assertTrue(
+            any(isinstance(o, board.SpawnOverlay) for o in vis._live_overlays(0.0))
+        )
+
+
 class Rendering(unittest.TestCase):
     def setUp(self):
         self.session = SessionTable().ensure("s", "/tmp/p")
@@ -958,6 +1084,36 @@ class Overlays(unittest.TestCase):
         )[0]
         self.assertEqual(refilled.ring, 127)
         self.assertTrue(overlay.done(1_000))
+
+    def test_clearing_unwinds_the_ring_to_nothing_and_hands_the_encoder_back(self):
+        session = SessionTable().ensure("s", "/tmp/p")
+        session.state = "idle"
+        overlay = board.ClearOverlay(session, 0.0)
+
+        strike = board.compose([session], 0.0, [overlay])[session.slot]
+        self.assertEqual(strike.ring, 127)
+        # White, like the boot word: the RGB stays dark, because this is the
+        # board saying something rather than reporting a status.
+        self.assertIsNone(strike.color)
+
+        emptied = board.compose(
+            [session], config.CLEAR_SECONDS * config.CLEAR_SETTLE, [overlay]
+        )[session.slot]
+        self.assertEqual(emptied.ring, 0)
+
+        # ...and then becomes the steady state rather than cutting to it.
+        idle = board.compose([session], config.CLEAR_SECONDS - 0.01)[session.slot]
+        landed = board.compose([session], config.CLEAR_SECONDS - 0.01, [overlay])[
+            session.slot
+        ]
+        self.assertEqual(landed.color, idle.color)
+        self.assertAlmostEqual(landed.brightness, idle.brightness, places=2)
+        self.assertTrue(overlay.done(config.CLEAR_SECONDS))
+
+    def test_clearing_is_briefer_than_an_arrival(self):
+        # An arrival is worth catching across the room; a /clear is something
+        # you just typed and are already looking at.
+        self.assertLess(config.CLEAR_SECONDS, config.SPAWN_SECONDS)
 
     def test_compaction_gives_up_if_postcompact_never_arrives(self):
         overlay = board.CompactOverlay(SessionTable().ensure("s"), 0.0)

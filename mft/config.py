@@ -518,6 +518,26 @@ COMPACT_REFILL_SECONDS = 0.8
 #: If PostCompact never arrives, give up and hand the slot back.
 COMPACT_TIMEOUT_SECONDS = 90.0
 
+# --- /clear -----------------------------------------------------------------
+# There is no `/clear` hook. What there is instead is a *pair*: `SessionEnd` with
+# reason `clear`, then `SessionStart` with source `clear` and a brand new
+# session id in the same tab. Both halves describe one moment, so both are
+# handled by the same reset and only the first of them gets to fire the wipe.
+#
+# The encoder does not change hands across it: slots are keyed on the terminal,
+# and the tab is exactly what a `/clear` does not touch.
+
+CLEAR_ANIMATION = _flag("MFT_CLEAR_ANIMATION", True)
+#: The whole wipe. Shorter than the spawn strike: an arrival is a thing you want
+#: to catch across the room, a `/clear` is something you just typed.
+CLEAR_SECONDS = 1.0
+#: Fraction of it spent unwinding the ring; the remainder hands the encoder back
+#: to whatever its steady state has become.
+CLEAR_SETTLE = 0.6
+#: The two halves of the pair are not ordered and either can go missing, so
+#: whichever arrives first fires the wipe and the other is a no-op this long.
+CLEAR_DEBOUNCE_SECONDS = 5.0
+
 # --- Subagents --------------------------------------------------------------
 # Subagents are not sessions and must never be mistaken for one. They own no
 # encoder, they answer no gesture, and they vanish when the parent's turn ends.

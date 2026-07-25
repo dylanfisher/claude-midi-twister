@@ -94,6 +94,9 @@ class Session:
     attention_since: Optional[float] = None
     snoozed_until: Optional[float] = None
     compacting_since: Optional[float] = None
+    #: When this slot was last wiped by a `/clear`. Only ever read to keep the
+    #: two halves of the SessionEnd/SessionStart pair from wiping it twice.
+    cleared_at: Optional[float] = None
 
     def set_state(self, state: str) -> None:
         if state != self.state:
@@ -478,6 +481,62 @@ EFFECT_COMPACT_START = "compact:start"
 EFFECT_COMPACT_END = "compact:end"
 EFFECT_BANNER = "banner:"
 EFFECT_SPAWN = "spawn"
+EFFECT_CLEAR = "clear"
+
+
+#: `SessionEnd` reasons that are not the end of anything. `clear` is reported
+#: when you run `/clear`, and the tab it names is still sitting there with a new
+#: session id already on its way in -- so releasing the encoder would mean every
+#: `/clear` frees a slot and immediately re-claims one, which on an allocator
+#: that hands out the lowest free index moves the agent to a different knob
+#: mid-session. Exactly the thrash keying slots on the terminal exists to avoid.
+SESSION_END_KEEPS_SLOT = frozenset({"clear"})
+
+
+def clear_session(session: Session, now: float) -> list[str]:
+    """`/clear`: same tab, same encoder, an agent that remembers nothing.
+
+    Everything turn-scoped goes, because none of it describes the session that
+    is about to exist. Everything slot-scoped stays, because the tab has not
+    moved and the slot belongs to the tab.
+
+    Called from *both* halves of the pair -- ``SessionEnd(clear)`` and
+    ``SessionStart(clear)`` -- because their order is not guaranteed and either
+    one can go missing. Running twice is therefore normal and has to be
+    harmless: the reset is idempotent by construction, and the wipe is fired
+    only by whichever half arrives first.
+    """
+    session.tool_calls = 0
+    session.turn_started_at = None
+    session.subagents_in_flight.clear()
+    session.tool_history.clear()
+    session.arc = 0
+    session.compacting_since = None
+    session.last_tool = ""
+    session.last_tool_at = None
+    session.last_message = ""
+    # The gauge describes a transcript this session no longer has. Zeroed rather
+    # than left standing, because a full context ring on an agent that has just
+    # forgotten everything is the one reading that is definitely wrong; the next
+    # poll of the new transcript fills it back in from the truth.
+    session.context_tokens = 0
+    # ...and the next event re-reads it immediately rather than waiting out a
+    # poll interval that was started by the session which no longer exists.
+    session.context_checked_at = 0.0
+    # Not an ending, so nothing here may look like one: an `ended_at` would sink
+    # the encoder below the live block and a `SLOT_LINGER_SECONDS` later hand it
+    # to somebody else.
+    session.ended_at = None
+    session.attended()
+    session.set_state("idle")
+
+    if (
+        session.cleared_at is not None
+        and now - session.cleared_at < config.CLEAR_DEBOUNCE_SECONDS
+    ):
+        return []
+    session.cleared_at = now
+    return [EFFECT_CLEAR]
 
 
 def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
@@ -507,15 +566,22 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
     if name == "SessionStart":
         # Not a fresh encoder: a `/clear` or resume keeps the tab's slot and
         # everything on it, so only the turn-scoped fields reset.
-        session.set_state("idle")
-        session.ended_at = None
-        session.attended()
-        session.turn_started_at = None
-        # `idle` is a dim pip, so without this the arrival of a session -- the
-        # one moment you actually want to see -- is the least visible thing the
-        # board ever does. A resume or a `/clear` gets it too: they are also a
-        # Claude starting in that tab, which is what the flash announces.
-        effects.append(EFFECT_SPAWN)
+        if str(event.get("source") or "") == "clear":
+            # The second half of the `/clear` pair, and a different event from
+            # an arrival: nothing claimed an encoder here, an agent that was
+            # already on this one forgot everything. The wipe says that; the
+            # spawn strike would say a new Claude appeared, which it didn't.
+            effects += clear_session(session, now)
+        else:
+            session.set_state("idle")
+            session.ended_at = None
+            session.attended()
+            session.turn_started_at = None
+            # `idle` is a dim pip, so without this the arrival of a session --
+            # the one moment you actually want to see -- is the least visible
+            # thing the board ever does. A resume gets it too: it is also a
+            # Claude starting in that tab, which is what the flash announces.
+            effects.append(EFFECT_SPAWN)
 
     elif name == "UserPromptSubmit":
         session.turn_started_at = now
@@ -612,9 +678,21 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
         session.owe_attention(now)
 
     elif name == "SessionEnd":
-        session.ended_at = now
-        session.attended()
-        session.set_state("ended")
+        # The reason is the whole event: `clear` means the tab is still there
+        # and keeps its encoder, `logout` / `prompt_input_exit` / `other` mean
+        # the session is actually gone. Treated as advisory either way -- it is
+        # reported not to fire on `/exit`, and the TTL reaper is what actually
+        # keeps the board honest. This is the fast path when it does arrive.
+        if str(event.get("reason") or "") in SESSION_END_KEEPS_SLOT:
+            effects += clear_session(session, now)
+            # The path recorded at the top of this function is the *ending*
+            # session's transcript, and reading it back would refill the gauge
+            # this wipe just emptied. The replacement announces its own.
+            session.transcript_path = ""
+        else:
+            session.ended_at = now
+            session.attended()
+            session.set_state("ended")
 
     else:
         # Unknown/new event type: treat as a liveness ping only.

@@ -32,6 +32,7 @@ from . import (
 )
 from .state import (
     EFFECT_BANNER,
+    EFFECT_CLEAR,
     EFFECT_COMPACT_END,
     EFFECT_COMPACT_START,
     EFFECT_SPAWN,
@@ -45,6 +46,16 @@ log = logging.getLogger("mft.daemon")
 #: Events about a subagent rather than about a session. They are routed to the
 #: parent and are never allowed to create a session of their own.
 SUBAGENT_EVENTS = frozenset({"SubagentStart", "SubagentStop"})
+
+#: Events that may only ever *update* a session, never bring one into being.
+#:
+#: `SessionEnd` is one because a `/clear` retires a session id while its tab
+#: keeps the encoder: the replacement id has often already been adopted by the
+#: time the old id's `SessionEnd` lands, and it carries no terminal, so `ensure`
+#: would answer that stale id by lighting a *second* encoder for a tab that is
+#: already on the board. Nothing about an ending wants a slot allocated for it
+#: in the first place, whatever the order the pair arrives in.
+UPDATE_ONLY_EVENTS = frozenset({"SessionEnd"})
 
 
 def warn_about_hook_drift() -> None:
@@ -173,6 +184,9 @@ class Visualizer:
             elif effect == EFFECT_SPAWN:
                 if config.SPAWN_ANIMATION:
                     self.push_overlay(board_mod.SpawnOverlay(session, now))
+            elif effect == EFFECT_CLEAR:
+                if config.CLEAR_ANIMATION:
+                    self.push_overlay(board_mod.ClearOverlay(session, now))
             elif effect.startswith(EFFECT_BANNER):
                 word = effect[len(EFFECT_BANNER) :]
                 self.push_overlay(
@@ -238,6 +252,10 @@ class Visualizer:
                     "%s: %d subagent(s) in flight", session.short_id, session.subagents
                 )
             return {"ok": True, "slot": session.slot + 1, "state": session.state}
+
+        if name in UPDATE_ONLY_EVENTS and self.table.get(session_id) is None:
+            log.debug("%s for a session we don't have (%s)", name, session_id[:8])
+            return {"ok": True}
 
         # The SessionStart command hook enriches the payload with whatever it
         # could learn about the terminal; plain HTTP hooks don't have env. That

@@ -92,12 +92,11 @@ def run_session(url: str, rng: random.Random, index: int, stop: threading.Event)
         },
     )
 
-    send(
-        hook_event_name="SessionStart",
-        # A distinct tty per fake session, since slots are keyed on the
-        # terminal rather than the session id.
-        terminal={"TERM_PROGRAM": "Apple_Terminal", "tty": f"/dev/ttys{index:03d}"},
-    )
+    # A distinct tty per fake session, since slots are keyed on the terminal
+    # rather than the session id -- which is also what makes the `/clear` below
+    # land back on the same knob.
+    terminal = {"TERM_PROGRAM": "Apple_Terminal", "tty": f"/dev/ttys{index:03d}"}
+    send(hook_event_name="SessionStart", terminal=terminal)
     while not stop.is_set():
         stop.wait(rng.uniform(2, 8))
         if stop.is_set():
@@ -156,6 +155,23 @@ def run_session(url: str, rng: random.Random, index: int, stop: threading.Event)
             send(hook_event_name="StopFailure", error_type="rate_limit")
             stop.wait(rng.uniform(5, 12))
         send(hook_event_name="Stop")
+
+        if rng.random() < 0.12:
+            # A `/clear`: SessionEnd with reason `clear`, then a brand new
+            # session id in the same tab. The encoder must not move, and the
+            # gauge must empty. Half the time the pair arrives the other way
+            # round, because in practice the order is not guaranteed.
+            end = dict(hook_event_name="SessionEnd", reason="clear")
+            old_id = session_id
+            session_id = str(uuid.uuid4())
+            transcript = FakeTranscript(session_id, 0)
+            start = dict(hook_event_name="SessionStart", source="clear", terminal=terminal)
+            if rng.random() < 0.5:
+                post(url, {"session_id": old_id, "cwd": cwd, **end})
+                send(**start)
+            else:
+                send(**start)
+                post(url, {"session_id": old_id, "cwd": cwd, **end})
 
 
 def main() -> int:

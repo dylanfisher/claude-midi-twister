@@ -170,10 +170,12 @@ notifications rather than a telemetry stream:
 | `PreCompact` / `PostCompact` | drain the arc, then refill it |
 | `StopFailure` | `error` + alert, and spell the reason if it's a rate limit |
 | `Stop` | `done`, fades out over 90s, then ramps back if ignored |
-| `SessionEnd` | release the encoder |
+| `SessionEnd` | release the encoder — unless the reason is `clear` (see below) |
 
-A crashed terminal never fires `SessionEnd`, so slots also expire on a TTL
-(`SESSION_TTL_SECONDS`).
+`SessionEnd` is advisory. A crashed terminal never fires it, it's reported not
+to fire on `/exit`, and it has been reported missing on `/clear` too — so slots
+also expire on a TTL (`SESSION_TTL_SECONDS`), and that reaper is what actually
+keeps the board honest. The hook is the fast path when it happens to arrive.
 
 `PermissionRequest` is deliberately **not** installed. An HTTP hook on it sits in
 the path between Claude Code and its own permission prompt, where a visualizer
@@ -197,6 +199,35 @@ the tty, and failing all of those the `claude` process id — and the session id
 a mutable attribute of the slot. When a familiar tab shows up with an unfamiliar
 session id, its existing encoder adopts it: turn count, tool history and
 attention debt intact.
+
+### `/clear` is a pair, not an event
+
+There is no `/clear` hook. What there is instead is `SessionEnd` with **reason
+`clear`**, followed by `SessionStart` with **source `clear`** and a different
+`session_id`. Both halves describe one moment, and the daemon handles them the
+same way:
+
+- reason `clear` → **keep the slot.** Swap in the new session id, reset the
+  turn-scoped state (tool counts, subagent pile, attention debt) and empty the
+  context gauge, which belongs to a transcript that session no longer has.
+- `logout` / `prompt_input_exit` / `other` → actually release.
+
+Freeing the slot on the `clear` half would mean every `/clear` releases and
+immediately re-claims — and since the allocator hands out the lowest free index,
+that agent can land on a different knob mid-session. Exactly the thrash keying
+slots on the terminal exists to prevent.
+
+The order of the pair isn't guaranteed and either half can go missing, so both
+run the same idempotent reset, keyed on the tab. A `SessionEnd` for a session id
+the board doesn't have is dropped rather than allocated — otherwise the trailing
+half of a pair that already landed would light a *second* encoder for a tab
+already on the board.
+
+The moment is worth rendering: the agent forgot everything. Its encoder gets a
+brief white ring wipe that unwinds to nothing and hands back to an idle pip with
+an empty gauge — the boot vocabulary, and deliberately the inverse of the
+compaction animation, which drains the arc and then refills it.
+`MFT_CLEAR_ANIMATION=0` turns it off.
 
 ## Adopting sessions that predate the daemon
 
