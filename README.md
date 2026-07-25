@@ -42,9 +42,9 @@ rather than broken.
 
 It also sets one environment variable, `CLAUDE_CODE_DISABLE_TERMINAL_TITLE`,
 which is the only thing here that changes how a session behaves — it hands the
-terminal title to the daemon, which paints the session's state there too. See
-[the tab strip](#the-same-state-in-the-tab-strip), or `MFT_TAB_TITLE=0` if you'd
-rather keep Claude Code's.
+terminal title to the daemon, which can paint the session's state there too.
+That painting is off by default; see
+[the tab strip](#the-same-state-in-the-tab-strip) for `MFT_TAB_TITLE=1`.
 
 Then, in the Midi Fighter Utility, set the encoders to accept host LED control —
 otherwise the device drives its own LEDs and ignores you.
@@ -582,8 +582,12 @@ the spinner, and the title while the daemon is down.
 
 Tabs are handed back — same title, no glyph — when a session ends and when the
 daemon exits. A green dot on a tab whose daemon died an hour ago is precisely
-the phantom this project spends its time avoiding. `MFT_TAB_TITLE=0` turns the
-whole thing off.
+the phantom this project spends its time avoiding.
+
+All of it ships **off** (`config.TAB_TITLE`). It is the one thing the daemon
+writes into a terminal it does not own, and the board already says everything
+the tab strip would, so the default is to stay read-only outside this process.
+`MFT_TAB_TITLE=1` turns it on.
 
 ## Configuration
 

@@ -444,7 +444,12 @@ CONTEXT_RING_IDLE = _flag("MFT_CONTEXT_RING_IDLE", True)
 # See :mod:`mft.tab` for how the title is written and why Claude Code has to be
 # told to stop writing its own.
 
-TAB_TITLE = _flag("MFT_TAB_TITLE", True)
+#: Off by default. This is the one thing the daemon writes into somebody else's
+#: terminal, and the board already says everything the tab strip would; leaving
+#: it dark keeps the daemon read-only outside its own process until you ask.
+#: `MFT_TAB_TITLE=1` turns it back on -- everything downstream (the poll, the
+#: glyphs, the hand-back on exit) is still here and still tested.
+TAB_TITLE = _flag("MFT_TAB_TITLE", False)
 
 #: One glyph per state, prefixed to the title. Deliberately *coarser* than
 #: STATE_COLORS: `thinking`, `working` and `streaming` share a glyph because

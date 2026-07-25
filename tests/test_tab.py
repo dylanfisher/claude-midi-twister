@@ -150,6 +150,11 @@ class Repaints(unittest.TestCase):
     def setUp(self):
         from mft import daemon as daemon_mod, twister
 
+        # Shipped off; these pin what it does when someone turns it on.
+        was = config.TAB_TITLE
+        config.TAB_TITLE = True
+        self.addCleanup(lambda: setattr(config, "TAB_TITLE", was))
+
         self.writes: list[tuple[str, str]] = []
         real = tab.write
         tab.write = lambda tty, title: (self.writes.append((tty, title)), True)[1]
