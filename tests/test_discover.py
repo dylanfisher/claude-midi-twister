@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -251,10 +252,11 @@ class Orphans(unittest.TestCase):
         self.assertEqual(live.slot, 0)
         self.assertEqual(self.table.ensure("next", "/tmp/next").slot, 1)
 
-    def test_a_session_that_never_recorded_a_pid_is_left_to_the_TTL(self):
+    def test_a_session_that_never_recorded_a_pid_survives_the_pid_sweep(self):
         """`notify.sh` reports a tab without spawning a process to read one, so
-        a session the SessionStart hook missed has no pid to check. Absence of
-        a match is not evidence of death; the hour is."""
+        a session the SessionStart hook missed has no pid to check. This sweep
+        has nothing to ask about and says nothing; the census is what settles
+        these, off a tty rather than a pid. See `Ttys`."""
         self.add("anonymous", tty="/dev/ttys003")
         self.add("nameless")
         self.assertEqual(self.sweep(), [])
@@ -313,6 +315,173 @@ class Orphans(unittest.TestCase):
         closed = self.add("closed", pid="8", tty="/dev/ttys002")
         self.assertEqual(self.table.release_all([closed]), [closed])
         self.assertEqual(self.table.release_all([closed]), [])
+
+
+def rows(*procs: tuple[int, str, str], filler: int = 64) -> list[tuple[int, str, str]]:
+    """A process table with these processes in it, padded out to a size the
+    census will treat as a real read. See `config.CENSUS_MIN_ROWS`."""
+    return list(procs) + [(9000 + n, "", "/usr/sbin/whatever") for n in range(filler)]
+
+
+class Censuses(unittest.TestCase):
+    def test_a_short_table_is_a_failed_read_not_an_empty_desk(self):
+        self.assertFalse(discover.census([(1, "/dev/ttys001", "claude")]).usable)
+
+    def test_a_table_with_no_ttys_at_all_is_a_failed_read(self):
+        """Every negative the census draws comes off the tty column, so a
+        column that came back empty is the one thing it cannot conclude from."""
+        self.assertFalse(discover.census(rows((1, "", "/bin/launchd"))).usable)
+
+    def test_a_real_table_is_usable(self):
+        taken = discover.census(rows((1, "/dev/ttys001", "claude")))
+        self.assertTrue(taken.usable)
+        self.assertIn("/dev/ttys001", taken.ttys)
+        self.assertEqual([p.pid for p in taken.procs], [1])
+
+    def test_an_unreadable_table_is_no_census_at_all(self):
+        """Distinct from an unusable one: nothing to be self-checked."""
+        with mock.patch.object(discover, "process_rows", return_value=None):
+            self.assertIsNone(discover.census())
+
+
+class Ttys(unittest.TestCase):
+    """The half of `discover.orphans` that a pid cannot reach: a tab closes,
+    its pty is freed, and no process on the machine is on that tty again."""
+
+    def setUp(self):
+        self.table = SessionTable()
+        self.living = {7}
+
+    def alive(self, pid: int) -> bool:
+        return pid in self.living
+
+    def add(self, session_id: str, **terminal) -> Session:
+        session = self.table.ensure(session_id, f"/tmp/{session_id}", terminal)
+        assert session is not None
+        session.terminal = dict(terminal)
+        return session
+
+    def sweep(self, *in_use: str) -> list[str]:
+        taken = discover.census(rows(*[(1000 + n, tty, "sh") for n, tty in enumerate(in_use)]))
+        gone = discover.orphans(self.table.all(), alive=self.alive, taken=taken)
+        return [s.session_id for s in gone]
+
+    def test_a_freed_tty_settles_a_session_with_no_pid(self):
+        """The orphan the pid sweep can only leave to the hour."""
+        self.add("closed", tty="/dev/ttys003")
+        self.add("open", tty="/dev/ttys004")
+        self.assertEqual(self.sweep("/dev/ttys004"), ["closed"])
+
+    def test_a_held_tty_is_a_tab_that_is_still_open(self):
+        self.add("open", tty="/dev/ttys003")
+        self.assertEqual(self.sweep("/dev/ttys003"), [])
+
+    def test_a_tty_key_counts_as_much_as_a_description(self):
+        session = self.add("keyed")
+        session.keys.add("tty:/dev/ttys003")
+        self.assertEqual(self.sweep("/dev/ttys004"), ["keyed"])
+
+    def test_a_freed_tty_beats_a_pid_that_reads_alive(self):
+        """Pid reuse, which the pid sweep gets wrong in the direction that
+        costs an encoder: the number came back around. A live claude is on its
+        tty by definition, so a tty belonging to nobody outranks it."""
+        self.add("recycled", pid="7", tty="/dev/ttys003")
+        self.assertEqual(self.sweep("/dev/ttys004"), ["recycled"])
+
+    def test_a_handed_off_session_keeps_its_encoder(self):
+        """Its tab closing is not it ending -- it is running in the host, and
+        the host is alive. The one case a freed tty is expected."""
+        session = self.add("moved", pid="8", tty="/dev/ttys003")
+        session.keys.add("host:7")
+        self.assertEqual(self.sweep("/dev/ttys004"), [])
+
+    def test_an_unusable_census_concludes_nothing(self):
+        self.add("closed", tty="/dev/ttys003")
+        gone = discover.orphans(
+            self.table.all(), alive=self.alive, taken=discover.census([])
+        )
+        self.assertEqual(gone, [])
+
+    def test_a_session_with_no_tty_at_all_still_keeps_the_hour(self):
+        """Nothing here reads a Claude process's argv, and a record with
+        neither pid nor tty is exactly what would need that."""
+        self.add("nameless")
+        self.assertEqual(self.sweep("/dev/ttys004"), [])
+
+    def test_an_ended_session_keeps_its_fade(self):
+        ended = self.add("ended", tty="/dev/ttys003")
+        ended.ended_at = time.monotonic()
+        self.assertEqual(self.sweep("/dev/ttys004"), [])
+
+    def test_the_log_says_which_fact_settled_it(self):
+        closed = self.add("closed", tty="/dev/ttys003")
+        dead = self.add("dead", pid="8", tty="/dev/ttys007")
+        taken = discover.census(rows((1000, "/dev/ttys004", "sh")))
+        self.assertEqual(
+            discover.epitaph(closed, taken, self.alive), "the tab on /dev/ttys003 is closed"
+        )
+        self.assertEqual(discover.epitaph(dead, taken, self.alive), "pid 8 is gone")
+
+
+class LearnPids(unittest.TestCase):
+    """Giving the pid sweep something to ask about. See `discover.learn_pids`."""
+
+    def setUp(self):
+        self.table = SessionTable()
+
+    def add(self, session_id: str, cwd: str = "/tmp/p", **terminal) -> Session:
+        session = self.table.ensure(session_id, cwd, terminal)
+        assert session is not None
+        session.terminal = dict(terminal)
+        return session
+
+    def test_a_shared_token_names_the_process(self):
+        session = self.add("anonymous", tty="/dev/ttys003")
+        proc = discover.Proc(pid=41, tty="/dev/ttys003", cwd="/tmp/p")
+        self.assertEqual(discover.learn_pids([session], [proc]), [(session, proc)])
+        self.assertEqual(session.terminal["pid"], "41")
+
+    def test_argv_names_it_outright(self):
+        session = self.add("app-session")
+        proc = discover.Proc(pid=42, cwd="/elsewhere", session_id="app-session")
+        discover.learn_pids([session], [proc])
+        self.assertEqual(session.terminal["pid"], "42")
+
+    def test_the_only_claude_in_the_directory(self):
+        session = self.add("nameless")
+        proc = discover.Proc(pid=43, tty="/dev/ttys009", cwd="/tmp/p")
+        discover.learn_pids([session], [proc])
+        self.assertEqual(session.terminal["pid"], "43")
+
+    def test_two_claudes_in_one_directory_are_left_alone(self):
+        """A wrong pid is worse than none: it would answer the orphan sweep's
+        question with somebody else's life."""
+        session = self.add("nameless")
+        procs = [
+            discover.Proc(pid=44, tty="/dev/ttys009", cwd="/tmp/p"),
+            discover.Proc(pid=45, tty="/dev/ttys010", cwd="/tmp/p"),
+        ]
+        self.assertEqual(discover.learn_pids([session], procs), [])
+        self.assertNotIn("pid", session.terminal)
+
+    def test_a_session_that_has_a_pid_is_not_touched(self):
+        session = self.add("known", pid="8", tty="/dev/ttys003")
+        proc = discover.Proc(pid=41, tty="/dev/ttys003", cwd="/tmp/p")
+        self.assertEqual(discover.learn_pids([session], [proc]), [])
+        self.assertEqual(session.terminal["pid"], "8")
+
+    def test_one_process_is_claimed_once(self):
+        first = self.add("first", cwd="/tmp/p")
+        second = self.add("second", cwd="/tmp/p")
+        proc = discover.Proc(pid=46, tty="/dev/ttys009", cwd="/tmp/p")
+        # Ambiguous the moment there are two of them, in either order.
+        self.assertEqual(discover.learn_pids([first, second], [proc]), [])
+
+    def test_an_ended_session_is_not_given_a_pid(self):
+        session = self.add("ended", tty="/dev/ttys003")
+        session.ended_at = time.monotonic()
+        proc = discover.Proc(pid=47, tty="/dev/ttys003", cwd="/tmp/p")
+        self.assertEqual(discover.learn_pids([session], [proc]), [])
 
 
 if __name__ == "__main__":

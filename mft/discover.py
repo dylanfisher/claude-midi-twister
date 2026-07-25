@@ -26,6 +26,15 @@ The same process table answers the opposite question, which is why
 Adoption is a guess that has to be right; that one is a fact, and it is checked
 on a much tighter loop -- see its docstring for why it is deliberately narrower
 than everything else in this file.
+
+:func:`census` is the middle clock between them. Adoption runs at boot and on
+wake; the pid check runs constantly and for free; this reads the whole process
+table every half minute and spends it on the two things neither of those can
+do -- giving a pid to the records that never had one (:func:`learn_pids`), and
+noticing that a tty on the board belongs to nobody. That last one is the only
+*absence* anything here draws a conclusion from, and it is allowed to because
+it recognises nothing: a closed tab frees its pty, and reading which ttys are
+in use does not depend on knowing what a Claude process looks like.
 """
 
 from __future__ import annotations
@@ -41,7 +50,7 @@ from typing import Any, Callable, Iterable, Optional
 
 from . import config
 from .context import tail_lines
-from .state import Session, SessionTable
+from .state import Session, SessionTable, terminal_keys
 
 log = logging.getLogger("mft.discover")
 
@@ -212,23 +221,47 @@ def _environments(pids: list[int]) -> dict[int, dict[str, str]]:
     return found
 
 
-def claude_processes() -> Optional[list[Proc]]:
+def process_rows() -> Optional[list[tuple[int, str, str]]]:
+    """Every process on the machine as ``(pid, tty, argv)``, or ``None``.
+
+    Split out from :func:`claude_processes` because the same read answers a
+    second question that has nothing to do with recognising Claude: *which
+    ttys are still in use*. See :func:`census` for why that distinction is the
+    load-bearing one -- a tty column needs no knowledge of what a session's
+    argv looks like, so it keeps working on the day that knowledge goes stale.
+    """
+    out = _run(["ps", "-eo", "pid=,tty=,command="])
+    if out is None:
+        return None
+    rows: list[tuple[int, str, str]] = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        raw_pid, tty, argv = parts
+        try:
+            pid = int(raw_pid)
+        except ValueError:
+            continue
+        rows.append((pid, "" if tty in ("??", "-") else f"/dev/{tty}", argv))
+    return rows
+
+
+def claude_processes(
+    rows: Optional[list[tuple[int, str, str]]] = None,
+) -> Optional[list[Proc]]:
     """Every live Claude Code session process.
 
     ``None`` means the process table could not be read at all, which is a very
     different thing from "nothing is running" -- discovery refuses to adopt
     anything in that case rather than trusting transcripts on their own.
     """
-    out = _run(["ps", "-eo", "pid=,tty=,command="])
-    if out is None:
+    rows = process_rows() if rows is None else rows
+    if rows is None:
         return None
 
     found: list[tuple[int, str, str]] = []
-    for line in out.splitlines():
-        parts = line.strip().split(None, 2)
-        if len(parts) < 3:
-            continue
-        raw_pid, tty, argv = parts
+    for pid, tty, argv in rows:
         # The interpreter path for a terminal session is `.../versions/2.1.x`,
         # so match on the install root rather than on the program name.
         if "claude" not in argv.lower():
@@ -243,11 +276,7 @@ def claude_processes() -> Optional[list[Proc]]:
             "/claude/versions/" in head or head.endswith("/claude")
         ):
             continue
-        try:
-            pid = int(raw_pid)
-        except ValueError:
-            continue
-        found.append((pid, "" if tty in ("??", "-") else f"/dev/{tty}", argv))
+        found.append((pid, tty, argv))
 
     pids = [pid for pid, _, _ in found]
     cwds = _cwds(pids)
@@ -283,8 +312,133 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
+@dataclass(frozen=True)
+class Census:
+    """One read of the process table, taken for the whole board at once.
+
+    Two answers out of one `ps`, and they are worth very different amounts:
+
+    *   ``procs`` is the Claude processes, which is a *recognition* -- it rests
+        on :func:`claude_processes` still knowing what a session's argv looks
+        like, and that is a thing Claude Code can change under us.
+    *   ``ttys`` is every tty any process on the machine is sitting on, which
+        recognises nothing. A terminal tab holds its pty for exactly as long as
+        it is open: close it and the pty is freed, and no process anywhere is on
+        it again. That makes "this session's tty is in use by nobody" a fact
+        about the tab rather than a guess about the session -- which is the
+        whole reason this exists, because it is the one negative that stays true
+        when everything else here goes stale.
+
+    :attr:`usable` is the self-check that makes the negative safe to act on: a
+    real machine has hundreds of processes and at least one terminal, so a table
+    that has neither is a read that went wrong rather than a desk that emptied.
+    """
+
+    procs: list[Proc]
+    ttys: frozenset[str]
+    #: How many rows the `ps` returned, before any filtering.
+    size: int
+
+    @property
+    def usable(self) -> bool:
+        return self.size >= config.CENSUS_MIN_ROWS and bool(self.ttys)
+
+
+def census(rows: Optional[list[tuple[int, str, str]]] = None) -> Optional[Census]:
+    """Take one. ``None`` if the process table could not be read at all."""
+    rows = process_rows() if rows is None else rows
+    if rows is None:
+        return None
+    procs = claude_processes(rows) or []
+    return Census(
+        procs=procs,
+        ttys=frozenset(tty for _, tty, _ in rows if tty),
+        size=len(rows),
+    )
+
+
+def _recorded_tty(session: Session) -> str:
+    """The pty this session says it lives on, if it named one."""
+    tty = str(session.terminal.get("tty") or "")
+    if not tty:
+        tty = next(
+            (key.split(":", 1)[1] for key in session.keys if key.startswith("tty:")),
+            "",
+        )
+    return tty if tty.startswith("/dev/") else ""
+
+
+def learn_pids(
+    sessions: Iterable[Session], procs: list[Proc]
+) -> list[tuple[Session, Proc]]:
+    """Give a live process id to the records that never got one.
+
+    The orphan sweep settles a session outright when it knows which process to
+    ask about, and does nothing at all when it doesn't -- so the cheapest way to
+    widen it is not to weaken the test but to leave fewer records outside it.
+    ``notify.sh`` reports a tab's identity without a pid (it will not spawn a
+    process to learn one), so a session whose `SessionStart` never reached the
+    daemon -- daemon down when the tab opened, daemon restarted mid-turn -- runs
+    its whole life on records the sweep has to skip.
+
+    This is presence of evidence in both directions: a session is matched only
+    to a process that is running *now*, and the pid written onto it is that
+    process's. Matching goes strongest-first and every step must be unambiguous;
+    a session that two processes could equally be is left alone, because a wrong
+    pid here is worse than none -- it would answer the sweep's question with
+    somebody else's life.
+
+    Returns the pairs it made; the caller writes them into the table's index by
+    reconciling, the same way :func:`adopt` does.
+    """
+    live = [s for s in sessions if s.ended_at is None]
+    # A process another record is already pinned to is spoken for, and so is a
+    # directory two pidless records are both sitting in: the weakest match below
+    # is "the only Claude in this cwd", and it is only true when it is the only
+    # *session* there too.
+    claimed = {pid for s in live for pid in _recorded_pids(s)}
+    spare = [p for p in procs if p.pid not in claimed]
+    wanting = [s for s in live if not _recorded_pids(s)]
+    crowded = {
+        s.cwd for s in wanting if s.cwd and sum(1 for o in wanting if o.cwd == s.cwd) > 1
+    }
+
+    matched: list[tuple[Session, Proc]] = []
+    for session in wanting:
+        found = _match(session, spare, by_cwd=session.cwd not in crowded)
+        if found is None:
+            continue
+        spare.remove(found)
+        session.terminal = dict(session.terminal or {})
+        session.terminal["pid"] = str(found.pid)
+        matched.append((session, found))
+    return matched
+
+
+def _match(session: Session, procs: list[Proc], by_cwd: bool = True) -> Optional[Proc]:
+    """Which of these processes is this session, if exactly one of them is."""
+    named = [p for p in procs if p.session_id and p.session_id == session.session_id]
+    if len(named) == 1:
+        return named[0]
+    # A token the two descriptions share: the tab named itself to the hook and
+    # names itself again in the process table's environment.
+    if session.keys:
+        shared = [p for p in procs if session.keys & set(terminal_keys(p.terminal))]
+        if len(shared) == 1:
+            return shared[0]
+    # Last and weakest, and only when it is the only Claude in the directory --
+    # two of them there are indistinguishable from out here.
+    if by_cwd and session.cwd:
+        here = [p for p in procs if p.cwd and p.cwd == session.cwd]
+        if len(here) == 1:
+            return here[0]
+    return None
+
+
 def orphans(
-    sessions: Iterable[Session], alive: Optional[Callable[[int], bool]] = None
+    sessions: Iterable[Session],
+    alive: Optional[Callable[[int], bool]] = None,
+    taken: Optional[Census] = None,
 ) -> list[Session]:
     """Sessions whose Claude process is gone, and whose encoder is now a lie.
 
@@ -295,43 +449,102 @@ def orphans(
     `SESSION_TTL_SECONDS` -- an hour of a knob describing a session you closed.
     That is the orphan you actually see: the board is empty, and one light is on.
 
-    The check is the recorded pid and nothing else. Every path that creates a
-    session with a terminal writes one -- ``register_session.py`` sends its
-    ``getppid()``, which is the claude process itself, and discovery reads the
-    process table directly -- so this covers nearly everything, and what it
-    covers it settles outright: a pid that no longer exists is not a matter of
-    interpretation. Two things were deliberately left out of it:
+    Two facts, either of which settles it, and neither of which is a guess:
 
-    *   **Matching against the live process table.** It would catch the handful
-        of records that never learned a pid (an event from ``notify.sh`` for a
-        session whose SessionStart the daemon missed), but the evidence there is
-        the *absence* of a match rather than the presence of a death, so every
-        way that matching can be wrong -- an argv shape :func:`claude_processes`
-        stops recognising, a `ps` that fails to read an environment -- goes
-        wrong by clearing the board. Absence of proof is not what invariant 6
-        asks for. Those records keep the TTL.
-    *   **Pid reuse.** A dead session's number handed to some unrelated process
-        reads as alive here. It costs an hour of one stale encoder, at odds
-        long enough that paying for it with a subprocess in the run loop, every
-        five seconds, would be the more expensive mistake.
+    1.  **Every pid it recorded is gone.** Signal 0, no subprocess, cheap enough
+        to run on the reaper's five seconds. Every path that creates a session
+        with a terminal writes a pid -- ``register_session.py`` sends its
+        ``getppid()``, which is the claude process itself, and discovery reads
+        the process table directly -- and a pid that no longer exists is not a
+        matter of interpretation.
+    2.  **Its tty belongs to nobody.** Only when a `Census` is supplied, so only
+        on that slower clock. A terminal tab holds its pty open for exactly as
+        long as it is open; once it closes, no process on the machine is on that
+        tty again. So a session that named a tty and whose tty is now free had
+        its tab closed, whatever any pid says.
+
+    The second is what the first cannot reach. ``notify.sh`` names a tab without
+    naming a process, so a session whose `SessionStart` never got through has a
+    tty and no pid, and fact 1 has nothing to ask about; :func:`learn_pids`
+    shrinks that set and this closes what is left of it. It also settles pid
+    reuse, which fact 1 gets wrong in the dangerous direction: a recycled number
+    reads as alive, but a live claude is on its tty by definition, so a recorded
+    tty that is free contradicts it and the tty wins.
+
+    Deliberately still not concluded:
+
+    *   **Anything from a Claude process we failed to recognise.** Comparing
+        each session against the *live* claude processes would catch a record
+        with neither pid nor tty, but that evidence rests on
+        :func:`claude_processes` still knowing what a session's argv looks like,
+        so the day that changes it clears the board. The tty test needs no such
+        knowledge -- it reads a column, not a command line -- which is exactly
+        why it is the one absence trusted here. Records with neither keep the
+        TTL.
+    *   **A session handed off into someone else's process.** A live ``host:``
+        pid is a session running outside the tab it came from
+        (:meth:`mft.state.SessionTable._handed_off`), so its tab's tty going
+        free is the tab closing and not the session ending. It keeps its
+        encoder; see :func:`_pid_sources`.
 
     Sessions that ended cleanly are skipped: their process is *supposed* to be
     gone, and they are already on the `SLOT_LINGER_SECONDS` clock that fades
     them out. Reaping those here would just cut the fade off.
     """
     check = pid_alive if alive is None else alive
+    trust_ttys = taken is not None and taken.usable
     dead: list[Session] = []
     for session in sessions:
         if session.ended_at is not None:
             continue
-        pids = _recorded_pids(session)
+        tab_pids, host_pids = _pid_sources(session)
+        pids = tab_pids + host_pids
         if pids and not any(check(pid) for pid in pids):
+            dead.append(session)
+            continue
+        if not trust_ttys or any(check(pid) for pid in host_pids):
+            continue
+        tty = _recorded_tty(session)
+        if tty and tty not in taken.ttys:  # type: ignore[union-attr]
             dead.append(session)
     return dead
 
 
+def epitaph(
+    session: Session,
+    taken: Optional[Census] = None,
+    alive: Optional[Callable[[int], bool]] = None,
+) -> str:
+    """Which of :func:`orphans`' two facts settled this one, for the log.
+
+    Worth the few lines: the two are found on different clocks and mean
+    different things to whoever is reading the log at the time -- a dead pid is
+    a session that exited, a freed tty is a window that closed -- and one
+    wording for both spent a while claiming `pid None` had gone.
+    """
+    check = pid_alive if alive is None else alive
+    pids = _recorded_pids(session)
+    if pids and not any(check(pid) for pid in pids):
+        return f"pid {', '.join(str(pid) for pid in pids)} is gone"
+    tty = _recorded_tty(session)
+    if taken is not None and tty and tty not in taken.ttys:
+        return f"the tab on {tty} is closed"
+    return "it is gone"
+
+
 def _recorded_pids(session: Session) -> list[int]:
-    """Which processes this record claims to be, best evidence first.
+    """Every process this record claims to be. See :func:`_pid_sources`."""
+    tab_pids, host_pids = _pid_sources(session)
+    return tab_pids + host_pids
+
+
+def _pid_sources(session: Session) -> tuple[list[int], list[int]]:
+    """Which processes this record claims to be, split by what they mean.
+
+    The two are told apart because the tty test needs to: the tab's own pid dying
+    is a session ending, while a ``host:`` pid living is a session that has left
+    its tab and is running somewhere else, and only the second has anything to
+    say about whether a freed pty is bad news.
 
     ``terminal`` is the current description of the tab -- `merge_terminal`
     replaces it wholesale when an arriving pid contradicts the stored one -- so
@@ -354,14 +567,18 @@ def _recorded_pids(session: Session) -> list[int]:
     raw = [session.terminal.get("pid")] if session.terminal.get("pid") else []
     if not raw:
         raw = [key.split(":", 1)[1] for key in session.keys if key.startswith("pid:")]
-    raw += [key.split(":", 1)[1] for key in session.keys if key.startswith("host:")]
-    pids = []
-    for value in raw:
+    hosts = [key.split(":", 1)[1] for key in session.keys if key.startswith("host:")]
+    return _numbers(raw), _numbers(hosts)
+
+
+def _numbers(values: Iterable[Any]) -> list[int]:
+    found = []
+    for value in values:
         try:
-            pids.append(int(value))
+            found.append(int(value))
         except (TypeError, ValueError):
             continue
-    return pids
+    return found
 
 
 # --- transcripts ------------------------------------------------------------

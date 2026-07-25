@@ -250,6 +250,11 @@ class Visualizer:
         self._last_system_wake = float("-inf")
         #: When a dead MIDI port was last retried; see :meth:`_check_port`.
         self._last_port_retry = float("-inf")
+        #: The census runs a subprocess, so it runs on its own thread; this is
+        #: how the reaper knows one is still out there rather than starting a
+        #: second. See :meth:`sweep_census`.
+        self._censusing = threading.Event()
+        self._last_census = float("-inf")
 
     # -- overlays -----------------------------------------------------------
 
@@ -885,6 +890,11 @@ class Visualizer:
         self._last_cells = None
         if config.WAKE_REDISCOVER:
             self.adopt_running_sessions(awaken=False)
+        # Explicitly, rather than waiting for the interval to come round: the
+        # clock the census runs on stopped with the machine, so a lid closed for
+        # a weekend is half a minute old from in here -- and a suspend is
+        # precisely when the tabs on the board got closed without telling us.
+        self.sweep_census()
         self._wake.set()
 
     def _check_wake_clock(self) -> None:
@@ -972,7 +982,7 @@ class Visualizer:
             # awake, and its first half hour is measured from now.
             self._sleep.touch(now)
 
-    def drop_orphans(self) -> None:
+    def drop_orphans(self, taken: "discover_mod.Census | None" = None) -> None:
         """Take back the encoders whose Claude process has exited.
 
         The other half of :meth:`adopt_running_sessions`, on the reaper's clock
@@ -983,12 +993,13 @@ class Visualizer:
 
         Cheap enough to sit in the reap: it is one signal 0 per session, no
         subprocess and no file read, which is exactly why it can run every five
-        seconds instead of on a discovery-sized interval.
+        seconds instead of on a discovery-sized interval. `taken` is the slower
+        clock's extra evidence and is only ever passed by :meth:`sweep_census`.
         """
         if not config.ORPHAN_SWEEP:
             return
         try:
-            gone = discover_mod.orphans(self.table.all())
+            gone = discover_mod.orphans(self.table.all(), taken=taken)
         except Exception:
             log.exception("orphan sweep failed")
             return
@@ -996,16 +1007,62 @@ class Visualizer:
             return
         for session in gone:
             log.info(
-                "encoder %d is a session whose process is gone (%s, pid %s); "
-                "releasing it",
+                "encoder %d is a session %s (%s); releasing it",
                 session.slot + 1,
+                discover_mod.epitaph(session, taken),
                 session.label,
-                session.terminal.get("pid"),
             )
         # Same order as the reaper's, and for the same reason: the tab is handed
         # back while the record that knows which tty it was on still exists.
         dropped = self.table.release_all(gone)
         self.restore_tabs(dropped)
+
+    def sweep_census(self) -> None:
+        """Ask the process table about the whole board, off the render thread.
+
+        The pid sweep in :meth:`drop_orphans` is free and runs constantly; this
+        is the one that costs a `ps` and therefore doesn't. It buys two things
+        that sweep cannot have for free, both in :mod:`mft.discover`: a pid for
+        the records that never learned one (:func:`~mft.discover.learn_pids`),
+        and the tty half of :func:`~mft.discover.orphans`, which is what finally
+        settles a knob left behind by a tab that closed without a `SessionEnd`.
+
+        On a thread because a subprocess in the run loop is three or four
+        dropped frames, and the answer is never urgent to the millisecond. One
+        at a time: they are all asking the same question, and a second thread
+        would only ask it of a table the first is already holding.
+        """
+        if not config.ORPHAN_SWEEP or self._censusing.is_set():
+            return
+        self._censusing.set()
+        threading.Thread(target=self._census, name="mft-census", daemon=True).start()
+
+    def _census(self) -> None:
+        try:
+            taken = discover_mod.census()
+            if taken is None:
+                log.debug("could not read the process table; skipping the census")
+                return
+            learned = discover_mod.learn_pids(self.table.all(), taken.procs)
+            for session, proc in learned:
+                log.info(
+                    "encoder %d is pid %d (%s), read out of the process table",
+                    session.slot + 1,
+                    proc.pid,
+                    session.label,
+                )
+            if learned:
+                # A pid is an identity token like any other, and one written
+                # straight onto a record is not in the table's index until this
+                # runs -- which is also where it merges with any other record
+                # already answering to that process. See `SessionTable.reconcile`.
+                self.table.reconcile()
+            self.drop_orphans(taken)
+        except Exception:
+            log.exception("census failed")
+        finally:
+            self._censusing.clear()
+            self._wake.set()
 
     def run(self) -> None:
         self.device.clear_all()
@@ -1075,6 +1132,11 @@ class Visualizer:
                 # way for an hour of TTL. See `SessionTable.reconcile`.
                 self.table.reconcile(now)
                 last_reap = now
+            if now - self._last_census > config.CENSUS_INTERVAL_SECONDS:
+                # Last, and on its own clock: everything above answers in this
+                # frame, and this one goes and asks the operating system.
+                self._last_census = now
+                self.sweep_census()
             # Nothing moving means nothing to be smooth for. Sweeps, fades and
             # brightness decay all change their cells every frame, so a board
             # with any of them on it never gets here; what does is a board of

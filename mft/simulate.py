@@ -98,10 +98,20 @@ def run_session(url: str, rng: random.Random, index: int, stop: threading.Event)
         },
     )
 
-    # A distinct tty per fake session, since slots are keyed on the terminal
-    # rather than the session id -- which is also what makes the `/clear` below
-    # land back on the same knob.
-    terminal = {"TERM_PROGRAM": "Apple_Terminal", "tty": f"/dev/ttys{index:03d}"}
+    # A distinct terminal identity per fake session, since slots are keyed on
+    # the terminal rather than the session id -- which is also what makes the
+    # `/clear` below land back on the same knob.
+    #
+    # Deliberately not a tty. These sessions have no terminal behind them, and a
+    # tty is the one identifier the daemon *checks* against the machine: a made
+    # up one belongs to somebody else's tab or to nobody, and the census would
+    # correctly reap every fake session on the board within half a minute. A
+    # made up `TERM_SESSION_ID` is a stronger slot key and is never resolved
+    # against anything, which is exactly what a simulator wants.
+    terminal = {
+        "TERM_PROGRAM": "Apple_Terminal",
+        "TERM_SESSION_ID": f"w0t{index}p0:00000000-0000-4000-8000-{index:012d}",
+    }
     send(hook_event_name="SessionStart", terminal=terminal)
     if abandoned:
         stop.wait(rng.uniform(2, 6))

@@ -265,23 +265,60 @@ loop — and releases the ones that don't. Every path that gives a session a
 terminal writes that pid: `register_session.py` sends its `getppid()`, which is
 the `claude` process itself, and discovery reads it out of the process table.
 
-Two things it deliberately won't conclude:
+That settles every session it can ask about, and its problem is the ones it
+can't. `notify.sh` names a tab without spawning a process to learn a pid, so a
+session whose `SessionStart` never reached the daemon — daemon down when the tab
+opened, daemon restarted mid-turn — runs its whole life on records the sweep has
+nothing to ask about. Those are the knobs that were still going stale.
 
-- **Nothing from a missing match.** Comparing each session against the *live*
-  process table would also catch the few records that never learned a pid (an
-  event from `notify.sh` for a session whose `SessionStart` we missed) — but the
-  evidence there is the absence of a match, so every way that matching can go
-  wrong goes wrong by clearing the board. A pid that no longer exists is a fact;
-  those records keep the hour instead.
-- **Nothing about pid reuse.** A dead session's number handed to some unrelated
-  process still reads as alive. That costs one stale encoder for an hour, at
-  odds long enough that paying for it with a subprocess every five seconds would
-  be the more expensive mistake.
+### The census
 
-Sessions that ended cleanly are skipped — their process is *supposed* to be
-gone, and they're already fading out on `SLOT_LINGER_SECONDS`.
-`MFT_ORPHAN_SWEEP=0` turns the whole thing off, which is only useful for a
-diagnosis: without it nothing takes a session off the board but a `SessionEnd`
+Every `CENSUS_INTERVAL_SECONDS` (30, on its own thread — one `ps` is ~150ms, or
+four dropped frames) the daemon reads the whole process table once and spends it
+on the two things the pid sweep can't have for free:
+
+- **`discover.learn_pids`** gives a pid to the records that never got one, by
+  matching them against processes that are running *right now* — argv's
+  `--session-id`, then an identity token the hook and the process table both
+  carry, then being the only Claude in a directory that only wants one. Every
+  step must be unambiguous; a wrong pid is worse than none, since it would answer
+  the sweep's question with somebody else's life. This is presence of evidence in
+  both directions, and it shrinks the set below rather than judging it.
+- **The tty half of `discover.orphans`.** A terminal tab holds its pty for
+  exactly as long as it's open; close it and no process on the machine is on that
+  tty again. So a session that named a tty whose tty is now free had its tab
+  closed — whatever any pid says.
+
+That second one is the only *absence* anything here concludes from, and the
+reason it's allowed to is that it recognises nothing. The earlier version of this
+section refused to compare sessions against the live process table, because that
+comparison rests on `claude_processes` still knowing what a session's argv looks
+like, and the day that changes it clears the board. Reading which ttys are in use
+needs no such knowledge — it's a column, not a command line. The census
+self-checks the read before trusting the negative (`Census.usable`: a real
+machine has hundreds of processes and at least one terminal, so a table with
+neither is a read that went wrong, not a desk that emptied), and the records with
+*neither* a pid nor a tty — the ones that would need argv recognition — still
+keep the hour.
+
+It also settles pid reuse, which the pid sweep gets wrong in the expensive
+direction: a recycled number reads as alive, but a live `claude` is on its tty by
+definition, so a recorded tty belonging to nobody outranks it.
+
+One case where a freed tty is expected and not acted on: a session handed off
+into a process under Claude Code's background daemon holds a live `host:` pid.
+Its tab closing isn't it ending — it's running somewhere else, and it keeps its
+encoder.
+
+The census also runs on wake, explicitly rather than on the interval: the clock
+it's paced by stopped with the machine, so a lid closed for a weekend is half a
+minute old from in here — and a suspend is precisely when the tabs on the board
+got closed without telling anyone.
+
+Sessions that ended cleanly are skipped by all of it — their process is
+*supposed* to be gone, and they're already fading out on `SLOT_LINGER_SECONDS`.
+`MFT_ORPHAN_SWEEP=0` turns both sweeps off, which is only useful for a
+diagnosis: without them nothing takes a session off the board but a `SessionEnd`
 or that hour.
 
 ```sh

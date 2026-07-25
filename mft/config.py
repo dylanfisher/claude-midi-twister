@@ -84,8 +84,9 @@ PORT_RETRY_SECONDS = 5.0
 #: A session that has not sent any hook event for this long is presumed dead
 #: (crashed terminal never fires SessionEnd) and its encoder is reclaimed. The
 #: backstop, not the mechanism: a session whose process is *known* gone is taken
-#: off the board within a reap by the orphan sweep below, and this hour is what
-#: is left for the ones that never recorded a pid to be checked against.
+#: off the board within a reap by the orphan sweep below, and one whose *tab* is
+#: known gone within a census. This hour is what is left over for the records
+#: that named neither a process nor a tty, which is very few of them.
 SESSION_TTL_SECONDS = 60 * 60
 
 #: Release an encoder as soon as the pid behind it stops existing. Turning this
@@ -93,6 +94,20 @@ SESSION_TTL_SECONDS = 60 * 60
 #: is a diagnosis, since nothing else here can take a session off the board
 #: without either a `SessionEnd` or that hour. See `mft.discover.orphans`.
 ORPHAN_SWEEP = _flag("MFT_ORPHAN_SWEEP", True)
+
+#: How often to read the whole process table on the board's behalf, which is
+#: what catches the orphans no pid can: a record that named a tty and never a
+#: pid, and a tab that has since closed. A subprocess, so not on the reaper's
+#: five seconds -- but half a minute is still well inside "you closed it and
+#: looked back at the desk". Off the render thread either way.
+CENSUS_INTERVAL_SECONDS = 30.0
+
+#: How few rows a `ps -e` has to return before that read is treated as broken
+#: rather than as a quiet machine. The point is the *negative* the census draws
+#: from an absent tty, and the one way that goes wrong is a read that came back
+#: empty-ish for its own reasons; a real macOS process table is in the hundreds,
+#: so anything under this is not a desk that emptied. See `mft.discover.Census`.
+CENSUS_MIN_ROWS = 32
 
 #: How long a finished session keeps its encoder lit before fading out. Three
 #: minutes: long enough that a session that finished while you were in another
