@@ -429,6 +429,90 @@ class ShutdownOverlay(Overlay):
             board[slot] = Cell(hue, config.ANIM_NONE, int(127 * level), level)
 
 
+class UnwrapOverlay(Overlay):
+    """The daemon arriving: the exit gesture played backwards, before the word.
+
+    :class:`ShutdownOverlay` is a spiral in and a fade out in unison. This is
+    that read right-to-left, and it is the same three movements in the opposite
+    order:
+
+    * the **rise** brings all sixteen encoders up together, white rings over one
+      hue, the way the exit comes up over its violet -- blue here, so which end
+      of a run you are watching is legible from across the room;
+    * the **hold** leaves the full board still for a beat, so it is seen whole
+      at least once rather than only on the way through;
+    * the **unwrap** walks :func:`spiral_path` *reversed* -- centre outward to
+      the top-left corner -- letting each encoder go dark as the head leaves it,
+      so the board comes apart along exactly the line it closed on.
+
+    Reversing the path rather than reusing it forward is the whole point: the
+    board ends dark in the corner where the exit's head began, and the pair reads
+    as one gesture the daemon undoes on the way in and redoes on the way out. It
+    hands over to a black board -- no hue left anywhere on it, which is what
+    :class:`TextOverlay` wants under the first letter of CLAUDE.
+    """
+
+    def __init__(
+        self,
+        started_at: float,
+        bank: int = 0,
+        rise: float = config.BOOT_UNWRAP_RISE_SECONDS,
+        hold: float = config.BOOT_UNWRAP_HOLD_SECONDS,
+        spiral: float = config.BOOT_UNWRAP_SPIRAL_SECONDS,
+        fall: float = config.BOOT_UNWRAP_FALL_SECONDS,
+    ) -> None:
+        self.started_at = started_at
+        self.bank = bank
+        self.rise = max(0.01, rise)
+        self.hold = max(0.0, hold)
+        self.spiral = max(0.01, spiral)
+        #: Clamped below the travel time, same as the shutdown rise: a fall
+        #: longer than the journey would leave the corner still lit at the end.
+        self.fall = max(0.01, min(fall, self.spiral * 0.5))
+        self.hue = int(
+            config.COLORS.get(config.BOOT_UNWRAP_COLOR, config.BOOT_UNWRAP_COLOR)
+        )
+        #: (slot, departure time) along the reversed spiral, everything dark by
+        #: the end of the travel. Built once rather than on each of the ~100
+        #: frames, and offset by the rise and hold so a departure time is
+        #: measured from the overlay's own start.
+        path = tuple(reversed(spiral_path(self.bank)))
+        travel = max(0.01, self.spiral - self.fall)
+        head = self.rise + self.hold
+        self._departures = tuple(
+            (slot, head + step / max(1, len(path) - 1) * travel)
+            for step, slot in enumerate(path)
+        )
+
+    @property
+    def duration(self) -> float:
+        return self.rise + self.hold + self.spiral
+
+    def done(self, now: float) -> bool:
+        return now - self.started_at >= self.duration
+
+    def apply(self, board: list[Cell], now: float, claimed=frozenset()) -> None:
+        t = now - self.started_at
+        if t < 0 or t >= self.duration:
+            return
+        # One envelope over the whole board, applied before the per-encoder
+        # fall: this is the "up in unison" part, and it is indifferent to where
+        # in the unwrap a given encoder will be let go.
+        gain = _smoothstep(t / self.rise)
+
+        for slot, departure in self._departures:
+            if not 0 <= slot < len(board):
+                continue
+            level = gain * (1.0 - _smoothstep((t - departure) / self.fall))
+            # The same floor the exit uses, for the same reason: a ring at the
+            # bottom of a fade is still a lit encoder, and this one has to hand a
+            # genuinely black board to the first letter of the word.
+            if level <= config.SHUTDOWN_DARK_LEVEL:
+                board[slot] = BLANK
+                continue
+            board[slot] = Cell(self.hue, config.ANIM_NONE, int(127 * level), level)
+
+
 class SpawnOverlay(Overlay):
     """A session just claimed this encoder: strike it, then settle.
 

@@ -1353,6 +1353,7 @@ class Overlays(unittest.TestCase):
             board.TextOverlay("RATE", t0, color=config.BANNER_COLOR),
             waiting,
             board.ShutdownOverlay(t0),
+            board.UnwrapOverlay(t0),
             board.SpawnOverlay(session, t0),
             board.ClearOverlay(session, t0),
             compaction,
@@ -1642,6 +1643,61 @@ class Overlays(unittest.TestCase):
         last = board.compose([], overlay.duration - 0.01, [overlay])
         self.assertTrue(all(c.color is None for c in last[:16]), last[0])
         self.assertTrue(overlay.done(overlay.duration))
+
+    def test_the_unwrap_rises_in_unison_on_one_hue_and_holds_the_board_whole(self):
+        # The inverse of the shutdown fade: sixteen encoders as one object, on
+        # one hue for the whole gesture the way the exit is, arriving at a full
+        # board rather than passing through one.
+        overlay = board.UnwrapOverlay(0.0)
+        levels = []
+        # Past the dark floor: the first couple of frames of an eased rise are
+        # under it, and below the floor an encoder is off rather than dim --
+        # which is the point of the floor and not an exception to the hue.
+        t = 0.15
+        while t < overlay.rise:
+            cells = board.compose([], t, [overlay])[: config.ENCODERS_PER_BANK]
+            self.assertEqual({c.color for c in cells}, {overlay.hue}, t)
+            self.assertEqual(len({round(c.brightness, 6) for c in cells}), 1, t)
+            levels.append(cells[0].brightness)
+            t += 0.05
+        for here, then in zip(levels, levels[1:]):
+            self.assertGreaterEqual(then, here - 1e-9)
+        held = board.compose([], overlay.rise + overlay.hold * 0.5, [overlay])
+        self.assertTrue(all(c.brightness > 0.95 for c in held[:16]), held[0])
+        self.assertTrue(all(c.ring > 120 for c in held[:16]), held[0])
+
+    def test_the_unwrap_comes_apart_from_the_centre_out_and_ends_black(self):
+        # The shutdown's spiral, reversed: the head leaves the middle and the
+        # last thing lit is the corner the exit gesture starts from.
+        overlay = board.UnwrapOverlay(0.0)
+        path = board.spiral_path(0)
+        # Just after the head departs the centre, and well before it reaches the
+        # corner: the middle is out, the corner is still whole.
+        t = overlay.rise + overlay.hold + overlay.fall + 0.05
+        early = board.compose([], t, [overlay])
+        self.assertEqual(early[path[-1]].brightness, 0.0, "the centre goes first")
+        self.assertGreater(early[path[0]].brightness, 0.9, "the corner goes last")
+
+        # The hue leaves with the light, not after it: the word gets a board
+        # with nothing on it, colour included.
+        last = board.compose([], overlay.duration - 0.01, [overlay])
+        self.assertTrue(all(c.brightness == 0.0 for c in last[:16]), last[0])
+        self.assertTrue(all(c.color is None for c in last[:16]), last[0])
+        self.assertTrue(overlay.done(overlay.duration))
+
+    def test_the_two_bookends_wear_different_hues(self):
+        # Both ends of a run are one hue held for the whole gesture; which end
+        # you are watching is the hue, since the spiral direction is only
+        # legible if you caught the start.
+        self.assertNotEqual(board.UnwrapOverlay(0.0).hue, board.ShutdownOverlay(0.0).hue)
+
+    def test_the_unwrap_is_over_before_the_word_starts(self):
+        # It is a preamble, not a co-star: the board is genuinely black when the
+        # C of CLAUDE strikes, and the pair together is still boot-length.
+        unwrap = board.UnwrapOverlay(0.0)
+        word = board.TextOverlay(config.BOOT_WORD, 0.0)
+        self.assertLess(unwrap.duration, word.duration)
+        self.assertLess(unwrap.duration + word.duration, 10.0)
 
     def test_shutdown_is_slower_than_before_but_still_beats_the_stop_timeout(self):
         # `--stop` gives the daemon five seconds to clear the LEDs and let go of

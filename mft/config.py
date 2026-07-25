@@ -634,11 +634,14 @@ TOOL_COLOR_DEFAULT = "azure"
 # daemon exited cleanly rather than died, and it costs a fraction of the time a
 # legible word does.
 #
-# None of it lights the RGB: not the word, not the waiting gradients after it,
-# ambient layer underneath both. The boot sequence is white light moving on a
-# dark board from start to finish. Colour is how this device means things, and
-# the one stretch where it has nothing to say is the one stretch where the hue
-# channel has no business being on.
+# The word lights no RGB, nor do the waiting gradients after it or the ambient
+# layer underneath both: white light moving on a dark board. Colour is how this
+# device means things, and the stretch where it has nothing to say is the
+# stretch where the hue channel has no business being on. The two bookend
+# gestures -- the unwrap on the way in, the spiral on the way out -- are the
+# exception, and they are one on purpose: each wears a single hue for its whole
+# length, blue in and violet out, which is how you tell a daemon starting from a
+# daemon leaving across the room.
 
 BOOT_WORD = "CLAUDE"
 #: Deliberately unhurried. The boot animation is the only time the device says
@@ -662,6 +665,39 @@ BOOT_HOLD_SECONDS = 0.0
 #: block, which is exactly the glyph pixel this wants -- so the word is spelled
 #: in light rather than in colour. Set this to a name from COLORS to tint it.
 BOOT_COLOR = None
+
+#: Before the word: the exit gesture, run backwards. The board fades up whole in
+#: white, holds, and then unwraps from the centre outward along the shutdown
+#: spiral reversed, so the daemon arrives by undoing exactly the shape it leaves
+#: on. It is the same argument as the word being unhurried -- this is the one
+#: moment the device is allowed to be a thing rather than a status -- and it is
+#: the reason the two gestures share `spiral_path` rather than each having a
+#: path of their own.
+BOOT_UNWRAP_ANIMATION = _flag("MFT_BOOT_UNWRAP", True)
+#: The whole board coming up in unison -- the inverse of `SHUTDOWN_FADE_SECONDS`
+#: and shorter than it, because arriving is allowed to be brisker than leaving:
+#: the word is still to come and the total is what you actually wait through.
+BOOT_UNWRAP_RISE_SECONDS = 1.0
+#: The full board, whole and still, before it starts coming apart. Mirrors
+#: `SHUTDOWN_HOLD_SECONDS`: without it the rise runs straight into the unwrap and
+#: the board is never once seen complete.
+BOOT_UNWRAP_HOLD_SECONDS = 0.5
+#: Time for the head to walk all 16 encoders, centre to corner. Mirrors
+#: `SHUTDOWN_SPIRAL_SECONDS`.
+BOOT_UNWRAP_SPIRAL_SECONDS = 1.4
+#: How long one encoder takes to go dark once the head leaves it. Overlaps the
+#: travel, for the same reason the shutdown rise does: an edge moving, not
+#: sixteen lamps switching off one at a time.
+BOOT_UNWRAP_FALL_SECONDS = 0.3
+#: The one hue the arrival wears, the way `SHUTDOWN_COLOR` is the one hue the
+#: exit wears -- blue against the exit's violet, so the two ends of a run are
+#: told apart at a glance rather than only by which direction the spiral went.
+#: This is the exception to boot being colourless: the rule is about the *word*
+#: and the field after it, which say nothing and so light no RGB. The bookend
+#: gestures are not statuses either, but they are the device announcing itself,
+#: and both are over before the first letter strikes. The rings still carry the
+#: light -- the hue sits underneath them, exactly as it does on the way out.
+BOOT_UNWRAP_COLOR = "blue"
 
 # --- Waiting ----------------------------------------------------------------
 # What the board does after the word, while no Claude is running. It used to be

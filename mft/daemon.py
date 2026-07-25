@@ -1018,6 +1018,12 @@ class Visualizer:
         # through it reads as a session that just started.
         self.adopt_running_sessions()
         if config.BOOT_ANIMATION:
+            # The exit gesture backwards, then the word: the board comes up
+            # whole, unwraps itself from the centre out along the same spiral
+            # the shutdown closes on, and hands a black board to the C of
+            # CLAUDE. Both block, and both are white on a dark board.
+            if config.BOOT_UNWRAP_ANIMATION:
+                self.animate(board_mod.UnwrapOverlay(time.monotonic()))
             self.animate(
                 board_mod.TextOverlay(config.BOOT_WORD, time.monotonic())
             )
