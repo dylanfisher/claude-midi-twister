@@ -13,6 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mft import discover  # noqa: E402
+from mft.identity import is_hostless, terminal_keys  # noqa: E402
 from mft.state import Session, SessionTable  # noqa: E402
 
 
@@ -441,6 +442,34 @@ class LearnPids(unittest.TestCase):
         self.assertEqual(discover.learn_pids([session], [proc]), [(session, proc)])
         self.assertEqual(session.terminal["pid"], "41")
 
+    def test_it_writes_the_whole_terminal_not_only_the_number(self):
+        """A pid alone *is* a description -- of a process with no tab behind it.
+
+        Written onto a record with nothing else on it, it filed a terminal under
+        `host:`, where the tab's own record can never match it and the orphan
+        sweep will not touch it.
+        """
+        session = self.add("adopted")
+        proc = discover.Proc(
+            pid=41,
+            tty="/dev/ttys003",
+            cwd="/tmp/p",
+            env={"TERM_SESSION_ID": "ABC", "TERM_PROGRAM": "Apple_Terminal"},
+        )
+        discover.learn_pids([session], [proc])
+        self.assertFalse(is_hostless(session.terminal))
+        self.assertEqual(session.terminal["tty"], "/dev/ttys003")
+        self.assertEqual(session.terminal["TERM_SESSION_ID"], "ABC")
+        self.assertIn("pid:41", terminal_keys(session.terminal))
+
+    def test_a_process_with_no_tty_still_hands_over_its_pid(self):
+        """The desktop-app case: nothing to describe, and the pid is the point."""
+        session = self.add("app-session")
+        proc = discover.Proc(pid=42, cwd="/elsewhere", session_id="app-session")
+        discover.learn_pids([session], [proc])
+        self.assertTrue(is_hostless(session.terminal))
+        self.assertEqual(session.terminal["pid"], "42")
+
     def test_argv_names_it_outright(self):
         session = self.add("app-session")
         proc = discover.Proc(pid=42, cwd="/elsewhere", session_id="app-session")
@@ -482,6 +511,76 @@ class LearnPids(unittest.TestCase):
         session.ended_at = time.monotonic()
         proc = discover.Proc(pid=47, tty="/dev/ttys003", cwd="/tmp/p")
         self.assertEqual(discover.learn_pids([session], [proc]), [])
+
+
+class RelabelHosts(unittest.TestCase):
+    """A record that called its own tab a host process. See
+    `discover.relabel_hosts`."""
+
+    def setUp(self):
+        self.table = SessionTable()
+
+    def add(self, session_id: str, cwd: str = "/tmp/p", **terminal) -> Session:
+        session = self.table.ensure(session_id, cwd, terminal)
+        assert session is not None
+        session.terminal = dict(terminal)
+        return session
+
+    def test_a_host_pid_sitting_on_a_tty_is_a_tab(self):
+        session = self.add("mislabelled", pid="62882")
+        self.assertEqual(session.keys, {"host:62882"})
+        proc = discover.Proc(
+            pid=62882, tty="/dev/ttys000", cwd="/tmp/p", env={"TERM_SESSION_ID": "ABC"}
+        )
+        self.assertEqual(discover.relabel_hosts([session], [proc]), [(session, proc)])
+        self.assertFalse(is_hostless(session.terminal))
+        self.assertEqual(session.terminal["tty"], "/dev/ttys000")
+        self.table.reconcile()
+        self.assertIn("pid:62882", session.keys)
+
+    def test_a_real_handoff_is_left_alone(self):
+        """The process a conversation was handed to holds no tty, and a census
+        filters it out of the table entirely (`NOT_A_SESSION`)."""
+        session = self.add("handed-off", pid="900")
+        self.assertEqual(discover.relabel_hosts([session], []), [])
+        self.assertEqual(session.terminal, {"pid": "900"})
+        other = discover.Proc(pid=901, tty="/dev/ttys002", cwd="/tmp/p")
+        self.assertEqual(discover.relabel_hosts([session], [other]), [])
+        self.assertTrue(is_hostless(session.terminal))
+
+    def test_a_record_that_names_its_tab_is_not_touched(self):
+        """A session handed off *out of* a tab holds both tokens, and the tab
+        description it already has is the better one."""
+        session = self.add("both", tty="/dev/ttys004", pid="500")
+        session.keys.add("host:900")
+        proc = discover.Proc(pid=900, tty="/dev/ttys009", cwd="/tmp/p")
+        self.assertEqual(discover.relabel_hosts([session], [proc]), [])
+        self.assertEqual(session.terminal["tty"], "/dev/ttys004")
+
+    def test_the_phantom_encoder_this_exists_for(self):
+        """The whole failure, end to end.
+
+        A session adopted at boot with no terminal learns its pid off the
+        process table; the tab it is in registers separately with a tty. Filed
+        under `host:`, the two never met and the sweep could not touch either --
+        one terminal, two encoders, for as long as the tab stayed open.
+        """
+        adopted = self.table.ensure("adopted", "/tmp/p", {})
+        adopted.terminal = {}
+        proc = discover.Proc(pid=62882, tty="/dev/ttys000", cwd="/tmp/p")
+        discover.learn_pids(self.table.all(), [proc])
+        self.table.reconcile()
+        # Then the tab it is sitting in runs the SessionStart hook.
+        tab = self.table.ensure("tab", "/tmp/p", {"tty": "/dev/ttys000", "pid": "62882"})
+        self.table.reconcile()
+        self.assertEqual(len(self.table.all()), 1)
+        self.assertEqual(tab.slot, adopted.slot)
+
+    def test_an_ended_session_is_not_repaired(self):
+        session = self.add("gone", pid="62882")
+        session.ended_at = time.monotonic()
+        proc = discover.Proc(pid=62882, tty="/dev/ttys000", cwd="/tmp/p")
+        self.assertEqual(discover.relabel_hosts([session], [proc]), [])
 
 
 if __name__ == "__main__":

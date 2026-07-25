@@ -14,8 +14,9 @@ different amounts:
   subprocess, no file read -- which is exactly why it can afford to be the thing
   that stops a closed tab from holding a knob for the full TTL.
 * **the census** runs on its own interval, on its own thread, because it spawns
-  ``ps``. It buys the two things the free sweep cannot have: a pid for the
-  records that never learned one, and the tty half of
+  ``ps``. It buys the three things the free sweep cannot have: a pid for the
+  records that never learned one, the tab back for a record that mistook its
+  own terminal for a host process, and the tty half of
   :func:`mft.discover.orphans`.
 
 Everything here is wrapped whole. Nothing about a roster is worth failing to
@@ -171,7 +172,17 @@ class Upkeep:
                     proc.pid,
                     session.label,
                 )
-            if learned:
+            # After the pass above, so a record that just learned a pid is
+            # already describing its tab and has nothing here to repair.
+            relabelled = discover.relabel_hosts(self.table.all(), taken.procs)
+            for session, proc in relabelled:
+                log.info(
+                    "encoder %d is the tab on %s, not a host process (%s)",
+                    session.slot + 1,
+                    proc.tty,
+                    session.label,
+                )
+            if learned or relabelled:
                 # A pid is an identity token like any other, and one written
                 # straight onto a record is not in the table's index until this
                 # runs -- which is also where it merges with any other record

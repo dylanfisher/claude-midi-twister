@@ -29,9 +29,10 @@ than everything else in this file.
 
 :func:`census` is the middle clock between them. Adoption runs at boot and on
 wake; the pid check runs constantly and for free; this reads the whole process
-table every half minute and spends it on the two things neither of those can
-do -- giving a pid to the records that never had one (:func:`learn_pids`), and
-noticing that a tty on the board belongs to nobody. That last one is the only
+table every half minute and spends it on the things neither of those can do --
+giving a pid to the records that never had one (:func:`learn_pids`), taking a
+tab back from a record that called it a host process (:func:`relabel_hosts`),
+and noticing that a tty on the board belongs to nobody. That last one is the only
 *absence* anything here draws a conclusion from, and it is allowed to because
 it recognises nothing: a closed tab frees its pty, and reading which ttys are
 in use does not depend on knowing what a Claude process looks like.
@@ -50,7 +51,7 @@ from typing import Any, Callable, Iterable, Optional
 
 from . import config
 from .context import tail_lines
-from .identity import terminal_keys
+from .identity import is_hostless, merge_terminal, terminal_keys
 from .state import Session, SessionTable
 
 log = logging.getLogger("mft.discover")
@@ -389,6 +390,14 @@ def learn_pids(
     pid here is worse than none -- it would answer the sweep's question with
     somebody else's life.
 
+    What gets written on is the process's whole :attr:`Proc.terminal`, not only
+    its number. A pid on its own *is* a description -- ``{"pid": N}`` is exactly
+    what :func:`mft.identity.is_hostless` calls a process with no terminal behind
+    it -- so writing one onto a record with nothing else on it filed a tab under
+    ``host:`` instead of ``pid:`` + ``tty:``, in a namespace that can never match
+    the tab's own record and that :func:`orphans` treats as immune. The tty was
+    on hand the whole time; the fix is to say the rest of what we found.
+
     Returns the pairs it made; the caller writes them into the table's index by
     reconciling, the same way :func:`adopt` does.
     """
@@ -410,10 +419,65 @@ def learn_pids(
         if found is None:
             continue
         spare.remove(found)
-        session.terminal = dict(session.terminal or {})
-        session.terminal["pid"] = str(found.pid)
+        session.terminal = _describe(session.terminal, found)
         matched.append((session, found))
     return matched
+
+
+def _describe(stored: dict[str, Any], found: Proc) -> dict[str, Any]:
+    """Fold what the process table knows about a process onto a record.
+
+    ``merge_terminal`` declines to let a bare pid overwrite a description of a
+    tab, which is the right answer for a hook payload and the wrong one here:
+    that pid is the thing this record was missing. So the merge decides the tab
+    fields and the pid is written back afterwards either way.
+    """
+    described = merge_terminal(dict(stored or {}), found.terminal)
+    described["pid"] = str(found.pid)
+    return described
+
+
+def relabel_hosts(
+    sessions: Iterable[Session], procs: list[Proc]
+) -> list[tuple[Session, Proc]]:
+    """Give a tab back to a record that is calling its own process a *host*.
+
+    A record whose only token is ``host:N`` is saying it has no terminal of its
+    own -- it was handed a conversation by a process somewhere else. When pid N
+    turns out to be sitting on a tty, that is not what happened: the record
+    described itself wrong, and it is stuck that way. ``host:N`` never matches
+    the tab's own ``pid:N`` (:func:`mft.identity.terminal_keys` keeps the two
+    namespaces apart on purpose), so `SessionTable.reconcile` sees two unrelated
+    terminals, and a live ``host:`` pid makes :func:`orphans` skip the tty test
+    -- the encoder is immune to every way the board has of letting go of one.
+
+    Nothing is guessed here: the pid is the record's own, and this only recovers
+    the tty and environment already sitting next to it in the process table. A
+    genuine handoff is untouched, because the process it names is one of
+    :data:`NOT_A_SESSION` and never appears in a census at all.
+
+    Returns the pairs it repaired, for the caller to log and reconcile.
+    """
+    live = [s for s in sessions if s.ended_at is None]
+    by_pid = {p.pid: p for p in procs if p.tty}
+    repaired: list[tuple[Session, Proc]] = []
+    for session in live:
+        # A record already describing a tab has the better answer, even when it
+        # also holds a ``host:`` token -- that is a session handed off *out of*
+        # a terminal, and both halves of it are true.
+        if session.terminal and not is_hostless(session.terminal):
+            continue
+        pids = _pid_sources(session)[1]
+        if is_hostless(session.terminal):
+            pids = _numbers([session.terminal["pid"]]) + pids
+        for pid in dict.fromkeys(pids):
+            found = by_pid.get(pid)
+            if found is None:
+                continue
+            session.terminal = _describe(session.terminal, found)
+            repaired.append((session, found))
+            break
+    return repaired
 
 
 def _match(session: Session, procs: list[Proc], by_cwd: bool = True) -> Optional[Proc]:

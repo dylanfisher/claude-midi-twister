@@ -275,7 +275,7 @@ nothing to ask about. Those are the knobs that were still going stale.
 
 Every `CENSUS_INTERVAL_SECONDS` (30, on its own thread — one `ps` is ~150ms, or
 four dropped frames) the daemon reads the whole process table once and spends it
-on the two things the pid sweep can't have for free:
+on the things the pid sweep can't have for free:
 
 - **`discover.learn_pids`** gives a pid to the records that never got one, by
   matching them against processes that are running *right now* — argv's
@@ -283,13 +283,27 @@ on the two things the pid sweep can't have for free:
   carry, then being the only Claude in a directory that only wants one. Every
   step must be unambiguous; a wrong pid is worse than none, since it would answer
   the sweep's question with somebody else's life. This is presence of evidence in
-  both directions, and it shrinks the set below rather than judging it.
+  both directions, and it shrinks the set below rather than judging it. What it
+  writes on the record is the process's *whole* description, not just its
+  number — see below.
+- **`discover.relabel_hosts`** takes that back when it was wrong. A pid on its
+  own is already a description: `{"pid": N}` is exactly what a session with no
+  terminal of its own reports, so a record wearing nothing else gets filed under
+  `host:N` rather than `pid:N` + `tty:`. Those are different namespaces on
+  purpose and nothing compares across them, so such a record can never meet the
+  tab's own record — and a live `host:` pid makes `orphans` skip the tty test as
+  well. One terminal, two encoders, immune to every way the board has of letting
+  a knob go. When a `host:` pid turns out to be sitting on a tty it was never a
+  host, and this hands the tab back. Nothing is guessed: the pid is the record's
+  own and only the tty and environment beside it are recovered. A genuine
+  handoff is untouched, because the process it names is a `NOT_A_SESSION` helper
+  that no census returns.
 - **The tty half of `discover.orphans`.** A terminal tab holds its pty for
   exactly as long as it's open; close it and no process on the machine is on that
   tty again. So a session that named a tty whose tty is now free had its tab
   closed — whatever any pid says.
 
-That second one is the only *absence* anything here concludes from, and the
+That last one is the only *absence* anything here concludes from, and the
 reason it's allowed to is that it recognises nothing. The earlier version of this
 section refused to compare sessions against the live process table, because that
 comparison rests on `claude_processes` still knowing what a session's argv looks
