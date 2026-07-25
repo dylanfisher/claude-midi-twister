@@ -10,6 +10,11 @@ happened with a notification.
 An .app is just a folder with a specific layout, so this needs no compiler and
 no dependencies: an Info.plist describing the bundle, a shell script as the
 executable, and an icon drawn below with zlib and arithmetic.
+
+The bundle is also the daemon's face to macOS privacy: it carries the Apple
+Events usage description and the signature that let a press raise a *tab*
+rather than just a window. See the Info.plist comment and :func:`sign` -- both
+are load-bearing, and missing either fails silently rather than loudly.
 """
 
 from __future__ import annotations
@@ -300,6 +305,37 @@ exit 1
 """
 
 
+def sign(app: Path) -> bool:
+    """Ad-hoc sign the bundle, so a TCC decision has somewhere to live.
+
+    The usage description gets us a prompt; a signature is what lets the answer
+    survive. TCC records an Automation grant against the client's *designated
+    requirement*, and an unsigned bundle has none -- so the grant is stored
+    against a bare filesystem path, which the Privacy & Security pane can't
+    render a name or an icon for and therefore doesn't list at all. You are
+    left having allowed something you cannot see and cannot revoke.
+
+    Ad-hoc (`-s -`) is the strongest identity available without a Developer ID,
+    and it costs one thing worth knowing: the requirement is the code hash, so
+    every rebuild is a different app as far as TCC is concerned and you get
+    asked once more. Rebuilds are rare; being asked is the whole point.
+    """
+    if not shutil.which("codesign"):
+        print("codesign missing; the app will work but can't be granted Automation")
+        return False
+    result = subprocess.run(
+        ["codesign", "--force", "--sign", "-", str(app)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        print(f"codesign failed: {result.stderr.strip()}")
+        return False
+    print("signed (ad-hoc)")
+    return True
+
+
 def build(dest_dir: Path, python: Path) -> Path:
     app = dest_dir / f"{APP_NAME}.app"
     macos = app / "Contents" / "MacOS"
@@ -321,6 +357,22 @@ def build(dest_dir: Path, python: Path) -> Path:
         "LSMinimumSystemVersion": "11.0",
         # Background app: no dock icon, no menu bar, just does the thing.
         "LSUIElement": True,
+        # Without this key a press can never raise a *tab*, only a window --
+        # and nothing says so. The daemon reaches terminals over AppleScript,
+        # and since 10.14 a process that sends Apple Events from a bundle with
+        # no usage description is refused with -1743 and *not prompted*: there
+        # is no sentence to put in the dialog, so macOS skips it and denies
+        # forever. The string below is what the Automation prompt reads out.
+        #
+        # It has to live here rather than anywhere nearer the AppleScript
+        # because the daemon itself is a bare interpreter with no Info.plist of
+        # its own; TCC asks the *responsible* process, which is the app that
+        # launched it. That is also why starting the daemon by hand from a
+        # terminal works -- it borrows that terminal's usage description.
+        "NSAppleEventsUsageDescription": (
+            f"{APP_NAME} raises the terminal tab a Claude session is running "
+            "in when you press its encoder."
+        ),
         "NSHumanReadableCopyright": "",
     }
     (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
@@ -335,6 +387,10 @@ def build(dest_dir: Path, python: Path) -> Path:
 
     print("drawing icon...")
     build_icns(draw_icon(), resources / "icon.icns")
+
+    # Last, because signing seals the bundle's contents: anything written after
+    # this invalidates the signature it was written into.
+    sign(app)
 
     # Nudge Spotlight/LaunchServices so it shows up without a logout.
     subprocess.run(["touch", str(app)], check=False)
