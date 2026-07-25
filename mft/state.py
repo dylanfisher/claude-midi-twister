@@ -871,6 +871,32 @@ def clear_session(session: Session, now: float) -> list[str]:
     return [EFFECT_CLEAR]
 
 
+def still_working(session: Session) -> None:
+    """Paint `working`, but only for a turn that is still running.
+
+    Subagents outlive the turn that spawned them. A turn that launches ten of
+    them in the background finishes -- `Stop`, green, decaying -- while they are
+    all still going, and their `SubagentStop`s, plus the `PostToolUse` of the
+    call that spawned each one, land seconds *after* it. Taken at face value
+    those repaint `working` over the green and, since nothing else is coming,
+    leave the encoder orange until the next prompt: a session sitting there
+    waiting for you, saying it is busy. That is exactly the knob that lies for
+    an hour.
+
+    `turn_started_at` is the only thing that says a turn is live, and `Stop`
+    clears it. `PreToolUse` sets it when it is missing, because a tool call is
+    itself proof of a live turn -- otherwise a session adopted mid-turn, or one
+    whose `UserPromptSubmit` went missing, could never look busy at all.
+
+    The count is deliberately *not* guarded: a straggling subagent still adds
+    and removes its violet pip, so the board keeps saying something is running.
+    Only the parent's own colour is protected.
+    """
+    if session.turn_started_at is None:
+        return
+    session.set_state("working")
+
+
 def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
     """Fold one hook payload into the session's state.
 
@@ -930,6 +956,8 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
         key = _tool_use_key(event)
         if key:
             session.subagents_in_flight.add(key)
+        if session.turn_started_at is None:
+            session.turn_started_at = now
         session.set_state("working")
 
     elif name in ("PostToolUse", "PostToolUseFailure"):
@@ -943,7 +971,7 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
         # spin rate is tool-call frequency and a ring that stops is a stall.
         session.arc = (session.arc + 1) % config.ARC_SEGMENTS
         session.tool_history.append(tool)
-        session.set_state("working")
+        still_working(session)
 
     elif name == "MessageDisplay":
         session.set_state("streaming")
@@ -968,7 +996,7 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
         key = _agent_key(event)
         if key:
             session.subagents_in_flight.add(key)
-        session.set_state("working")
+        still_working(session)
 
     elif name == "SubagentStop":
         key = _agent_key(event)
@@ -983,7 +1011,7 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
             )
             if stale:
                 session.subagents_in_flight.discard(stale)
-        session.set_state("working")
+        still_working(session)
 
     elif name == "PreCompact":
         session.compacting_since = now

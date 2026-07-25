@@ -569,6 +569,43 @@ class StateMachine(unittest.TestCase):
             counts.append(self.session.subagents)
         self.assertEqual(counts, [1, 2, 2, 2])
 
+    def test_a_subagent_finishing_after_the_turn_does_not_undo_the_green(self):
+        """Ten background subagents outlive the turn that spawned them: `Stop`
+        lands while they run, and their stops arrive seconds later. Taken as
+        work they leave a finished session orange until the next prompt."""
+        self.feed(
+            event("UserPromptSubmit"),
+            event("PreToolUse", tool_name="Task", tool_use_id="t1"),
+            event("SubagentStart", agent_id="x"),
+            event("Stop"),
+        )
+        self.assertEqual(self.session.state, "done")
+        self.feed(
+            event("SubagentStop", agent_id="x"),
+            event("PostToolUse", tool_name="Task", tool_use_id="t1"),
+        )
+        self.assertEqual(self.session.state, "done")
+        # ...but the pile still empties, so the violet pips are honest.
+        self.assertEqual(self.session.subagents, 0)
+
+    def test_a_straggler_before_the_turn_ends_is_still_work(self):
+        self.feed(
+            event("UserPromptSubmit"),
+            event("PreToolUse", tool_name="Task", tool_use_id="t1"),
+            event("MessageDisplay"),
+        )
+        self.assertEqual(self.session.state, "streaming")
+        self.feed(event("SubagentStop", agent_id="x"))
+        self.assertEqual(self.session.state, "working")
+
+    def test_a_tool_call_is_proof_of_a_live_turn(self):
+        """A session adopted mid-turn never saw its UserPromptSubmit; without
+        this it could never look busy at all."""
+        self.feed(event("PreToolUse", tool_name="Bash", tool_use_id="t1"))
+        self.assertEqual(self.session.state, "working")
+        self.feed(event("MessageDisplay"), event("PostToolUse", tool_name="Bash"))
+        self.assertEqual(self.session.state, "working")
+
     def test_a_new_turn_clears_the_pile(self):
         """The only real floor available: a killed subagent never stops."""
         self.feed(event("SubagentStart", agent_id="x"))
