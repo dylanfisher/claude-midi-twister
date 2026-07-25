@@ -30,7 +30,8 @@ curl -s localhost:7654/status | python3 -m json.tool
 
 Always use `.venv/bin/python`, never bare `python3` — the venv holds the MIDI
 deps. `.venv/bin/claude-twister` is that same interpreter under a name Activity
-Monitor can show; the app bundle runs the daemon through it, and so can you. There is no linter, formatter, or type checker configured; match the
+Monitor can show; the app bundle runs the daemon through it, and so can you.
+There is no linter, formatter, or type checker configured; match the
 surrounding code by hand.
 
 ### Developing without a Twister
