@@ -82,8 +82,17 @@ WAKE_MIN_SLEEP_SECONDS = 2.0
 PORT_RETRY_SECONDS = 5.0
 
 #: A session that has not sent any hook event for this long is presumed dead
-#: (crashed terminal never fires SessionEnd) and its encoder is reclaimed.
+#: (crashed terminal never fires SessionEnd) and its encoder is reclaimed. The
+#: backstop, not the mechanism: a session whose process is *known* gone is taken
+#: off the board within a reap by the orphan sweep below, and this hour is what
+#: is left for the ones that never recorded a pid to be checked against.
 SESSION_TTL_SECONDS = 60 * 60
+
+#: Release an encoder as soon as the pid behind it stops existing. Turning this
+#: off costs an hour of a knob describing a tab you closed; the only reason to
+#: is a diagnosis, since nothing else here can take a session off the board
+#: without either a `SessionEnd` or that hour. See `mft.discover.orphans`.
+ORPHAN_SWEEP = _flag("MFT_ORPHAN_SWEEP", True)
 
 #: How long a finished session keeps its encoder lit before fading out. Three
 #: minutes: long enough that a session that finished while you were in another

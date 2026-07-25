@@ -73,7 +73,9 @@ hooks/notify.sh, hooks/register_session.py  ──POST /event──►  mft/daem
   share a glyph) because every change is a write down someone's tty; see the
   README section.
 - `discover.py` — adopt sessions that predate the daemon (transcripts joined
-  with the process table).
+  with the process table), and the reverse: `orphans` releases the encoders
+  whose recorded pid no longer exists, which is what keeps a closed tab from
+  holding a knob for the full TTL.
 - `power.py` — system sleep and wake, over `ctypes` into IOKit. Load-bearing
   fact, documented at length there and in the README: `time.monotonic()` on
   macOS does not advance while the machine is asleep, so every deadline in the

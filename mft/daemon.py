@@ -968,6 +968,41 @@ class Visualizer:
             # awake, and its first half hour is measured from now.
             self._sleep.touch(now)
 
+    def drop_orphans(self) -> None:
+        """Take back the encoders whose Claude process has exited.
+
+        The other half of :meth:`adopt_running_sessions`, on the reaper's clock
+        rather than at boot, and the answer to the one failure the TTL is too
+        slow for: you close every session and a knob stays lit, because the tab
+        that owned it never got to fire `SessionEnd`. See
+        :func:`mft.discover.orphans` for what it will and will not conclude.
+
+        Cheap enough to sit in the reap: it is one signal 0 per session, no
+        subprocess and no file read, which is exactly why it can run every five
+        seconds instead of on a discovery-sized interval.
+        """
+        if not config.ORPHAN_SWEEP:
+            return
+        try:
+            gone = discover_mod.orphans(self.table.all())
+        except Exception:
+            log.exception("orphan sweep failed")
+            return
+        if not gone:
+            return
+        for session in gone:
+            log.info(
+                "encoder %d is a session whose process is gone (%s, pid %s); "
+                "releasing it",
+                session.slot + 1,
+                session.label,
+                session.terminal.get("pid"),
+            )
+        # Same order as the reaper's, and for the same reason: the tab is handed
+        # back while the record that knows which tty it was on still exists.
+        dropped = self.table.release_all(gone)
+        self.restore_tabs(dropped)
+
     def run(self) -> None:
         self.device.clear_all()
         self.device.listen(self.on_midi)
@@ -1023,6 +1058,7 @@ class Visualizer:
             self.paint_tabs(now)
             if now - last_reap > REAP_INTERVAL_SECONDS:
                 self.restore_tabs(self.table.reap())
+                self.drop_orphans()
                 # Alongside the reaper, and for the same reason it exists: what
                 # this catches is a board that looks entirely plausible and is
                 # quietly wrong -- one tab on two encoders -- and would stay that

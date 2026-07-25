@@ -20,6 +20,12 @@ Neither is sufficient alone, so nothing is adopted without both. The bias
 throughout is toward showing too little: a missing encoder is a session you
 find in a moment anyway, while a phantom one is a knob that lies until the TTL
 reaps it an hour later.
+
+The same process table answers the opposite question, which is why
+:func:`orphans` lives here too: a session on the board whose claude is gone.
+Adoption is a guess that has to be right; that one is a fact, and it is checked
+on a much tighter loop -- see its docstring for why it is deliberately narrower
+than everything else in this file.
 """
 
 from __future__ import annotations
@@ -31,7 +37,7 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from . import config
 from .context import tail_lines
@@ -256,6 +262,96 @@ def claude_processes() -> Optional[list[Proc]]:
         )
         for pid, tty, argv in found
     ]
+
+
+# --- liveness ---------------------------------------------------------------
+
+
+def pid_alive(pid: int) -> bool:
+    """Is there still a process with this number? Signal 0 asks without sending.
+
+    ``EPERM`` counts as alive: something is holding the number, and this is only
+    ever asked about a process we started ourselves, so the answer in practice
+    is that the pid was reused by something we don't own.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True
+    return True
+
+
+def orphans(
+    sessions: Iterable[Session], alive: Optional[Callable[[int], bool]] = None
+) -> list[Session]:
+    """Sessions whose Claude process is gone, and whose encoder is now a lie.
+
+    `SessionEnd` is the only thing that retires a slot promptly, and it is the
+    one hook that routinely does not fire: a closed terminal tab, a killed
+    window, a `kill -9`, a laptop that came back from a crash. What is left is a
+    record on an encoder that answers to nothing, and it sits there for the full
+    `SESSION_TTL_SECONDS` -- an hour of a knob describing a session you closed.
+    That is the orphan you actually see: the board is empty, and one light is on.
+
+    The check is the recorded pid and nothing else. Every path that creates a
+    session with a terminal writes one -- ``register_session.py`` sends its
+    ``getppid()``, which is the claude process itself, and discovery reads the
+    process table directly -- so this covers nearly everything, and what it
+    covers it settles outright: a pid that no longer exists is not a matter of
+    interpretation. Two things were deliberately left out of it:
+
+    *   **Matching against the live process table.** It would catch the handful
+        of records that never learned a pid (an event from ``notify.sh`` for a
+        session whose SessionStart the daemon missed), but the evidence there is
+        the *absence* of a match rather than the presence of a death, so every
+        way that matching can be wrong -- an argv shape :func:`claude_processes`
+        stops recognising, a `ps` that fails to read an environment -- goes
+        wrong by clearing the board. Absence of proof is not what invariant 6
+        asks for. Those records keep the TTL.
+    *   **Pid reuse.** A dead session's number handed to some unrelated process
+        reads as alive here. It costs an hour of one stale encoder, at odds
+        long enough that paying for it with a subprocess in the run loop, every
+        five seconds, would be the more expensive mistake.
+
+    Sessions that ended cleanly are skipped: their process is *supposed* to be
+    gone, and they are already on the `SLOT_LINGER_SECONDS` clock that fades
+    them out. Reaping those here would just cut the fade off.
+    """
+    check = pid_alive if alive is None else alive
+    dead: list[Session] = []
+    for session in sessions:
+        if session.ended_at is not None:
+            continue
+        pids = _recorded_pids(session)
+        if pids and not any(check(pid) for pid in pids):
+            dead.append(session)
+    return dead
+
+
+def _recorded_pids(session: Session) -> list[int]:
+    """Which processes this record claims to be, best evidence first.
+
+    ``terminal`` is the current description of the tab -- `merge_terminal`
+    replaces it wholesale when an arriving pid contradicts the stored one -- so
+    when it names a pid, that is the pid and nothing else is consulted.
+    ``keys`` is the fallback for the records that never had a terminal written
+    onto them, and it is an *accumulator*: a session that outlived a restart in
+    the same tab can hold the pid it used to be as well as the one it is. Any
+    one of them alive is enough, which is why the caller asks whether they are
+    all dead rather than whether one is.
+    """
+    raw = [session.terminal.get("pid")] if session.terminal.get("pid") else []
+    if not raw:
+        raw = [key.split(":", 1)[1] for key in session.keys if key.startswith("pid:")]
+    pids = []
+    for value in raw:
+        try:
+            pids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return pids
 
 
 # --- transcripts ------------------------------------------------------------

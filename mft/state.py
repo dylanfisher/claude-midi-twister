@@ -592,6 +592,27 @@ class SessionTable:
             self._release(session)
             self._compact()
 
+    def release_all(self, sessions: Iterable[Session]) -> list[Session]:
+        """Drop a batch of sessions and compact once, at the end.
+
+        The batch form exists for the same reason :meth:`reap` compacts after
+        its sweep rather than inside it: every release renumbers the slots below
+        it, so releasing three sessions one at a time moves the survivors three
+        times and logs every move.
+
+        Returns only the records that were actually still in the table, so a
+        caller working from a list it gathered a moment ago cannot double-drop.
+        """
+        with self._lock:
+            dropped = [
+                s for s in sessions if self._sessions.get(s.session_id) is s
+            ]
+            for session in dropped:
+                self._release(session)
+            if dropped:
+                self._compact()
+        return dropped
+
     def reap(self) -> list[Session]:
         """Drop sessions that ended a while ago, or that went silent (a
         crashed terminal never fires SessionEnd). Returns the freed slots."""

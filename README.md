@@ -130,7 +130,8 @@ notifications rather than a telemetry stream:
 | `MessageDisplay` | `streaming` (opt-in, below) |
 
 `SessionEnd` is advisory — a crashed terminal never fires it — so slots also
-expire on a one-hour TTL, and that reaper is what actually keeps the board
+expire on a one-hour TTL, and are taken back the moment the process behind them
+is gone (below). Between them, those two are what actually keeps the board
 honest.
 
 `PermissionRequest` is deliberately **not** installed: an HTTP hook on it sits
@@ -213,6 +214,40 @@ never what it's doing now. Their context ring is real, read from that same
 transcript. The first genuine hook event takes over. When two tabs sit in the
 same working directory, both keep an encoder but give up their terminal
 identity, since guessing would hand the wrong knob to the next `/clear`.
+
+## Sessions that outlive their process
+
+The same process table answers the opposite question, and it is the one you
+notice: you close every Claude session and a knob is still lit. `SessionEnd` is
+the only thing that retires a slot promptly and it is the hook that most
+reliably doesn't fire — a closed tab, a killed window, a `kill -9`, a machine
+that came back from a crash. What's left is an encoder describing a session you
+shut an hour ago.
+
+So once every reap, `discover.orphans` asks whether the pid each session
+recorded still exists — signal 0, no subprocess, cheap enough to sit in the run
+loop — and releases the ones that don't. Every path that gives a session a
+terminal writes that pid: `register_session.py` sends its `getppid()`, which is
+the `claude` process itself, and discovery reads it out of the process table.
+
+Two things it deliberately won't conclude:
+
+- **Nothing from a missing match.** Comparing each session against the *live*
+  process table would also catch the few records that never learned a pid (an
+  event from `notify.sh` for a session whose `SessionStart` we missed) — but the
+  evidence there is the absence of a match, so every way that matching can go
+  wrong goes wrong by clearing the board. A pid that no longer exists is a fact;
+  those records keep the hour instead.
+- **Nothing about pid reuse.** A dead session's number handed to some unrelated
+  process still reads as alive. That costs one stale encoder for an hour, at
+  odds long enough that paying for it with a subprocess every five seconds would
+  be the more expensive mistake.
+
+Sessions that ended cleanly are skipped — their process is *supposed* to be
+gone, and they're already fading out on `SLOT_LINGER_SECONDS`.
+`MFT_ORPHAN_SWEEP=0` turns the whole thing off, which is only useful for a
+diagnosis: without it nothing takes a session off the board but a `SessionEnd`
+or that hour.
 
 ```sh
 .venv/bin/python -m mft.daemon --discover      # what startup would adopt, then exit

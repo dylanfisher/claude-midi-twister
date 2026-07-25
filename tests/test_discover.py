@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mft import discover  # noqa: E402
-from mft.state import SessionTable  # noqa: E402
+from mft.state import Session, SessionTable  # noqa: E402
 
 
 def write_transcript(
@@ -209,6 +209,96 @@ class Adoption(unittest.TestCase):
             for n in range(4)
         ]
         self.assertEqual(len(discover.adopt(table, found)), 2)
+
+
+class Orphans(unittest.TestCase):
+    """A session on the board whose claude process has gone. See
+    `discover.orphans` -- the check is the recorded pid and only that."""
+
+    def setUp(self):
+        self.table = SessionTable()
+        self.living = {7}
+
+    def alive(self, pid: int) -> bool:
+        return pid in self.living
+
+    def add(self, session_id: str, **terminal) -> Session:
+        session = self.table.ensure(session_id, f"/tmp/{session_id}", terminal)
+        assert session is not None
+        # What `daemon.handle_event` does alongside `ensure`: the table keys the
+        # slot, the daemon keeps the description.
+        session.terminal = dict(terminal)
+        return session
+
+    def sweep(self) -> list[str]:
+        gone = discover.orphans(self.table.all(), alive=self.alive)
+        return [s.session_id for s in gone]
+
+    def test_a_dead_pid_is_an_orphan(self):
+        self.add("live", pid="7", tty="/dev/ttys001")
+        self.add("closed", pid="8", tty="/dev/ttys002")
+        self.assertEqual(self.sweep(), ["closed"])
+
+    def test_the_encoder_comes_back(self):
+        live = self.add("live", pid="7", tty="/dev/ttys001")
+        closed = self.add("closed", pid="8", tty="/dev/ttys002")
+        self.assertEqual(closed.slot, 1)
+        self.assertEqual(
+            self.table.release_all(discover.orphans(self.table.all(), alive=self.alive)),
+            [closed],
+        )
+        self.assertEqual([s.session_id for s in self.table.all()], ["live"])
+        self.assertEqual(live.slot, 0)
+        self.assertEqual(self.table.ensure("next", "/tmp/next").slot, 1)
+
+    def test_a_session_that_never_recorded_a_pid_is_left_to_the_TTL(self):
+        """`notify.sh` reports a tab without spawning a process to read one, so
+        a session the SessionStart hook missed has no pid to check. Absence of
+        a match is not evidence of death; the hour is."""
+        self.add("anonymous", tty="/dev/ttys003")
+        self.add("nameless")
+        self.assertEqual(self.sweep(), [])
+
+    def test_an_ended_session_keeps_its_fade(self):
+        """Its process is meant to be gone, and it is already on the linger
+        clock -- reaping it here would cut the fade off."""
+        ended = self.add("ended", pid="9", tty="/dev/ttys004")
+        ended.ended_at = time.monotonic()
+        self.assertEqual(self.sweep(), [])
+
+    def test_a_pid_that_is_not_a_number_is_not_a_death(self):
+        self.add("odd", pid="", tty="/dev/ttys005")
+        self.add("odder", pid="not-a-pid", tty="/dev/ttys006")
+        self.assertEqual(self.sweep(), [])
+
+    def test_a_record_with_only_a_key_left_still_counts(self):
+        """Merges and discovery leave records carrying a pid token with no
+        terminal description behind it."""
+        session = self.add("keyed")
+        session.keys.add("pid:8")
+        self.assertEqual(self.sweep(), ["keyed"])
+
+    def test_a_pid_this_tab_used_to_be_is_not_a_death(self):
+        """`keys` accumulates: a restart in the same tab leaves the old pid
+        token next to the live one, and one alive is enough."""
+        session = self.add("restarted")
+        session.keys.update({"pid:8", "pid:7"})
+        self.assertEqual(self.sweep(), [])
+
+    def test_the_terminal_settles_a_stale_key(self):
+        session = self.add("restarted", pid="7", tty="/dev/ttys001")
+        session.keys.add("pid:8")  # what it was before the restart
+        self.assertEqual(self.sweep(), [])
+
+    def test_our_own_process_is_alive(self):
+        import os
+
+        self.assertTrue(discover.pid_alive(os.getpid()))
+
+    def test_releasing_twice_drops_once(self):
+        closed = self.add("closed", pid="8", tty="/dev/ttys002")
+        self.assertEqual(self.table.release_all([closed]), [closed])
+        self.assertEqual(self.table.release_all([closed]), [])
 
 
 if __name__ == "__main__":
