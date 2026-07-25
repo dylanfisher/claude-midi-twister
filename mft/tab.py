@@ -27,8 +27,8 @@ means we owe the user the title they lost, which is the second decision.
 its generated title into the transcript as an ``ai-title`` record -- the same
 string it would have put in the tab -- so the prefix goes in front of the real
 thing rather than in front of something we invented. It is regenerated about
-once a prompt, so :mod:`mft.daemon` re-reads it once a turn and not on the
-repaint tick. Falling back to the directory name matters more than it looks:
+once a prompt, so :meth:`TabStrip.refresh_title` re-reads it once a turn and
+not on the repaint tick. Falling back to the directory name matters more than it looks:
 until a session's first title is generated, that is all there is.
 
 The title is model-written text going into an escape sequence, so it is stripped
@@ -40,8 +40,9 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Iterable, Optional
 
-from . import config
+from . import config, context
 from .state import Session
 
 log = logging.getLogger("mft.tab")
@@ -130,3 +131,118 @@ def write(tty: str, title: str) -> bool:
                 os.close(fd)
             except OSError:
                 pass
+
+
+class TabStrip:
+    """The whole tab strip as one object: what we last wrote, and when.
+
+    The functions above are the vocabulary; this is the thing that decides when
+    to speak. It lives here rather than in :mod:`mft.daemon` because every write
+    it makes goes down a tty this process does not own, and that whole argument
+    -- short, non-blocking, handed back at the end -- is the subject of this
+    module. The daemon calls :meth:`paint` once a frame and forgets about it.
+
+    Stateless with respect to the sessions themselves: the last line written to
+    each tab is remembered on the session record (``tab_painted``), so a session
+    that goes away takes its bookkeeping with it.
+    """
+
+    def __init__(self, table) -> None:
+        self.table = table
+        #: When the strip was last considered. Nothing here animates, so it is
+        #: decoupled from the frame rate entirely; see :meth:`paint`.
+        self._last_paint = float("-inf")
+
+    # -- reading ------------------------------------------------------------
+
+    def refresh_title(self, session: Session, now: float) -> None:
+        """Top up our copy of the title Claude Code generated for this session.
+
+        On the HTTP thread with the context read, and for the same reason: this
+        is a file read, and the render loop has a frame to make. Once a turn is
+        as often as it can change, and the rate limit only matters for the
+        session that has no title yet -- which asks again every few seconds
+        until one exists, because until then the tab says nothing but a
+        directory name.
+
+        A read that comes back empty leaves `tab_title_turn` alone, so the next
+        event tries again; a read that succeeds is trusted even though it may be
+        the previous turn's title, since it is about to be overwritten anyway
+        and a turn of lag on a tab strip is not a thing anyone can see.
+        """
+        if not config.TAB_TITLE or not session.transcript_path:
+            return
+        if session.tab_title and session.tab_title_turn == session.turn_count:
+            return
+        if now - session.tab_title_at < config.TAB_POLL_SECONDS:
+            return
+        session.tab_title_at = now
+        try:
+            title = context.read_title(session.transcript_path)
+        except Exception:
+            log.exception("title read failed for %s", session.label)
+            return
+        if title:
+            session.tab_title = title
+            session.tab_title_turn = session.turn_count
+
+    # -- writing ------------------------------------------------------------
+
+    def paint(self, now: float) -> None:
+        """Put each session's state glyph in front of its tab title.
+
+        Rate-limited to a twentieth of the board's frame rate and then, past
+        that, gated on the composed line having actually changed -- so a session
+        that spends ten minutes working costs one write, not eighteen thousand.
+        The comparison is against what we last *sent*, not against the state, so
+        a title that changed while the glyph didn't still gets through.
+        """
+        if not config.TAB_TITLE:
+            return
+        if now - self._last_paint < config.TAB_POLL_SECONDS:
+            return
+        self._last_paint = now
+        for session in self.table.all():
+            self._paint_one(session, glyph_for(session))
+
+    def _paint_one(self, session: Session, glyph: str) -> None:
+        tty = tty_of(session)
+        if not tty:
+            return
+        # The directory name until Claude Code has generated a title. It is a
+        # worse label but it is never wrong, and a tab reading "🔴" alone tells
+        # you a session wants you without telling you which one.
+        title = session.tab_title or os.path.basename(session.cwd)
+        line = compose(glyph, title)
+        if line == session.tab_painted:
+            return
+        if write(tty, line):
+            session.tab_painted = line
+
+    def restore(self, sessions: Optional[Iterable[Session]] = None) -> None:
+        """Hand the tab back: the same title, without our glyph on it.
+
+        For sessions that ended, and for every session when the daemon exits. A
+        glyph outlives the thing it describes otherwise, and a green dot on a
+        tab whose daemon died an hour ago is precisely the phantom encoder this
+        project spends its time avoiding.
+
+        A tty another live session is still on is left alone. That happens when
+        two records turn out to describe one tab and the duplicate is dropped
+        (`SessionTable.reconcile`) -- restoring there would strip the glyph off
+        a session that is still running, and the survivor believes it already
+        painted that tab, so nothing would put it back.
+        """
+        if not config.TAB_TITLE:
+            return
+        retiring = list(self.table.all() if sessions is None else sessions)
+        ids = {id(s) for s in retiring}
+        claimed = {
+            tty_of(s)
+            for s in self.table.all()
+            if id(s) not in ids and s.state != "ended"
+        } - {""}
+        for session in retiring:
+            if tty_of(session) in claimed:
+                continue
+            self._paint_one(session, "")

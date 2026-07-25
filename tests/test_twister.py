@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mft import board, config  # noqa: E402
+from mft import board, config, overlays  # noqa: E402
 from mft.render import Cell  # noqa: E402
 from mft.twister import NullTwister, Twister  # noqa: E402
 
@@ -128,7 +128,7 @@ class GoingDark(unittest.TestCase):
         # was doing, the state it leaves behind is 64 dark encoders -- no hue
         # holding on at the bottom of the ramp, and no ring either.
         device = Recorder()
-        overlay = board.ShutdownOverlay(0.0)
+        overlay = overlays.ShutdownOverlay(0.0)
         t = 0.0
         while t < overlay.duration:
             for slot, cell in enumerate(board.compose([], t, [overlay])):

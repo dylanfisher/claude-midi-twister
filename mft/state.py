@@ -1,9 +1,16 @@
-"""Session bookkeeping: which Claude Code session owns which encoder, and what
-that encoder should look like right now.
+"""Session bookkeeping: which Claude Code session owns which encoder.
 
-Hook events are discrete, so "thinking" and "working" are *inferred* from the
-gaps between events rather than reported directly. Everything here is pure
-state; the daemon does the I/O.
+Two things live here, and they are the same thing seen from two sides:
+:class:`Session`, one agent's record, and :class:`SessionTable`, the registry
+that decides which encoder that record is on. Everything is pure state -- the
+daemon does the I/O -- which is what makes nearly all of this project's
+behaviour testable without hardware, a socket or a Claude.
+
+What a session's state *means* is :mod:`mft.render`. How a hook payload turns
+into one is :mod:`mft.events`. How a tab is recognised across a `/clear` is
+:mod:`mft.identity`. What is left here is slot allocation and the repairs that
+keep one tab on exactly one encoder, which is most of the length and all of the
+subtlety.
 """
 
 from __future__ import annotations
@@ -18,6 +25,14 @@ from typing import Any, Iterable, Optional, Sequence
 
 from . import config
 from .context import fraction as context_fraction
+from .identity import (
+    best_key,
+    hostless_keys,
+    key_name,
+    key_rank,
+    names_tab,
+    terminal_keys,
+)
 
 log = logging.getLogger("mft.state")
 
@@ -31,6 +46,15 @@ _UNRANKED = len(config.STATE_PRIORITY)
 
 def priority(state: str) -> int:
     return _RANK.get(state, _UNRANKED)
+
+
+#: Namespaces in :attr:`Session.subagents_in_flight`, so the two signals that
+#: feed it stay distinguishable after the fact -- which is what lets
+#: :attr:`Session.subagents` prefer one over the other rather than adding them
+#: together. Written down here rather than in :mod:`mft.events` because they are
+#: a property of the dict, and the dict belongs to the session.
+AGENT_KEY = "agent:"
+TOOL_KEY = "tool:"
 
 
 @dataclass
@@ -139,7 +163,7 @@ class Session:
         drop a dot and pick it back up. `max` is monotone across the handover,
         and degrades to whichever signal a given install actually sends.
         """
-        agents = sum(1 for k in self.subagents_in_flight if k.startswith(_AGENT_KEY))
+        agents = sum(1 for k in self.subagents_in_flight if k.startswith(AGENT_KEY))
         return max(agents, len(self.subagents_in_flight) - agents)
 
     @property
@@ -155,7 +179,7 @@ class Session:
         beyond the agent-keyed records.
         """
         stamps: list[Optional[float]] = [
-            at for k, at in self.subagents_in_flight.items() if k.startswith(_AGENT_KEY)
+            at for k, at in self.subagents_in_flight.items() if k.startswith(AGENT_KEY)
         ]
         return (stamps + [None] * self.subagents)[: self.subagents]
 
@@ -182,129 +206,6 @@ class Session:
     @property
     def label(self) -> str:
         return f"{os.path.basename(self.cwd) or '~'}#{self.short_id}"
-
-
-# --- terminal identity ------------------------------------------------------
-
-#: In order of how well each survives the things that end a session id.
-#: A `/clear` hands out a brand new session id in the *same* tab, so keying
-#: slots on the session id would teleport an agent to a different knob every
-#: time you cleared. The terminal is the durable thing; the session id is an
-#: attribute of the slot, not its identity.
-TERMINAL_KEYS = (
-    "TMUX_PANE",
-    "ITERM_SESSION_ID",
-    "WEZTERM_PANE",
-    "KITTY_WINDOW_ID",
-    "TERM_SESSION_ID",
-    "tty",
-    "pid",  # the claude process itself: survives /clear, not a restart
-    # The process a session with no terminal at all is running inside; see
-    # :func:`is_hostless`. Weakest of the lot because it is not one of the tab's
-    # names: it identifies this session's events and nothing else, which is why a
-    # session that was handed off into such a process can hold one of these *and*
-    # the pid of the tab it came from without the two contradicting each other.
-    "host",
-)
-
-
-_KEY_RANK = {name: index for index, name in enumerate(TERMINAL_KEYS)}
-
-
-def is_hostless(terminal: dict[str, Any]) -> bool:
-    """Does this payload describe a bare process rather than a terminal tab?
-
-    Both hooks drop every environment variable when they can find no controlling
-    tty, and for the same reason: a session running under Claude Code's own
-    background daemon -- a pre-warmed spare, a fork, a resume, a desktop-app
-    window -- *inherits* the variables of whatever launched that daemon, so
-    reporting them would key the encoder on a stranger's tab. What survives is
-    exactly ``{"pid": ...}``, and that is the tell.
-    """
-    return set(terminal) == {"pid"}
-
-
-def terminal_keys(terminal: dict[str, Any], cwd: str = "") -> list[str]:
-    """Every identity token a terminal payload carries, strongest first.
-
-    All of them rather than only the best one, because *which* fields a given
-    payload has is not stable. The SessionStart hook reads the whole
-    environment; ``notify.sh`` reports what it can learn without a process
-    spawn; discovery recovers a third subset from the process table. Matching on
-    one token per payload means two descriptions of the same tab that overlap
-    only in their weaker fields look like two tabs -- and that is exactly how a
-    session ends up lighting a second encoder while the first one keeps pointing
-    at its terminal. Matching on the whole set, a single field in common is
-    enough to recognise the tab.
-    """
-    if is_hostless(terminal):
-        # Under ``host:`` rather than ``pid:``, because that is what it is. A pid
-        # with a tab behind it is one of the tab's names and outlives a `/clear`;
-        # this one names a process the daemon handed a conversation to, and the
-        # tab it came from -- if there was one -- keeps its own.
-        return [f"host:{terminal['pid']}"]
-    keys = [f"{name}:{terminal[name]}" for name in TERMINAL_KEYS if terminal.get(name)]
-    if not keys and cwd:
-        keys = [f"cwd:{cwd}"]
-    return keys
-
-
-def merge_terminal(
-    stored: dict[str, Any], arriving: dict[str, Any]
-) -> dict[str, Any]:
-    """Fold a new description of a tab into what we already knew about it.
-
-    A union rather than a replacement, because the hooks do not all report the
-    same fields: ``register_session.py`` sends the whole environment and
-    ``notify.sh`` sends the little it can learn without spawning a process, so
-    taking the latest payload whole would keep dropping the details the focus
-    adapters need. The exception is an identifying field they *both* carry with
-    different values -- one tab cannot be two ttys, so what we stored describes
-    some other tab and the arriving payload is the entire truth about this one.
-    """
-    if is_hostless(arriving) and not is_hostless(stored) and stored:
-        # A bare pid is not a description of a tab (:func:`is_hostless`), so it
-        # cannot be the truth about one either: taking it whole would throw away
-        # the tty a press needs and leave the encoder pointing at a pty host with
-        # no window. The session keeps a ``host:`` token for matching, which is
-        # all this payload can honestly contribute.
-        return dict(stored)
-    contradicted = any(
-        name in stored and stored[name] != value
-        for name, value in arriving.items()
-        if name in _KEY_RANK
-    )
-    return dict(arriving) if contradicted else {**stored, **arriving}
-
-
-def key_name(key: str) -> str:
-    """``tty`` out of ``tty:/dev/ttys004``: which field a token came from."""
-    return key.split(":", 1)[0]
-
-
-def key_rank(key: str) -> tuple[int, str]:
-    """Sort order for tokens: :data:`TERMINAL_KEYS` first, ties by value.
-
-    Every comparison between tokens is this one -- which of two names a tab
-    better -- and the weak end of the list is weak in a specific way: a pid names
-    a tab exactly until that process exits and the number comes back around.
-    """
-    return (_KEY_RANK.get(key_name(key), len(TERMINAL_KEYS)), key)
-
-
-def _hostless_keys(keys: Sequence[str]) -> bool:
-    """Is this everything a payload with no terminal behind it could offer?"""
-    return bool(keys) and all(key_name(key) == "host" for key in keys)
-
-
-def _names_tab(session: Session) -> bool:
-    """Does this record hold a token that names a terminal, not just a process?"""
-    return any(key_rank(key)[0] < _KEY_RANK["pid"] for key in session.keys)
-
-
-def best_key(keys: Iterable[str]) -> Optional[str]:
-    """The most durable token in a set, or None if there are none."""
-    return min(keys, key=key_rank, default=None)
 
 
 class SessionTable:
@@ -545,7 +446,7 @@ class SessionTable:
                 or now - s.last_event_at > config.STALL_SECONDS
             )
             and now - s.last_event_at <= config.HANDOFF_ADOPT_SECONDS
-            and _names_tab(s)
+            and names_tab(s.keys)
         ]
         if not candidates:
             return None
@@ -603,7 +504,7 @@ class SessionTable:
                     # arrived may belong to a *different* record -- which means
                     # one tab is on the board twice, and now we can prove it.
                     owner = self._owner(keys)
-                    hostless = _hostless_keys(keys) and not _names_tab(session)
+                    hostless = hostless_keys(keys) and not names_tab(session.keys)
                     if owner is None and hostless:
                         # This record was created by an event that could not name
                         # anything at all -- `notify.sh` beating the hook that
@@ -635,7 +536,7 @@ class SessionTable:
                     )
                     return owner
 
-            if _hostless_keys(keys):
+            if hostless_keys(keys):
                 # A new session id whose only name is the process it runs in, in
                 # a directory whose tab just went quiet: the same conversation,
                 # moved. Keep the tab's encoder.
@@ -886,370 +787,3 @@ class SessionTable:
                 for other in keyless
             )
         ]
-
-
-# --- hook event -> state ----------------------------------------------------
-
-#: `Notification` carries a `notification_type` naming exactly what it wants
-#: from you, and the three that matter want three different things back. One
-#: blinking red for all of them trains you to ignore blinking red.
-NOTIFICATION_STATES = {
-    "permission_prompt": "permission",  # a gate is open: fast red
-    "idle_prompt": "waiting",  # nothing is happening: slow amber
-    "agent_needs_input": "waiting",
-    "elicitation_dialog": "permission",
-    "agent_completed": "done",  # green, decaying
-}
-
-#: Fallback for payloads without a `notification_type`, matched against the
-#: human-readable message.
-_MESSAGE_STATES = (
-    ("permission", "permission"),
-    ("approve", "permission"),
-    ("needs your", "waiting"),
-    ("waiting for your", "waiting"),
-    ("idle", "waiting"),
-    ("needs_input", "waiting"),
-    ("completed", "done"),
-)
-
-
-def is_plan_approval(event: dict[str, Any]) -> bool:
-    """Is this event Claude asking you to sign off on a plan?
-
-    Claude Code has no PlanReady hook: finishing a plan asks permission to run
-    the tool that leaves plan mode, so it arrives as an ordinary
-    PermissionRequest (with a recognisable ``tool_name``) or as a Notification
-    whose only tell is its prose. Both roads lead here.
-    """
-    tool = str(event.get("tool_name") or "")
-    if tool in config.PLAN_TOOLS:
-        return True
-    message = str(event.get("message", "")).lower()
-    return any(token in message for token in config.PLAN_MESSAGE_TOKENS)
-
-
-def classify_notification(event: dict[str, Any]) -> Optional[str]:
-    if is_plan_approval(event):
-        return "plan"
-    kind = str(event.get("notification_type") or "").strip()
-    if kind:
-        return NOTIFICATION_STATES.get(kind)
-    message = str(event.get("message", "")).lower()
-    for token, state in _MESSAGE_STATES:
-        if token in message:
-            return state
-    # An unlabelled notification with no recognisable message still means
-    # *something* wants you; treat it as the gentle one.
-    return "waiting"
-
-
-#: Namespaces in `Session.subagents_in_flight`, so the two signals stay
-#: distinguishable after the fact -- which is what lets `Session.subagents`
-#: prefer one over the other rather than adding them together.
-_AGENT_KEY = "agent:"
-_TOOL_KEY = "tool:"
-
-
-def _tool_use_key(event: dict[str, Any]) -> Optional[str]:
-    """The in-flight key for a Task/Agent tool call, or None if it isn't one.
-
-    A subagent spawn is visible twice: as SubagentStart, and as an ordinary
-    PreToolUse for the tool that spawned it. The second one has been installed
-    since the beginning, so it is what makes the corner light up on a settings
-    file written before SubagentStart existed.
-    """
-    if event.get("tool_name", "") not in config.SUBAGENT_TOOLS:
-        return None
-    # Payload key spelling has moved around; an id we can't read is worse than
-    # no count, since a made-up one never gets discarded and the pile only grows.
-    for field_name in ("tool_use_id", "toolUseID", "tool_use_ID"):
-        value = event.get(field_name)
-        if value:
-            return f"{_TOOL_KEY}{value}"
-    return None
-
-
-def _agent_key(event: dict[str, Any]) -> Optional[str]:
-    agent_id = event.get("agent_id")
-    return f"{_AGENT_KEY}{agent_id}" if agent_id else None
-
-
-def _touch_subagent(session: Session, event: dict[str, Any], now: float) -> None:
-    """Credit a tool call to the subagent that made it, if one did.
-
-    Every hook payload Claude Code builds carries `agent_id`, not just the
-    subagent events: a tool call made *inside* a subagent arrives as an ordinary
-    PreToolUse on the parent's `session_id` with the subagent's id alongside it.
-    That is the whole activity signal, and it is the only one -- there is no
-    per-subagent state, notification or permission to read.
-
-    Only ever stamps a record that already exists; never creates one. A pile
-    that grows from a signal nothing will ever retract is exactly the phantom
-    encoder invariant 6 is about, and the spawn paths above already cover every
-    subagent worth a dot. So an install too old to send SubagentStart keeps the
-    flat pile it has always had rather than gaining a dot that outlives its
-    subagent by a turn.
-    """
-    key = _agent_key(event)
-    if key and key in session.subagents_in_flight:
-        session.subagents_in_flight[key] = now
-
-
-#: Effects the daemon acts on, because they need the board or the wire rather
-#: than the session record: transient animations and banners.
-EFFECT_COMPACT_START = "compact:start"
-EFFECT_COMPACT_END = "compact:end"
-EFFECT_BANNER = "banner:"
-EFFECT_SPAWN = "spawn"
-EFFECT_CLEAR = "clear"
-
-
-#: `SessionEnd` reasons that are not the end of anything. `clear` is reported
-#: when you run `/clear`, and the tab it names is still sitting there with a new
-#: session id already on its way in -- so releasing the encoder would mean every
-#: `/clear` frees a slot and immediately re-claims one, which on an allocator
-#: that hands out the lowest free index moves the agent to a different knob
-#: mid-session. Exactly the thrash keying slots on the terminal exists to avoid.
-SESSION_END_KEEPS_SLOT = frozenset({"clear"})
-
-
-def clear_session(session: Session, now: float) -> list[str]:
-    """`/clear`: same tab, same encoder, an agent that remembers nothing.
-
-    Everything turn-scoped goes, because none of it describes the session that
-    is about to exist. Everything slot-scoped stays, because the tab has not
-    moved and the slot belongs to the tab.
-
-    Called from *both* halves of the pair -- ``SessionEnd(clear)`` and
-    ``SessionStart(clear)`` -- because their order is not guaranteed and either
-    one can go missing. Running twice is therefore normal and has to be
-    harmless: the reset is idempotent by construction, and the wipe is fired
-    only by whichever half arrives first.
-    """
-    session.tool_calls = 0
-    session.turn_started_at = None
-    session.subagents_in_flight.clear()
-    session.tool_history.clear()
-    session.arc = 0
-    session.compacting_since = None
-    session.last_tool = ""
-    session.last_tool_at = None
-    session.last_message = ""
-    # The gauge describes a transcript this session no longer has. Zeroed rather
-    # than left standing, because a full context ring on an agent that has just
-    # forgotten everything is the one reading that is definitely wrong; the next
-    # poll of the new transcript fills it back in from the truth.
-    session.context_tokens = 0
-    # ...and the next event re-reads it immediately rather than waiting out a
-    # poll interval that was started by the session which no longer exists.
-    session.context_checked_at = 0.0
-    # Not an ending, so nothing here may look like one: an `ended_at` would sink
-    # the encoder below the live block and a `SLOT_LINGER_SECONDS` later hand it
-    # to somebody else.
-    session.ended_at = None
-    session.attended()
-    session.set_state("idle")
-
-    if (
-        session.cleared_at is not None
-        and now - session.cleared_at < config.CLEAR_DEBOUNCE_SECONDS
-    ):
-        return []
-    session.cleared_at = now
-    return [EFFECT_CLEAR]
-
-
-def still_working(session: Session) -> None:
-    """Paint `working`, but only for a turn that is still running.
-
-    Subagents outlive the turn that spawned them. A turn that launches ten of
-    them in the background finishes -- `Stop`, green, decaying -- while they are
-    all still going, and their `SubagentStop`s, plus the `PostToolUse` of the
-    call that spawned each one, land seconds *after* it. Taken at face value
-    those repaint `working` over the green and, since nothing else is coming,
-    leave the encoder orange until the next prompt: a session sitting there
-    waiting for you, saying it is busy. That is exactly the knob that lies for
-    an hour.
-
-    `turn_started_at` is the only thing that says a turn is live, and `Stop`
-    clears it. `PreToolUse` sets it when it is missing, because a tool call is
-    itself proof of a live turn -- otherwise a session adopted mid-turn, or one
-    whose `UserPromptSubmit` went missing, could never look busy at all.
-
-    The count is deliberately *not* guarded: a straggling subagent still adds
-    and removes its violet pip, so the board keeps saying something is running.
-    Only the parent's own colour is protected.
-    """
-    if session.turn_started_at is None:
-        return
-    session.set_state("working")
-
-
-def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
-    """Fold one hook payload into the session's state.
-
-    Returns any :mod:`~mft.board` effects the daemon should stage, which is how
-    animations that live on the board rather than on one encoder (a compaction
-    sweep, a spelled-out banner) get triggered without state.py knowing about
-    rendering.
-    """
-    name = event.get("hook_event_name", "")
-    now = time.monotonic()
-    effects: list[str] = []
-    session.last_event_at = now
-    if event.get("cwd"):
-        session.cwd = event["cwd"]
-    if event.get("permission_mode"):
-        session.permission_mode = event["permission_mode"]
-    # Every payload carries these two, and they are what the context gauge is
-    # read from. Recorded here; the file itself is read by the daemon, since
-    # this module does no I/O.
-    if event.get("transcript_path"):
-        session.transcript_path = event["transcript_path"]
-    if event.get("model"):
-        session.model = str(event["model"])
-
-    if name == "SessionStart":
-        # Not a fresh encoder: a `/clear` or resume keeps the tab's slot and
-        # everything on it, so only the turn-scoped fields reset.
-        if str(event.get("source") or "") == "clear":
-            # The second half of the `/clear` pair, and a different event from
-            # an arrival: nothing claimed an encoder here, an agent that was
-            # already on this one forgot everything. The wipe says that; the
-            # spawn strike would say a new Claude appeared, which it didn't.
-            effects += clear_session(session, now)
-        else:
-            session.set_state("idle")
-            session.ended_at = None
-            session.attended()
-            session.turn_started_at = None
-            # `idle` is a dim pip, so without this the arrival of a session --
-            # the one moment you actually want to see -- is the least visible
-            # thing the board ever does. A resume gets it too: it is also a
-            # Claude starting in that tab, which is what the flash announces.
-            effects.append(EFFECT_SPAWN)
-
-    elif name == "UserPromptSubmit":
-        session.turn_started_at = now
-        session.turn_count += 1
-        session.tool_calls = 0
-        session.subagents_in_flight.clear()
-        session.attended()
-        session.set_state("thinking")
-
-    elif name == "PreToolUse":
-        session.tool_calls += 1
-        session.last_tool = event.get("tool_name", "")
-        session.last_tool_at = now
-        key = _tool_use_key(event)
-        if key:
-            session.subagents_in_flight[key] = now
-        _touch_subagent(session, event, now)
-        if session.turn_started_at is None:
-            session.turn_started_at = now
-        session.set_state("working")
-
-    elif name in ("PostToolUse", "PostToolUseFailure"):
-        tool = event.get("tool_name", "")
-        session.last_tool = tool
-        session.last_tool_at = now
-        key = _tool_use_key(event)
-        if key:
-            session.subagents_in_flight.pop(key, None)
-        _touch_subagent(session, event, now)
-        # The arc is the activity signal: one segment per completed call, so
-        # spin rate is tool-call frequency and a ring that stops is a stall.
-        session.arc = (session.arc + 1) % config.ARC_SEGMENTS
-        session.tool_history.append(tool)
-        still_working(session)
-
-    elif name == "MessageDisplay":
-        session.set_state("streaming")
-
-    elif name == "Notification":
-        session.last_message = event.get("message", "")
-        state = classify_notification(event)
-        if state:
-            session.set_state(state)
-            if state != "done":
-                session.alert = True
-            session.owe_attention(now)
-
-    elif name == "PermissionRequest":
-        # Display only. Nothing here answers the request: the visualizer never
-        # decides a permission, it only shows you that one is open.
-        session.alert = True
-        session.owe_attention(now)
-        session.set_state("plan" if is_plan_approval(event) else "permission")
-
-    elif name == "SubagentStart":
-        key = _agent_key(event)
-        if key:
-            # Born bright. A subagent that has not called a tool yet is thinking,
-            # not stalled, and starting it at the floor would make every spawn
-            # look like it arrived already dead.
-            session.subagents_in_flight[key] = now
-        still_working(session)
-
-    elif name == "SubagentStop":
-        key = _agent_key(event)
-        if key:
-            session.subagents_in_flight.pop(key, None)
-        else:
-            # No id to match on, but something definitely finished, and a pile
-            # that only ever grows is worse than one that shrinks arbitrarily.
-            stale = next(
-                (k for k in session.subagents_in_flight if k.startswith(_AGENT_KEY)),
-                None,
-            )
-            if stale:
-                session.subagents_in_flight.pop(stale, None)
-        still_working(session)
-
-    elif name == "PreCompact":
-        session.compacting_since = now
-        effects.append(EFFECT_COMPACT_START)
-
-    elif name == "PostCompact":
-        session.compacting_since = None
-        effects.append(EFFECT_COMPACT_END)
-
-    elif name == "StopFailure":
-        reason = str(event.get("error_type") or event.get("message") or "failure")
-        session.last_message = reason
-        session.alert = True
-        session.owe_attention(now)
-        session.set_state("error")
-        if "rate" in reason.lower():
-            effects.append(EFFECT_BANNER + "RATE")
-
-    elif name == "Stop":
-        session.turn_started_at = None
-        session.set_state("done")
-        # Finishing is a soft debt, not an alert: the encoder recedes, then
-        # slowly gets more insistent for as long as you don't come look.
-        session.owe_attention(now)
-
-    elif name == "SessionEnd":
-        # The reason is the whole event: `clear` means the tab is still there
-        # and keeps its encoder, `logout` / `prompt_input_exit` / `other` mean
-        # the session is actually gone. Treated as advisory either way -- it is
-        # reported not to fire on `/exit`, and the TTL reaper is what actually
-        # keeps the board honest. This is the fast path when it does arrive.
-        if str(event.get("reason") or "") in SESSION_END_KEEPS_SLOT:
-            effects += clear_session(session, now)
-            # The path recorded at the top of this function is the *ending*
-            # session's transcript, and reading it back would refill the gauge
-            # this wipe just emptied. The replacement announces its own.
-            session.transcript_path = ""
-        else:
-            session.ended_at = now
-            session.attended()
-            session.set_state("ended")
-
-    else:
-        # Unknown/new event type: treat as a liveness ping only.
-        log.debug("unhandled hook event %r", name)
-
-    return effects

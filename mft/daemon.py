@@ -1,50 +1,62 @@
-"""The daemon: one process owns the MIDI port, listens for hook POSTs, and
-renders every known session onto the Twister at a fixed frame rate.
+"""The visualizer: one object owns the MIDI port, folds hook events into a
+session table, and renders that table onto the Twister at a fixed frame rate.
 
     python -m mft.daemon
 
-Hooks fire and forget at it over HTTP, so a dead daemon costs each session a
-failed connection and nothing else. Nothing here ever holds a hook open or puts
-a body on the wire: this is a display, and a display that can block a tool call
-is a liability every time it hangs.
+What is left in this file is deliberately only two things: **the Visualizer and
+its render loop.** Everything that is not about deciding what the board says now
+lives beside it and is named after its own job --
+
+* :mod:`mft.httpd` -- the socket the hooks arrive on, and the 204 they always get
+* :mod:`mft.cli` -- argv, signals, and the order of a clean shutdown
+* :mod:`mft.pidfile` -- whether a daemon is already running
+* :mod:`mft.status` -- what ``GET /status`` says
+* :mod:`mft.tab` -- the tab strip, including when to write to it
+* :mod:`mft.banks` -- which sixteen encoders the front panel is showing
+* :mod:`mft.upkeep` -- keeping the roster honest against the process table
+
+so that opening this file puts you in front of the frame, not in front of an
+argument parser.
+
+The Visualizer is still the place where the threads meet: hook events land on
+HTTP threads, encoder presses on the MIDI input thread, sleep and wake on a
+notification thread, and the render loop reads all of it thirty times a second.
+Nothing here may block a hook and nothing may die on a bad frame; both rules are
+enforced at the boundaries, in :meth:`handle_event` and :meth:`paint`.
 """
 
 from __future__ import annotations
 
-import argparse
-import importlib.util
-import json
 import logging
-import os
-import signal
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Optional
 
 from . import (
+    banks as banks_mod,
     board as board_mod,
     config,
     context as context_mod,
     discover as discover_mod,
     focus as focus_mod,
+    overlays as overlays_mod,
     power as power_mod,
     render as render_mod,
+    status as status_mod,
     tab as tab_mod,
     twister as twister_mod,
+    upkeep as upkeep_mod,
 )
-from .state import (
+from .events import (
     EFFECT_BANNER,
     EFFECT_CLEAR,
     EFFECT_COMPACT_END,
     EFFECT_COMPACT_START,
     EFFECT_SPAWN,
-    Session,
-    SessionTable,
     apply_event,
-    merge_terminal,
 )
+from .identity import merge_terminal
+from .state import Session, SessionTable
 
 log = logging.getLogger("mft.daemon")
 
@@ -69,21 +81,6 @@ COMPACTING_EVENTS = frozenset({"SessionStart", "SessionEnd"})
 #: in the first place, whatever the order the pair arrives in.
 UPDATE_ONLY_EVENTS = frozenset({"SessionEnd"})
 
-#: Header `hooks/notify.sh` carries the terminal identity in, as
-#: ``name=value;name=value``. A header rather than a field spliced into the
-#: event JSON: the script's whole job is to pipe stdin at `curl` untouched, and
-#: rewriting JSON in `sh` to add one object is how that stops being reliable.
-#:
-#: The point of it is that *every* event names its tab, not just the two that
-#: run the Python hook. An event that arrives anonymous can only be answered by
-#: guessing which session it belongs to, and a wrong guess is a knob that lies.
-TERMINAL_HEADER = "X-MFT-Terminal"
-
-#: Bounds on what we will read out of that header: it is trusted input from our
-#: own hook, but it arrives over a socket and nothing else here is unbounded.
-TERMINAL_HEADER_MAX = 4096
-TERMINAL_HEADER_FIELDS = 24
-
 #: A frame that fails fails every frame, so the traceback is rate-limited to
 #: roughly one a minute rather than 30 a second.
 PAINT_ERROR_LOG_SECONDS = 60.0
@@ -92,98 +89,18 @@ PAINT_ERROR_LOG_SECONDS = 60.0
 REAP_INTERVAL_SECONDS = 5.0
 
 
-def parse_terminal_header(raw: str) -> dict:
-    """``name=value;name=value`` -> a terminal dict, or ``{}`` if it says nothing.
-
-    Deliberately forgiving: this is a display, and an identity we cannot parse
-    should cost the event its tab, not the event. Values are taken verbatim up to
-    the first ``;`` -- terminal identifiers are short, printable and delimiter
-    free (``w0t0p0:UUID``, ``%3``, ``/dev/ttys004``) -- and anything else is
-    dropped rather than repaired.
-    """
-    if not raw or len(raw) > TERMINAL_HEADER_MAX:
-        return {}
-    terminal: dict[str, str] = {}
-    for field in raw.split(";")[:TERMINAL_HEADER_FIELDS]:
-        name, sep, value = field.partition("=")
-        name, value = name.strip(), value.strip()
-        if not sep or not name or not value:
-            continue
-        terminal[name] = value
-    return terminal
-
-
-def warn_about_hook_drift() -> None:
-    """Say so when the installed hooks are older than the code reading them.
-
-    A hook this daemon handles but that nobody installed is completely silent:
-    that part of the board simply never lights, and there is nothing to see in
-    a log that was never written. Worth one line at startup.
-    """
-    # By path, not by name: the daemon is normally started from an app bundle or
-    # a launchd plist, neither of which has the repo root on sys.path.
-    script = Path(__file__).resolve().parent.parent / "install_hooks.py"
-    try:
-        spec = importlib.util.spec_from_file_location("mft_install_hooks", script)
-        module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-        spec.loader.exec_module(module)  # type: ignore[union-attr]
-        missing = module.missing_events()
-        env = module.missing_env()
-    except Exception:
-        return
-    if missing:
-        log.warning(
-            "hooks out of date: %s not installed, so those events never arrive "
-            "-- re-run install_hooks.py",
-            ", ".join(missing),
-        )
-    if env and config.TAB_TITLE:
-        log.warning(
-            "settings are missing %s, so Claude Code will keep overwriting the "
-            "tab titles this daemon paints -- re-run install_hooks.py",
-            ", ".join(env),
-        )
-
-
-# --- pid file ---------------------------------------------------------------
-
-
-def read_pid() -> int | None:
-    """The running daemon's pid, or None if it isn't running.
-
-    A stale pid file (daemon was SIGKILLed, machine lost power) is treated as
-    absent and cleaned up, so a crash never wedges the launcher.
-    """
-    try:
-        pid = int(Path(config.PID_FILE).read_text().strip())
-    except (OSError, ValueError):
-        return None
-    try:
-        os.kill(pid, 0)  # signal 0 only checks that we may signal it
-    except ProcessLookupError:
-        Path(config.PID_FILE).unlink(missing_ok=True)
-        return None
-    except PermissionError:
-        # Someone else's process now owns that pid: not ours.
-        Path(config.PID_FILE).unlink(missing_ok=True)
-        return None
-    return pid
-
-
-def write_pid() -> None:
-    path = Path(config.PID_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"{os.getpid()}\n")
-
-
-def clear_pid() -> None:
-    Path(config.PID_FILE).unlink(missing_ok=True)
-
-
 class Visualizer:
+    """The board: a session table, the hardware, and the loop between them."""
+
     def __init__(self, device: twister_mod.Twister) -> None:
         self.device = device
         self.table = SessionTable()
+        #: The board's second display, and the third: see the modules.
+        self.tabs = tab_mod.TabStrip(self.table)
+        self.banks = banks_mod.BankFollower(device)
+        self.upkeep = upkeep_mod.Upkeep(
+            self.table, released=self.tabs.restore, wake=self._wake_loop
+        )
         self._stop = threading.Event()
         #: Set by anything that changes what the board should say, so the render
         #: loop can sleep long between static frames without an event having to
@@ -201,26 +118,19 @@ class Visualizer:
         self._overlays: list[board_mod.Overlay] = []
         #: Keyed by session, not slot: the board compacts under sessions that
         #: end, so a slot is not a stable handle for anything long-lived.
-        self._compactions: dict[str, board_mod.CompactOverlay] = {}
+        self._compactions: dict[str, overlays_mod.CompactOverlay] = {}
         #: Per-slot, not a single overlay: pressing a second encoder before
         #: releasing the first would otherwise strand the first one on the
         #: board with nothing left to release it.
-        self._peeks: dict[int, board_mod.PeekOverlay] = {}
+        self._peeks: dict[int, overlays_mod.PeekOverlay] = {}
         #: The waiting animation, held onto so the render loop can retire it the
         #: moment there is a live session to retire it for.
-        self._waiting: board_mod.WaitingOverlay | None = None
+        self._waiting: overlays_mod.WaitingOverlay | None = None
         #: When to start it, or `None` once that decision has been made. The
         #: render loop holds off for a couple of frames after the boot word and
         #: only starts the animation if the board is still genuinely empty; see
         #: :meth:`_check_waiting`.
         self._waiting_due: float | None = None
-        #: Which bank is on the front panel, and when it last moved. Starts at 0
-        #: as an assumption rather than a reading: nothing on this hardware
-        #: reports the current bank, and asking would mean sending a bank select
-        #: to find out -- which is the very thing that needs a reason. Wrong at
-        #: worst until the first side button or the first followed alert.
-        self._bank = 0
-        self._bank_moved_at = 0.0
         self._lock = threading.Lock()
         #: The session a focus attempt is currently running for, so a second
         #: press on the same knob doesn't stack another AppleScript behind it.
@@ -234,9 +144,6 @@ class Visualizer:
         #: The cells the last frame composed, to tell a board that is animating
         #: from one that is merely lit. `None` until the first frame.
         self._last_cells: list[render_mod.Cell] | None = None
-        #: When the tab strip was last considered. Nothing there animates, so it
-        #: is decoupled from the frame rate entirely; see :meth:`paint_tabs`.
-        self._last_tab_paint = float("-inf")
         #: Set while the machine is asleep, so no frame relights a board that
         #: was just blacked out for it. See :meth:`on_system_sleep`.
         self._suspended = threading.Event()
@@ -250,11 +157,12 @@ class Visualizer:
         self._last_system_wake = float("-inf")
         #: When a dead MIDI port was last retried; see :meth:`_check_port`.
         self._last_port_retry = float("-inf")
-        #: The census runs a subprocess, so it runs on its own thread; this is
-        #: how the reaper knows one is still out there rather than starting a
-        #: second. See :meth:`sweep_census`.
-        self._censusing = threading.Event()
         self._last_census = float("-inf")
+
+    def _wake_loop(self) -> None:
+        """Bring the render loop back to full rate. Handed to collaborators that
+        change the board from a thread of their own."""
+        self._wake.set()
 
     # -- overlays -----------------------------------------------------------
 
@@ -265,11 +173,16 @@ class Visualizer:
         # it whatever the board underneath was doing.
         self._wake.set()
 
+    def _live_overlays(self, now: float) -> list[board_mod.Overlay]:
+        with self._lock:
+            self._overlays = [o for o in self._overlays if not o.done(now)]
+            return list(self._overlays)
+
     def _apply_effects(self, session: Session, effects: list[str]) -> None:
         now = time.monotonic()
         for effect in effects:
             if effect == EFFECT_COMPACT_START:
-                overlay = board_mod.CompactOverlay(session, now)
+                overlay = overlays_mod.CompactOverlay(session, now)
                 self._compactions[session.session_id] = overlay
                 self.push_overlay(overlay)
             elif effect == EFFECT_COMPACT_END:
@@ -278,14 +191,14 @@ class Visualizer:
                     overlay.finish(now)
             elif effect == EFFECT_SPAWN:
                 if config.SPAWN_ANIMATION:
-                    self.push_overlay(board_mod.SpawnOverlay(session, now))
+                    self.push_overlay(overlays_mod.SpawnOverlay(session, now))
             elif effect == EFFECT_CLEAR:
                 if config.CLEAR_ANIMATION:
-                    self.push_overlay(board_mod.ClearOverlay(session, now))
+                    self.push_overlay(overlays_mod.ClearOverlay(session, now))
             elif effect.startswith(EFFECT_BANNER):
                 word = effect[len(EFFECT_BANNER) :]
                 self.push_overlay(
-                    board_mod.TextOverlay(
+                    overlays_mod.TextOverlay(
                         word,
                         now,
                         color=config.BANNER_COLOR,
@@ -293,125 +206,6 @@ class Visualizer:
                         hold=config.BANNER_SECONDS / max(1, len(word)),
                     )
                 )
-
-    # -- context gauge ------------------------------------------------------
-
-    def refresh_context(self, session: Session, now: float) -> None:
-        """Top up the session's context reading from its transcript.
-
-        Rate-limited, because this runs on the HTTP thread and events arrive far
-        faster than a context window moves. A failed read leaves the last good
-        value standing rather than collapsing the ring to nothing.
-        """
-        if not config.CONTEXT_RING or not session.transcript_path:
-            return
-        if now - session.context_checked_at < config.CONTEXT_POLL_SECONDS:
-            return
-        session.context_checked_at = now
-        try:
-            usage = context_mod.read_usage(session.transcript_path)
-        except Exception:
-            log.exception("context read failed for %s", session.label)
-            return
-        if usage is None:
-            return
-        tokens, model = usage
-        session.context_tokens = tokens
-        if model:
-            session.model = model
-        session.context_limit = context_mod.limit_for_model(session.model, session.cwd)
-
-    # -- terminal tab -------------------------------------------------------
-
-    def refresh_tab_title(self, session: Session, now: float) -> None:
-        """Top up our copy of the title Claude Code generated for this session.
-
-        On the HTTP thread with the context read, and for the same reason: this
-        is a file read, and the render loop has a frame to make. Once a turn is
-        as often as it can change, and the rate limit only matters for the
-        session that has no title yet -- which asks again every few seconds
-        until one exists, because until then the tab says nothing but a
-        directory name.
-
-        A read that comes back empty leaves `tab_title_turn` alone, so the next
-        event tries again; a read that succeeds is trusted even though it may be
-        the previous turn's title, since it is about to be overwritten anyway
-        and a turn of lag on a tab strip is not a thing anyone can see.
-        """
-        if not config.TAB_TITLE or not session.transcript_path:
-            return
-        if session.tab_title and session.tab_title_turn == session.turn_count:
-            return
-        if now - session.tab_title_at < config.TAB_POLL_SECONDS:
-            return
-        session.tab_title_at = now
-        try:
-            title = context_mod.read_title(session.transcript_path)
-        except Exception:
-            log.exception("title read failed for %s", session.label)
-            return
-        if title:
-            session.tab_title = title
-            session.tab_title_turn = session.turn_count
-
-    def paint_tabs(self, now: float) -> None:
-        """Put each session's state glyph in front of its tab title.
-
-        Rate-limited to a twentieth of the board's frame rate and then, past
-        that, gated on the composed line having actually changed -- so a session
-        that spends ten minutes working costs one write, not eighteen thousand.
-        The comparison is against what we last *sent*, not against the state, so
-        a title that changed while the glyph didn't still gets through.
-        """
-        if not config.TAB_TITLE:
-            return
-        if now - self._last_tab_paint < config.TAB_POLL_SECONDS:
-            return
-        self._last_tab_paint = now
-        for session in self.table.all():
-            self._paint_tab(session, tab_mod.glyph_for(session))
-
-    def _paint_tab(self, session: Session, glyph: str) -> None:
-        tty = tab_mod.tty_of(session)
-        if not tty:
-            return
-        # The directory name until Claude Code has generated a title. It is a
-        # worse label but it is never wrong, and a tab reading "🔴" alone tells
-        # you a session wants you without telling you which one.
-        title = session.tab_title or os.path.basename(session.cwd)
-        line = tab_mod.compose(glyph, title)
-        if line == session.tab_painted:
-            return
-        if tab_mod.write(tty, line):
-            session.tab_painted = line
-
-    def restore_tabs(self, sessions: list[Session] | None = None) -> None:
-        """Hand the tab back: the same title, without our glyph on it.
-
-        For sessions that ended, and for every session when the daemon exits. A
-        glyph outlives the thing it describes otherwise, and a green dot on a
-        tab whose daemon died an hour ago is precisely the phantom encoder this
-        project spends its time avoiding.
-
-        A tty another live session is still on is left alone. That happens when
-        two records turn out to describe one tab and the duplicate is dropped
-        (`SessionTable.reconcile`) -- restoring there would strip the glyph off
-        a session that is still running, and the survivor believes it already
-        painted that tab, so nothing would put it back.
-        """
-        if not config.TAB_TITLE:
-            return
-        sessions = self.table.all() if sessions is None else sessions
-        retiring = {id(s) for s in sessions}
-        claimed = {
-            tab_mod.tty_of(s)
-            for s in self.table.all()
-            if id(s) not in retiring and s.state != "ended"
-        } - {""}
-        for session in sessions:
-            if tab_mod.tty_of(session) in claimed:
-                continue
-            self._paint_tab(session, "")
 
     # -- hook events --------------------------------------------------------
 
@@ -441,23 +235,7 @@ class Visualizer:
 
         name = event.get("hook_event_name", "")
         if name in SUBAGENT_EVENTS:
-            # A subagent owns no encoder, so its events must never be able to
-            # claim one. Whether these payloads carry the parent's session id or
-            # the subagent's own is undocumented, and `ensure` would answer the
-            # second case by lighting a fresh encoder from the top-left -- a
-            # subagent rendered as a session, which is the one thing the board
-            # is not allowed to do. So: find the parent or drop the event.
-            session = self.table.find_parent(session_id, event.get("cwd", ""))
-            if session is None:
-                log.debug("%s with no known parent (%s)", name, session_id[:8])
-                return {"ok": True}
-            before = session.subagents
-            apply_event(session, event)
-            if session.subagents != before:
-                log.info(
-                    "%s: %d subagent(s) in flight", session.short_id, session.subagents
-                )
-            return {"ok": True, "slot": session.slot + 1, "state": session.state}
+            return self._apply_subagent_event(name, session_id, event)
 
         if name in UPDATE_ONLY_EVENTS and self.table.get(session_id) is None:
             log.debug("%s for a session we don't have (%s)", name, session_id[:8])
@@ -479,10 +257,7 @@ class Visualizer:
             # otherwise overwrite the full environment the focus adapters need.
             session.terminal = merge_terminal(session.terminal, terminal)
 
-        before = session.subagents
-        effects = apply_event(session, event)
-        if session.subagents != before:
-            log.info("%s: %d subagent(s) in flight", session.short_id, session.subagents)
+        effects = self._fold(session, event)
         # A session ending (or restarting) is the only thing that changes who
         # belongs in the live block, so this is where the board is squeezed back
         # up to the top-left -- and only for those events, since for the rest it
@@ -490,66 +265,47 @@ class Visualizer:
         if name in COMPACTING_EVENTS:
             self.table.compact()
         now = time.monotonic()
-        self.refresh_context(session, now)
-        self.refresh_tab_title(session, now)
+        context_mod.refresh(session, now)
+        self.tabs.refresh_title(session, now)
         if effects:
             self._apply_effects(session, effects)
         return {"ok": True, "slot": session.slot + 1, "state": session.state}
 
+    def _apply_subagent_event(self, name: str, session_id: str, event: dict) -> dict:
+        """A subagent owns no encoder, so its events must never claim one.
+
+        Whether these payloads carry the parent's session id or the subagent's
+        own is undocumented, and `ensure` would answer the second case by
+        lighting a fresh encoder from the top-left -- a subagent rendered as a
+        session, which is the one thing the board is not allowed to do. So: find
+        the parent or drop the event.
+        """
+        session = self.table.find_parent(session_id, event.get("cwd", ""))
+        if session is None:
+            log.debug("%s with no known parent (%s)", name, session_id[:8])
+            return {"ok": True}
+        self._fold(session, event)
+        return {"ok": True, "slot": session.slot + 1, "state": session.state}
+
+    def _fold(self, session: Session, event: dict) -> list[str]:
+        """`apply_event`, plus the one thing worth saying out loud about it."""
+        before = session.subagents
+        effects = apply_event(session, event)
+        if session.subagents != before:
+            log.info("%s: %d subagent(s) in flight", session.short_id, session.subagents)
+        return effects
+
     def status(self) -> dict:
         now = time.monotonic()
-        return {
-            "device": type(self.device).__name__,
-            # Why the desk is dark, which is otherwise indistinguishable from a
-            # daemon that died with the lights off.
-            "sleep": round(self._sleep.gain(now), 2),
-            # The other two ways to be dark and healthy: the machine is asleep,
-            # or the port stopped taking writes and is waiting to be reopened.
-            "suspended": self._suspended.is_set(),
-            "port_failing": self.device.failing(),
-            # Terminals macOS has refused us Automation access to. Non-empty
-            # means press-to-focus is raising apps rather than tabs, and the
-            # remedy is a permission, not a code change.
-            "focus_denied": focus_mod.denied_apps(),
-            # Which sixteen of the sixty-four encoders are actually on the front
-            # panel. The other reason a board looks empty: everything is on a bank
-            # you are not looking at. Compare against each session's own `bank`.
-            "bank": self._bank + 1,
-            "sessions": [
-                {
-                    "session_id": s.session_id,
-                    "encoder": s.slot + 1,
-                    "bank": s.slot // config.ENCODERS_PER_BANK + 1,
-                    "key": s.key,
-                    # Every token it answers to, not just the strongest: when a
-                    # knob is on the wrong session this is the field that says
-                    # which tab the daemon thinks it belongs to, and why.
-                    "keys": sorted(s.keys),
-                    "state": s.state,
-                    "cwd": s.cwd,
-                    "turns": s.turn_count,
-                    "tool_calls": s.tool_calls,
-                    "last_tool": s.last_tool,
-                    "subagents": s.subagents,
-                    "model": s.model,
-                    "context_tokens": s.context_tokens,
-                    "context_limit": s.context_limit,
-                    "context_pct": (
-                        round(100 * s.context_fraction)
-                        if s.context_fraction is not None
-                        else None
-                    ),
-                    "alert": s.alert,
-                    "unsupervised": s.unsupervised,
-                    "attention_for": (
-                        round(now - s.attention_since, 1) if s.attention_since else 0
-                    ),
-                    "terminal": s.terminal.get("TERM_PROGRAM", "?"),
-                    "idle_for": round(now - s.last_event_at, 1),
-                }
-                for s in sorted(self.table.all(), key=lambda s: s.slot)
-            ],
-        }
+        return status_mod.payload(
+            self.table.all(),
+            now,
+            device=type(self.device).__name__,
+            sleep=self._sleep.gain(now),
+            suspended=self._suspended.is_set(),
+            port_failing=self.device.failing(),
+            bank=self.banks.current,
+        )
 
     # -- encoder input ------------------------------------------------------
 
@@ -561,28 +317,15 @@ class Visualizer:
         # the board is dark it is very likely the whole reason for it. Waking
         # the loop is right for a turn on its own terms too: the ring the knob
         # lit locally is undone by the next frame, and "next" should mean now.
-        self._sleep.touch(time.monotonic())
+        now = time.monotonic()
+        self._sleep.touch(now)
         self._wake.set()
         if msg.channel == config.CH_SWITCH:
             self._on_switch(msg.control, msg.value)
         elif msg.channel == config.CH_SYSTEM:
-            self._on_system(msg.control, msg.value)
+            self.banks.chose(msg.control, msg.value, now)
         # A turn is otherwise deliberately ignored: the board is a display, not
         # a control surface -- see :meth:`Twister.forget_rings`.
-
-    def _on_system(self, control: int, value: int) -> None:
-        """A side button: the human just chose a bank.
-
-        Recorded rather than acted on. It is also the one input that tells us
-        something we otherwise have to assume -- see `self._bank` -- and it starts
-        the cooldown, because a view you picked by hand should outlive the next
-        notification. `on_midi` has already touched sleep for it.
-        """
-        if value < 64 or control not in config.BANK_SELECT_CC:
-            return
-        self._bank = config.BANK_SELECT_CC.index(control)
-        self._bank_moved_at = time.monotonic()
-        log.debug("bank %d selected by hand", self._bank + 1)
 
     def _press_target(self, slot: int) -> Optional[Session]:
         """The session a press on this encoder is aimed at, if any.
@@ -620,7 +363,7 @@ class Visualizer:
                 # a spring-loaded modal view, not a mode you can get stuck in.
                 # Held on a subagent's knob it paints the *parent's* bank, which
                 # is the honest answer to what you were asking by holding it.
-                peek = board_mod.PeekOverlay(session, now)
+                peek = overlays_mod.PeekOverlay(session, now)
                 self._peeks[slot] = peek
                 self.push_overlay(peek)
             return
@@ -714,12 +457,7 @@ class Visualizer:
 
         threading.Thread(target=run, name="mft-focus", daemon=True).start()
 
-    # -- render loop --------------------------------------------------------
-
-    def _live_overlays(self, now: float) -> list[board_mod.Overlay]:
-        with self._lock:
-            self._overlays = [o for o in self._overlays if not o.done(now)]
-            return list(self._overlays)
+    # -- the empty board ----------------------------------------------------
 
     def _live_session(self) -> bool:
         """Is there a Claude on the board right now?
@@ -745,7 +483,7 @@ class Visualizer:
                 self._waiting_due = None  # never empty; there was nothing to wait for
             elif now >= self._waiting_due:
                 self._waiting_due = None
-                self._waiting = board_mod.WaitingOverlay(now)
+                self._waiting = overlays_mod.WaitingOverlay(now)
                 self.push_overlay(self._waiting)
             return
 
@@ -757,32 +495,7 @@ class Visualizer:
         elif self._live_session():
             waiting.dismiss(now)
 
-    def _follow_alerts(self, now: float) -> None:
-        """Pull the front panel onto the bank where a human is blocking.
-
-        The policy is `board.bank_to_show`; everything here is the part that must
-        not be pure. Three brakes on it, and they are the whole reason this is
-        safe to have on by default:
-
-        * a cooldown, so two prompts on two banks cannot bounce the view between
-          them, and so a bank you picked by hand stays picked;
-        * never during a peek, which is a modal view of one session's history and
-          would be silently replaced by another bank's encoders;
-        * never while the boot word or the waiting animation still owns the
-          board, which are the two moments the daemon is talking about itself
-          rather than reporting -- and a bank select mid-word truncates the word.
-        """
-        if not config.FOLLOW_ALERTS or self._peeks or self._waiting is not None:
-            return
-        if now - self._bank_moved_at < config.FOLLOW_ALERT_COOLDOWN_SECONDS:
-            return
-        want = board_mod.bank_to_show(self.table.all(), self._bank)
-        if want is None:
-            return
-        log.info("bank %d has something blocking; following it", want + 1)
-        self.device.bank(want)
-        self._bank = want
-        self._bank_moved_at = now
+    # -- painting -----------------------------------------------------------
 
     def paint(
         self, now: float, overlays: list[board_mod.Overlay] | None = None
@@ -839,6 +552,15 @@ class Visualizer:
                 log.exception("frame dropped")
             return True
 
+    def animate(self, overlay: board_mod.Overlay) -> None:
+        """Run one overlay to completion, blocking. Used for boot and shutdown,
+        where there is nothing else to render anyway."""
+        period = 1.0 / config.FPS
+        while not overlay.done(time.monotonic()):
+            self.paint(time.monotonic(), [overlay])
+            if self._stop.wait(period):
+                return
+
     # -- sleep and wake -----------------------------------------------------
 
     def on_system_sleep(self) -> None:
@@ -894,7 +616,7 @@ class Visualizer:
         # clock the census runs on stopped with the machine, so a lid closed for
         # a weekend is half a minute old from in here -- and a suspend is
         # precisely when the tabs on the board got closed without telling us.
-        self.sweep_census()
+        self.upkeep.sweep_census()
         self._wake.set()
 
     def _check_wake_clock(self) -> None:
@@ -929,142 +651,31 @@ class Visualizer:
         if self.device.reopen():
             self._last_cells = None
 
-    def animate(self, overlay: board_mod.Overlay) -> None:
-        """Run one overlay to completion, blocking. Used for boot and shutdown,
-        where there is nothing else to render anyway."""
-        period = 1.0 / config.FPS
-        while not overlay.done(time.monotonic()):
-            self.paint(time.monotonic(), [overlay])
-            if self._stop.wait(period):
-                return
+    # -- the roster ---------------------------------------------------------
 
     def adopt_running_sessions(self, awaken: bool = True) -> None:
-        """Put the sessions that predate us on the board.
+        """Put the sessions that predate us on the board, and read their gauges.
 
-        Wrapped whole: nothing about a display is worth failing to start over,
-        and the board fills itself in from hook events either way -- this only
-        decides whether it does so now or on each session's next turn.
-
-        Also runs on wake, where nearly everything it finds is already on the
-        board -- `discover.adopt` hands back the sessions it *recognised* as
-        much as the ones it added, so only the difference is news, and only the
-        difference is worth logging or waking the board for. `awaken` is what
-        the wake path turns off: see :meth:`on_system_wake` for why a machine
-        powering on is not evidence that anyone is at the desk.
+        The finding is :meth:`mft.upkeep.Upkeep.adopt`; what is left here is the
+        part that needs the board -- a context reading for every session it
+        recognised, and the sleep timer for the ones that are news. `awaken` is
+        what the wake path turns off: see :meth:`on_system_wake` for why a
+        machine powering on is not evidence that anyone is at the desk.
         """
-        if not config.DISCOVER_ON_START:
-            return
-        known = {s.session_id for s in self.table.all()}
-        try:
-            adopted = discover_mod.adopt(self.table, discover_mod.discover())
-        except Exception:
-            log.exception("discovery failed; starting with an empty board")
-            return
+        found, new = self.upkeep.adopt()
         now = time.monotonic()
-        for session in adopted:
-            self.refresh_context(session, now)
-        # Discovery reconstructs identities from the process table and writes
-        # them onto sessions a hook may already have created, so this is exactly
-        # the moment one tab can end up described twice.
-        self.table.reconcile(now)
-        self.table.compact()
-        adopted = [s for s in adopted if s.session_id not in known]
-        if adopted:
-            log.info(
-                "adopted %d running session%s: %s",
-                len(adopted),
-                "" if len(adopted) == 1 else "s",
-                ", ".join(s.label for s in adopted),
-            )
-        if adopted and awaken:
+        for session in found:
+            context_mod.refresh(session, now)
+        if new and awaken:
             # These sessions have been running without us and none of them has
             # sent us an event yet. A daemon started onto a live board starts
             # awake, and its first half hour is measured from now.
             self._sleep.touch(now)
 
-    def drop_orphans(self, taken: "discover_mod.Census | None" = None) -> None:
-        """Take back the encoders whose Claude process has exited.
+    # -- render loop --------------------------------------------------------
 
-        The other half of :meth:`adopt_running_sessions`, on the reaper's clock
-        rather than at boot, and the answer to the one failure the TTL is too
-        slow for: you close every session and a knob stays lit, because the tab
-        that owned it never got to fire `SessionEnd`. See
-        :func:`mft.discover.orphans` for what it will and will not conclude.
-
-        Cheap enough to sit in the reap: it is one signal 0 per session, no
-        subprocess and no file read, which is exactly why it can run every five
-        seconds instead of on a discovery-sized interval. `taken` is the slower
-        clock's extra evidence and is only ever passed by :meth:`sweep_census`.
-        """
-        if not config.ORPHAN_SWEEP:
-            return
-        try:
-            gone = discover_mod.orphans(self.table.all(), taken=taken)
-        except Exception:
-            log.exception("orphan sweep failed")
-            return
-        if not gone:
-            return
-        for session in gone:
-            log.info(
-                "encoder %d is a session %s (%s); releasing it",
-                session.slot + 1,
-                discover_mod.epitaph(session, taken),
-                session.label,
-            )
-        # Same order as the reaper's, and for the same reason: the tab is handed
-        # back while the record that knows which tty it was on still exists.
-        dropped = self.table.release_all(gone)
-        self.restore_tabs(dropped)
-
-    def sweep_census(self) -> None:
-        """Ask the process table about the whole board, off the render thread.
-
-        The pid sweep in :meth:`drop_orphans` is free and runs constantly; this
-        is the one that costs a `ps` and therefore doesn't. It buys two things
-        that sweep cannot have for free, both in :mod:`mft.discover`: a pid for
-        the records that never learned one (:func:`~mft.discover.learn_pids`),
-        and the tty half of :func:`~mft.discover.orphans`, which is what finally
-        settles a knob left behind by a tab that closed without a `SessionEnd`.
-
-        On a thread because a subprocess in the run loop is three or four
-        dropped frames, and the answer is never urgent to the millisecond. One
-        at a time: they are all asking the same question, and a second thread
-        would only ask it of a table the first is already holding.
-        """
-        if not config.ORPHAN_SWEEP or self._censusing.is_set():
-            return
-        self._censusing.set()
-        threading.Thread(target=self._census, name="mft-census", daemon=True).start()
-
-    def _census(self) -> None:
-        try:
-            taken = discover_mod.census()
-            if taken is None:
-                log.debug("could not read the process table; skipping the census")
-                return
-            learned = discover_mod.learn_pids(self.table.all(), taken.procs)
-            for session, proc in learned:
-                log.info(
-                    "encoder %d is pid %d (%s), read out of the process table",
-                    session.slot + 1,
-                    proc.pid,
-                    session.label,
-                )
-            if learned:
-                # A pid is an identity token like any other, and one written
-                # straight onto a record is not in the table's index until this
-                # runs -- which is also where it merges with any other record
-                # already answering to that process. See `SessionTable.reconcile`.
-                self.table.reconcile()
-            self.drop_orphans(taken)
-        except Exception:
-            log.exception("census failed")
-        finally:
-            self._censusing.clear()
-            self._wake.set()
-
-    def run(self) -> None:
+    def _boot(self) -> None:
+        """Everything that happens once, before the first ordinary frame."""
         self.device.clear_all()
         self.device.listen(self.on_midi)
         self.device.start_clock()
@@ -1084,10 +695,8 @@ class Visualizer:
             # the shutdown closes on, and hands a black board to the C of
             # CLAUDE. Both block, and both are white on a dark board.
             if config.BOOT_UNWRAP_ANIMATION:
-                self.animate(board_mod.UnwrapOverlay(time.monotonic()))
-            self.animate(
-                board_mod.TextOverlay(config.BOOT_WORD, time.monotonic())
-            )
+                self.animate(overlays_mod.UnwrapOverlay(time.monotonic()))
+            self.animate(overlays_mod.TextOverlay(config.BOOT_WORD, time.monotonic()))
             # The word blocks; the waiting animation does not -- and it does not
             # start here either. It is armed, and the render loop starts it a
             # couple of frames later if the board is still empty by then, then
@@ -1099,6 +708,9 @@ class Visualizer:
         # After the boot word, not before it: the word blocks for a couple of
         # seconds and the clock the sleep timer runs on does not stop for it.
         self._sleep.touch(time.monotonic())
+
+    def run(self) -> None:
+        self._boot()
         active = 1.0 / config.FPS
         idle = 1.0 / config.IDLE_FPS
         still = 0  # consecutive frames that composed to the same board
@@ -1117,26 +729,26 @@ class Visualizer:
             self._check_port(now)
             self._check_waiting(now)
             # Before the paint, so a followed bank and the frame that justifies
-            # it land together rather than a frame apart.
-            self._follow_alerts(now)
+            # it land together rather than a frame apart. A peek is a modal view
+            # of one session and the two self-portraits own the whole board, so
+            # all three of them hold the view where it is.
+            self.banks.follow(
+                self.table.all(),
+                now,
+                blocked=bool(self._peeks) or self._waiting is not None,
+            )
             still = 0 if self.paint(now) else still + 1
             # Before the reap, so an ended session's tab is handed back while
             # the record that knows which tty it was on still exists.
-            self.paint_tabs(now)
+            self.tabs.paint(now)
             if now - last_reap > REAP_INTERVAL_SECONDS:
-                self.restore_tabs(self.table.reap())
-                self.drop_orphans()
-                # Alongside the reaper, and for the same reason it exists: what
-                # this catches is a board that looks entirely plausible and is
-                # quietly wrong -- one tab on two encoders -- and would stay that
-                # way for an hour of TTL. See `SessionTable.reconcile`.
-                self.table.reconcile(now)
+                self.upkeep.reap(now)
                 last_reap = now
             if now - self._last_census > config.CENSUS_INTERVAL_SECONDS:
                 # Last, and on its own clock: everything above answers in this
                 # frame, and this one goes and asks the operating system.
                 self._last_census = now
-                self.sweep_census()
+                self.upkeep.sweep_census()
             # Nothing moving means nothing to be smooth for. Sweeps, fades and
             # brightness decay all change their cells every frame, so a board
             # with any of them on it never gets here; what does is a board of
@@ -1158,7 +770,7 @@ class Visualizer:
             return
         self._stop.clear()
         try:
-            self.animate(board_mod.ShutdownOverlay(time.monotonic()))
+            self.animate(overlays_mod.ShutdownOverlay(time.monotonic()))
         finally:
             # The overlay's own last frame is nearly dark, not dark: the final
             # word on the board has to be an actual off, it has to be sent even
@@ -1173,172 +785,7 @@ class Visualizer:
         self._wake.set()  # don't sit out an idle sleep on the way to the door
 
 
-class HookHandler(BaseHTTPRequestHandler):
-    server_version = "mft/1.0"
-    visualizer: Visualizer  # set on the server instance
-
-    def _send(self, code: int, payload: dict) -> None:
-        body = json.dumps(payload).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _send_empty(self) -> None:
-        """204, deliberately, for every hook without exception.
-
-        Claude Code parses a hook's response body as hook control JSON -- it is
-        how a hook blocks a tool call or injects context. A visualizer has no
-        opinion about any of that, so it must never put a body on the wire.
-        Debug output lives on GET /status instead.
-        """
-        self.send_response(204)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-
-    def _read_event(self) -> dict | None:
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b"{}"
-        try:
-            event = json.loads(raw or b"{}")
-        except json.JSONDecodeError as exc:
-            log.warning("bad json from hook: %s", exc)
-            return None
-        if not isinstance(event, dict):
-            log.warning("hook payload is not an object: %r", type(event).__name__)
-            return None
-        # The body wins: `register_session.py` puts a richer terminal in it than
-        # a header can carry, and it is the same field either way.
-        if not isinstance(event.get("terminal"), dict) or not event["terminal"]:
-            identity = parse_terminal_header(self.headers.get(TERMINAL_HEADER, ""))
-            if identity:
-                event["terminal"] = identity
-        return event
-
-    def do_POST(self) -> None:  # noqa: N802 - stdlib naming
-        event = self._read_event()
-        if event is None:
-            self._send_empty()
-            return
-
-        try:
-            result = self.server.visualizer.handle_event(event)
-        except Exception:
-            log.exception("event handling failed")
-        else:
-            if not result.get("ok"):
-                log.warning("event rejected: %s", result.get("error"))
-        self._send_empty()
-
-    def do_GET(self) -> None:  # noqa: N802
-        if self.path.startswith("/status"):
-            self._send(200, self.server.visualizer.status())
-        else:
-            self._send(200, {"ok": True, "hint": "POST hook JSON here"})
-
-    def log_message(self, fmt: str, *args) -> None:
-        log.debug("http: " + fmt, *args)
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Claude Code -> Midi Fighter Twister")
-    parser.add_argument("--port", type=int, default=config.PORT)
-    parser.add_argument("--host", default=config.HOST)
-    parser.add_argument("--match", default=config.PORT_MATCH, help="MIDI port name substring")
-    parser.add_argument("--no-device", action="store_true", help="run without hardware")
-    parser.add_argument("--log-level", default="INFO")
-    parser.add_argument("--stop", action="store_true", help="stop a running daemon")
-    parser.add_argument(
-        "--status",
-        action="store_true",
-        help="exit 0 if the daemon is running, 1 if not",
-    )
-    parser.add_argument(
-        "--discover",
-        action="store_true",
-        help="print the running sessions startup would adopt, then exit",
-    )
-    parser.add_argument(
-        "--no-discover",
-        action="store_true",
-        help="start with an empty board instead of adopting running sessions",
-    )
-    args = parser.parse_args()
-
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    running = read_pid()
-
-    if args.status:
-        print(f"running (pid {running})" if running else "not running")
-        return 0 if running else 1
-
-    if args.discover:
-        found = discover_mod.discover()
-        for entry in found:
-            tab = entry.terminal.get("tty") or entry.terminal.get("pid") or "unknown tab"
-            print(f"{entry.session_id[:8]}  {tab}  {entry.cwd}")
-        print(f"{len(found)} running session{'' if len(found) == 1 else 's'}")
-        return 0
-
-    if args.no_discover:
-        config.DISCOVER_ON_START = False
-
-    if args.stop:
-        if not running:
-            print("not running")
-            return 1
-        os.kill(running, signal.SIGTERM)
-        for _ in range(50):  # give it 5s to clear the LEDs and let go of MIDI
-            time.sleep(0.1)
-            if read_pid() is None:
-                print(f"stopped (pid {running})")
-                return 0
-        print(f"pid {running} did not exit")
-        return 1
-
-    if running:
-        print(f"already running (pid {running})")
-        return 1
-
-    device = (
-        twister_mod.NullTwister()
-        if args.no_device
-        else twister_mod.open_twister(args.match)
-    )
-    visualizer = Visualizer(device)
-
-    server = ThreadingHTTPServer((args.host, args.port), HookHandler)
-    server.visualizer = visualizer
-    threading.Thread(target=server.serve_forever, name="mft-http", daemon=True).start()
-    log.info("listening on http://%s:%d", args.host, args.port)
-    warn_about_hook_drift()
-
-    def shutdown(*_args) -> None:
-        log.info("shutting down")
-        visualizer.stop()
-
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
-
-    write_pid()
-    try:
-        visualizer.run()
-    finally:
-        # Before the animation, which takes a couple of seconds: the tabs are
-        # the part of this that outlives the process, and the board is not.
-        visualizer.restore_tabs()
-        visualizer.shutdown_animation()
-        server.shutdown()
-        device.close()
-        clear_pid()
-    return 0
-
-
 if __name__ == "__main__":
+    from .cli import main
+
     raise SystemExit(main())

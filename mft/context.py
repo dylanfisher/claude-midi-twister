@@ -32,9 +32,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from . import config
+
+if TYPE_CHECKING:  # `state` imports this module; the arrow only points one way
+    from .state import Session
 
 log = logging.getLogger("mft.context")
 
@@ -251,3 +254,35 @@ def fraction(tokens: Optional[int], limit: int) -> Optional[float]:
     if not tokens or limit <= 0:
         return None
     return max(0.0, min(1.0, tokens / limit))
+
+
+def refresh(session: "Session", now: float) -> None:
+    """Top up one session's reading from its transcript.
+
+    The read itself is the functions above; this is the policy around it, and it
+    lives here rather than in :mod:`mft.daemon` for the same reason
+    :class:`mft.tab.TabStrip` does -- the caller should not have to know how
+    often a context window is worth re-reading, only that it wants the number
+    fresh.
+
+    Rate-limited, because this runs on the HTTP thread and events arrive far
+    faster than a context window moves. A failed read leaves the last good value
+    standing rather than collapsing the ring to nothing.
+    """
+    if not config.CONTEXT_RING or not session.transcript_path:
+        return
+    if now - session.context_checked_at < config.CONTEXT_POLL_SECONDS:
+        return
+    session.context_checked_at = now
+    try:
+        usage = read_usage(session.transcript_path)
+    except Exception:
+        log.exception("context read failed for %s", session.label)
+        return
+    if usage is None:
+        return
+    tokens, model = usage
+    session.context_tokens = tokens
+    if model:
+        session.model = model
+    session.context_limit = limit_for_model(session.model, session.cwd)

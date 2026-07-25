@@ -263,7 +263,7 @@ class Twister:
         suppress the write that puts it back. Only the rings: a knob cannot
         touch the RGB, and the hues are the expensive half of a frame.
 
-        Called every frame (:meth:`mft.daemon.Daemon.paint`) rather than off the
+        Called every frame (:meth:`mft.daemon.Visualizer.paint`) rather than off the
         incoming turn, so a ring the daemon never asked for is undone whether or
         not we saw the message that made it -- there is no MIDI input port on
         every setup, and a knob nudged before the daemon started was never a

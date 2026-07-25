@@ -83,7 +83,9 @@ def _breathe(now: float, period: float, low: float, high: float) -> float:
     return low + (high - low) * phase
 
 
-def _lerp(low: float, high: float, t: float) -> float:
+def lerp(low: float, high: float, t: float) -> float:
+    """Blend, clamped. Public because :mod:`mft.board` shimmers a subagent dot
+    on exactly this shape; see the easing note there."""
     return low + (high - low) * max(0.0, min(1.0, t))
 
 
@@ -101,7 +103,7 @@ def attention_debt(session: Session, now: float) -> float:
 
 def _insistence(session: Session, now: float, ceiling: float | None = None) -> float:
     top = config.ATTENTION_CEILING if ceiling is None else ceiling
-    return _lerp(config.ATTENTION_FLOOR, top, attention_debt(session, now))
+    return lerp(config.ATTENTION_FLOOR, top, attention_debt(session, now))
 
 
 def _debt_anim(base: int, debt: float) -> int:
@@ -202,7 +204,7 @@ def _gauge_level(session: Session, now: float, base: float) -> float:
     a stale number up with it -- the reading did not get more urgent, only older.
     """
     age = max(0.0, now - session.state_since)
-    return _lerp(base, config.GAUGE_STALE_LEVEL, age / config.DONE_FADE_SECONDS)
+    return lerp(base, config.GAUGE_STALE_LEVEL, age / config.DONE_FADE_SECONDS)
 
 
 def _working_brightness(session: Session, now: float) -> float:
@@ -216,11 +218,11 @@ def _working_brightness(session: Session, now: float) -> float:
     last = session.last_tool_at
     since_tool = now - (session.state_since if last is None else last)
     kick = max(0.0, 1.0 - since_tool / config.TOOL_KICK_SECONDS)
-    level = _lerp(config.ACTIVE_FLOOR, config.ACTIVE_BRIGHTNESS, kick)
+    level = lerp(config.ACTIVE_FLOOR, config.ACTIVE_BRIGHTNESS, kick)
     stalled = since_tool - config.STALL_SECONDS
     if stalled > 0:
         decay = min(1.0, stalled / config.STALL_FADE_SECONDS)
-        level = _lerp(level, config.IDLE_BRIGHTNESS, decay)
+        level = lerp(level, config.IDLE_BRIGHTNESS, decay)
     return level
 
 
@@ -295,14 +297,14 @@ def render(session: Session, now: float) -> Cell:
         # is no moment of handover to smooth: the fade simply stops mattering
         # once it drops below the level underneath it.
         ring = max(_resting_gauge(session), int(127 * fade))
-        brightness = _lerp(config.IDLE_BRIGHTNESS, config.ACTIVE_BRIGHTNESS, fade)
+        brightness = lerp(config.IDLE_BRIGHTNESS, config.ACTIVE_BRIGHTNESS, fade)
         # Taken before the debt ramp below, on purpose: the gauge follows the
         # flash down and then stays down, while the hue is free to come back up
         # and ask for you.
         ring_level = _gauge_level(session, now, brightness)
         debt = attention_debt(session, now)
         brightness = max(
-            brightness, _lerp(config.IDLE_BRIGHTNESS, config.DONE_DEBT_CEILING, debt)
+            brightness, lerp(config.IDLE_BRIGHTNESS, config.DONE_DEBT_CEILING, debt)
         )
 
     if session.unsupervised:

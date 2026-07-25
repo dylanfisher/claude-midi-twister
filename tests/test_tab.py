@@ -170,14 +170,14 @@ class Repaints(unittest.TestCase):
 
     def test_first_paint_writes(self):
         self.add(state="permission", tab_title="Fix the parser")
-        self.vis.paint_tabs(1000.0)
+        self.vis.tabs.paint(1000.0)
         self.assertEqual(len(self.writes), 1)
         self.assertTrue(self.writes[0][1].endswith("Fix the parser"))
 
     def test_an_unchanged_board_writes_nothing(self):
         self.add(state="working", tab_title="Fix the parser")
-        self.vis.paint_tabs(1000.0)
-        self.vis.paint_tabs(2000.0)
+        self.vis.tabs.paint(1000.0)
+        self.vis.tabs.paint(2000.0)
         self.assertEqual(len(self.writes), 1)
 
     def test_churn_inside_a_turn_is_one_write(self):
@@ -186,45 +186,45 @@ class Repaints(unittest.TestCase):
             ["thinking", "working", "streaming", "working", "thinking"], start=1
         ):
             s.state = state
-            self.vis.paint_tabs(1000.0 + tick * config.TAB_POLL_SECONDS)
+            self.vis.tabs.paint(1000.0 + tick * config.TAB_POLL_SECONDS)
         self.assertEqual(len(self.writes), 1)
 
     def test_the_tick_is_rate_limited(self):
         s = self.add(state="working", tab_title="a")
-        self.vis.paint_tabs(1000.0)
+        self.vis.tabs.paint(1000.0)
         s.state = "done"
-        self.vis.paint_tabs(1000.0 + config.TAB_POLL_SECONDS / 2)
+        self.vis.tabs.paint(1000.0 + config.TAB_POLL_SECONDS / 2)
         self.assertEqual(len(self.writes), 1)
 
     def test_a_new_title_gets_through_without_a_state_change(self):
         s = self.add(state="working", tab_title="Fix the parser")
-        self.vis.paint_tabs(1000.0)
+        self.vis.tabs.paint(1000.0)
         s.tab_title = "Fix the lexer"
-        self.vis.paint_tabs(2000.0)
+        self.vis.tabs.paint(2000.0)
         self.assertEqual(len(self.writes), 2)
 
     def test_a_session_with_no_tty_is_skipped(self):
         s = self.add(state="permission", tab_title="x")
         s.terminal.clear()
-        self.vis.paint_tabs(1000.0)
+        self.vis.tabs.paint(1000.0)
         self.assertEqual(self.writes, [])
 
     def test_the_directory_stands_in_until_a_title_exists(self):
         self.add(state="done", cwd="/Users/x/projects/repo")
-        self.vis.paint_tabs(1000.0)
+        self.vis.tabs.paint(1000.0)
         self.assertTrue(self.writes[0][1].endswith("repo"))
 
     def test_ending_hands_the_tab_back(self):
         s = self.add(state="working", tab_title="Fix the parser")
-        self.vis.paint_tabs(1000.0)
+        self.vis.tabs.paint(1000.0)
         s.state = "ended"
-        self.vis.paint_tabs(2000.0)
+        self.vis.tabs.paint(2000.0)
         self.assertEqual(self.writes[-1][1], "Fix the parser")
 
     def test_shutdown_hands_every_tab_back(self):
         self.add(state="permission", tab_title="Fix the parser")
-        self.vis.paint_tabs(1000.0)
-        self.vis.restore_tabs()
+        self.vis.tabs.paint(1000.0)
+        self.vis.tabs.restore()
         self.assertEqual(self.writes[-1][1], "Fix the parser")
 
     def test_a_tty_a_live_session_still_holds_is_left_alone(self):
@@ -232,9 +232,9 @@ class Repaints(unittest.TestCase):
         glyph off the survivor."""
         survivor = self.add(state="permission", tab_title="Fix the parser")
         duplicate = self.add(state="idle", tab_title="Fix the parser")
-        self.vis.paint_tabs(1000.0)
+        self.vis.tabs.paint(1000.0)
         self.writes.clear()
-        self.vis.restore_tabs([duplicate])
+        self.vis.tabs.restore([duplicate])
         self.assertEqual(self.writes, [])
         self.assertIn(config.TAB_GLYPHS["permission"], survivor.tab_painted)
 
@@ -243,8 +243,8 @@ class Repaints(unittest.TestCase):
         real = config.TAB_TITLE
         config.TAB_TITLE = False
         self.addCleanup(lambda: setattr(config, "TAB_TITLE", real))
-        self.vis.paint_tabs(1000.0)
-        self.vis.restore_tabs()
+        self.vis.tabs.paint(1000.0)
+        self.vis.tabs.restore()
         self.assertEqual(self.writes, [])
 
 
