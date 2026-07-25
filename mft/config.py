@@ -518,7 +518,7 @@ TOOL_COLOR_DEFAULT = "azure"
 # daemon exited cleanly rather than died, and it costs a fraction of the time a
 # legible word does.
 #
-# None of it lights the RGB: not the word, not the lamp test after it, not the
+# None of it lights the RGB: not the word, not the waiting gradients after it,
 # ambient layer underneath both. The boot sequence is white light moving on a
 # dark board from start to finish. Colour is how this device means things, and
 # the one stretch where it has nothing to say is the one stretch where the hue
@@ -546,25 +546,53 @@ BOOT_HOLD_SECONDS = 0.0
 #: block, which is exactly the glyph pixel this wants -- so the word is spelled
 #: in light rather than in colour. Set this to a name from COLORS to tint it.
 BOOT_COLOR = None
-#: Lamp test. It opens the aircraft way -- one arc sweep that lights every ring
-#: on all 16 encoders, once, on purpose -- and then dissolves into a generative
-#: interference field that keeps running while the board has nothing to say.
-#: An idle Twister is a Twister you stop looking at, so the empty state is the
-#: one state worth making worth watching.
-LAMP_TEST_SWEEP_SECONDS = 1.4
-#: How long the field runs, fading the whole way, if no session ever shows up.
-#: Long enough to be a lava lamp you glance at, short enough that a machine left
-#: on overnight ends up dark rather than glowing at you from the desk.
-LAMP_TEST_SECONDS = 60.0
-#: A session appeared: the field gets out of the way, but over a couple of
+
+# --- Waiting ----------------------------------------------------------------
+# What the board does after the word, while no Claude is running. It used to be
+# a lamp test -- an arc that lit every ring on all 16 encoders at full, then
+# dissolved into a generative interference field at the same level. It read as a
+# state: sixteen bright knobs is what this device looks like when it has a great
+# deal to tell you, and it was saying that about an empty board. The replacement
+# says the opposite thing on purpose: broad white gradients drifting across the
+# grid, nothing near full, nothing sharp enough to be an event. A room tone.
+#
+# Colourless, like the word before it. Boot lights no RGB from start to finish
+# -- colour is how this device means things and here it has nothing to mean.
+
+#: Ceiling on the whole thing, before the fade envelope. Roughly a lit-but-idle
+#: encoder, and deliberately under `ACTIVE_BRIGHTNESS`: the first real session to
+#: appear has to be brighter than the wallpaper it appears on.
+WAITING_BRIGHTNESS = 0.30
+#: Seconds for a gradient to travel the diagonal. Slow enough that you cannot
+#: watch it move -- you look back and it has moved. Two of these run at once,
+#: this one and `WAITING_PERIOD_SECONDS * 1.61`, which share no common factor,
+#: so the pair never lines up twice and the board never settles into a loop your
+#: eye can finish.
+WAITING_PERIOD_SECONDS = 9.0
+#: Width of a gradient as a fraction of the axis it travels. Wide: at 0.2 it is
+#: a band sweeping past, which is a thing happening, and nothing is happening.
+WAITING_WIDTH = 0.55
+#: The way in. The gradients are mid-travel at t=0 -- they have no start, that
+#: is the point of them -- so without this the board goes from black to a third
+#: brightness in one frame, which is exactly the kind of event this animation
+#: exists not to be. Long enough that you cannot say when it began.
+WAITING_FADE_IN_SECONDS = 2.5
+#: How long it runs, fading the whole way, if no session ever shows up. Longer
+#: than the lamp test's minute because it is a third the brightness, short
+#: enough that a machine left on overnight still ends up dark rather than
+#: glowing at you from the desk. `AMBIENT` is what remains underneath.
+WAITING_SECONDS = 180.0
+#: A session appeared: the gradients get out of the way, but over a couple of
 #: frames rather than by hard-cutting, so the first encoder to light reads as
 #: emerging from the field rather than as the field glitching.
-LAMP_TEST_DISMISS_SECONDS = 0.8
-#: The field used to wander a hue band. It doesn't any more: boot lights no RGB
-#: at all, start to finish, so the sweep and the field are rings only -- white
-#: light moving on a dark board, matching the word that precedes them. The band
-#: was 78..122, which on a wheel that wraps around 80 was not the red-to-violet
-#: it claimed to be anyway.
+WAITING_DISMISS_SECONDS = 0.8
+#: Frames of render loop between the boot word ending and the gradients starting.
+#: Discovery has already run by then, but a hook from a session that started
+#: while the word was on screen has not necessarily landed -- and the waiting
+#: animation appearing for two frames on a board that was never empty reads as a
+#: glitch. Cheap insurance: nobody notices a tenth of a second of black, and the
+#: check is repeated every frame until it fires, so a slow hook only delays it.
+WAITING_START_DELAY_SECONDS = 0.1
 BOOT_ANIMATION = _flag("MFT_BOOT_ANIMATION", True)
 
 # --- Session spawn ----------------------------------------------------------
@@ -713,7 +741,8 @@ AMBIENT = _flag("MFT_AMBIENT", True)
 #: No hue: the ring breathes and the RGB stays dark, same as the boot word.
 #: This layer sits under everything, so any colour here leaks through the gaps
 #: in whatever is painted on top of it -- and it was leaking blue through the
-#: lamp test, which is what the boot animation's blue flash actually was. An
+#: waiting animation, which is what the boot animation's blue flash actually
+#: was. An
 #: idle board has nothing to say, and the hue channel is how this device says
 #: things. Set it to a hue if you want the resting state to mean something.
 AMBIENT_COLOR = None

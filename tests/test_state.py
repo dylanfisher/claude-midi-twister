@@ -1247,14 +1247,14 @@ class Overlays(unittest.TestCase):
         """One of each, including the two that are driven by a second event
         arriving later -- which is what puts a frame *before* the ramp they
         then compute from."""
-        lamp = board.LampTestOverlay(t0)
-        lamp.dismiss(t0 + 0.5)
+        waiting = board.WaitingOverlay(t0)
+        waiting.dismiss(t0 + 0.5)
         compaction = board.CompactOverlay(session, t0)
         compaction.finish(t0 + 1.0)
         return [
             board.TextOverlay(config.BOOT_WORD, t0),
             board.TextOverlay("RATE", t0, color=config.BANNER_COLOR),
-            lamp,
+            waiting,
             board.ShutdownOverlay(t0),
             board.SpawnOverlay(session, t0),
             board.ClearOverlay(session, t0),
@@ -1350,21 +1350,21 @@ class Overlays(unittest.TestCase):
 
     def test_nothing_in_the_boot_sequence_lights_the_rgb(self):
         # The invariant, rather than the three places that happened to break it.
-        # Boot is the word, then the lamp test -- and underneath both of them,
+        # Boot is the word, then the waiting gradients -- and underneath both,
         # ambient, which only shows through where whatever is on top is dimmer.
         # That last one is how the blue got out: it is painted by compose() and
         # not by any overlay, so testing the overlays alone would miss it.
         # Every frame, every slot, all the way through: no hue.
         word = board.TextOverlay(config.BOOT_WORD, 0.0)
-        lamp = board.LampTestOverlay(word.duration)
+        waiting = board.WaitingOverlay(word.duration)
         t = 0.0
-        end = word.duration + lamp.duration
+        end = word.duration + waiting.duration
         while t < end:
-            overlays = [word] if t < word.duration else [lamp]
+            overlays = [word] if t < word.duration else [waiting]
             for cell in board.compose([], t, overlays):
                 self.assertIsNone(cell.color, t)
             t += 0.25
-        # And the idle board it settles onto once the lamp test has expired,
+        # And the idle board it settles onto once the waiting field has gone,
         # which is what you are left looking at.
         for cell in board.compose([], end + 1.0, []):
             self.assertIsNone(cell.color)
@@ -1372,7 +1372,7 @@ class Overlays(unittest.TestCase):
     def test_the_boot_sequence_switches_the_rgb_off_on_the_wire(self):
         # The board saying "no colour" is only half of it. This is the other
         # half: what channel 3 actually carries for all 64 encoders, every
-        # frame, from clear_all through the word and the lamp test.
+        # frame, from clear_all through the word and the waiting gradients.
         #
         # It is a separate test because the bug it exists for was invisible from
         # the Cell side. Every cell said color=None all the way through, and the
@@ -1384,10 +1384,10 @@ class Overlays(unittest.TestCase):
         recorder = _RecordingTwister()
         recorder.clear_all()
         word = board.TextOverlay(config.BOOT_WORD, 0.0)
-        lamp = board.LampTestOverlay(word.duration)
+        waiting = board.WaitingOverlay(word.duration)
         t = 0.0
         while t < word.duration + 5.0:
-            overlays = [word] if t < word.duration else [lamp]
+            overlays = [word] if t < word.duration else [waiting]
             for slot, cell in enumerate(board.compose([], t, overlays)):
                 recorder.write(slot, cell)
             t += 1.0 / config.FPS
@@ -1409,18 +1409,30 @@ class Overlays(unittest.TestCase):
         channels = [ch for ch, _, _ in recorder.sent]
         self.assertEqual(channels, [config.CH_SWITCH_ANIM, config.CH_SWITCH])
 
-    def test_the_lamp_test_still_lights_every_ring(self):
-        # Colourless is not the same as absent. The sweep is a lamp test in the
-        # aircraft sense -- every ring reaches full, or a dead LED has somewhere
-        # to hide -- and that has to survive losing the hue.
-        lamp = board.LampTestOverlay(0.0)
-        seen = set()
+    def test_the_waiting_animation_reaches_every_encoder_but_never_full(self):
+        # It replaced a lamp test, and this is the trade that was made: the
+        # gradients still travel the whole grid, so no encoder sits out, but
+        # nothing on the board goes near full. A board with nothing to say does
+        # not get to look like a board with everything to say.
+        waiting = board.WaitingOverlay(0.0)
+        seen, peak = set(), 0.0
         t = 0.0
-        while t < config.LAMP_TEST_SWEEP_SECONDS * 1.5:
-            frame = board.compose([], t, [lamp])[: config.ENCODERS_PER_BANK]
-            seen |= {i for i, c in enumerate(frame) if c.brightness > 0.9}
+        while t < config.WAITING_PERIOD_SECONDS * 4:
+            # Painted onto a bare board rather than composed: the ambient layer
+            # underneath lights every encoder by itself, and it would answer
+            # this question for the overlay.
+            frame = board.blank_board(config.ENCODERS_PER_BANK)
+            waiting.apply(frame, t)
+            seen |= {
+                i
+                for i, c in enumerate(frame)
+                if c.brightness > config.AMBIENT_BRIGHTNESS
+            }
+            peak = max(peak, max(c.brightness for c in frame))
             t += 1.0 / config.FPS
         self.assertEqual(seen, set(range(config.ENCODERS_PER_BANK)))
+        self.assertLessEqual(peak, config.WAITING_BRIGHTNESS + 1e-9)
+        self.assertLess(peak, config.ACTIVE_BRIGHTNESS)
 
     def test_each_boot_letter_strikes_full_then_decays_to_its_successor(self):
         # A letter is at full the instant it appears, and by the time the next
@@ -1541,21 +1553,27 @@ class Overlays(unittest.TestCase):
         self.assertGreater(overlay.duration, 3.0)
         self.assertLess(overlay.duration, 4.5)
 
-    def test_lamp_test_lights_every_led_before_it_gets_generative(self):
-        # The aircraft half of the gesture: a dead LED has to have nowhere to
-        # hide, so every ring goes fully lit during the opening sweep.
-        overlay = board.LampTestOverlay(0.0)
-        peak = [0.0] * config.ENCODERS_PER_BANK
+    def test_waiting_never_flashes_the_board_on(self):
+        # The failure mode of the thing it replaced, pinned: there is no opening
+        # sweep, nothing steps, and no frame is much brighter than the one
+        # before it. What you should not be able to see is the animation start.
+        overlay = board.WaitingOverlay(0.0)
+        first = board.blank_board(config.ENCODERS_PER_BANK)
+        overlay.apply(first, 0.0)
+        self.assertEqual(max(c.brightness for c in first), 0.0)
+        previous = None
         t = 0.0
-        while t <= config.LAMP_TEST_SWEEP_SECONDS:
-            cells = board.compose([], t, [overlay])
-            for slot in range(config.ENCODERS_PER_BANK):
-                peak[slot] = max(peak[slot], cells[slot].brightness)
-            t += 0.02
-        self.assertTrue(all(level > 0.95 for level in peak), peak)
+        while t <= 30.0:
+            cells = board.compose([], t, [overlay])[: config.ENCODERS_PER_BANK]
+            levels = [c.brightness for c in cells]
+            if previous is not None:
+                jump = max(abs(a - b) for a, b in zip(levels, previous))
+                self.assertLess(jump, 0.05, t)
+            previous = levels
+            t += 1.0 / config.FPS
 
-    def test_lamp_test_keeps_moving_and_never_repeats(self):
-        overlay = board.LampTestOverlay(0.0)
+    def test_waiting_keeps_moving_and_never_repeats(self):
+        overlay = board.WaitingOverlay(0.0)
         frames = [
             tuple(
                 (c.ring, c.color)
@@ -1565,37 +1583,90 @@ class Overlays(unittest.TestCase):
         ]
         self.assertEqual(len(set(frames)), len(frames), "the field is not generative")
 
-    def test_lamp_test_fades_out_over_a_minute_on_its_own(self):
-        overlay = board.LampTestOverlay(0.0)
+    def test_waiting_fades_out_on_its_own(self):
+        overlay = board.WaitingOverlay(0.0)
 
-        def brightest(t):
-            cells = board.compose([], t, [overlay])[: config.ENCODERS_PER_BANK]
-            return max(c.brightness for c in cells)
+        def brightest(start):
+            # Over a window rather than at an instant: the gradients travel, so
+            # any single frame might be one where the crest is off the grid.
+            return max(
+                cell.brightness
+                for step in range(300)
+                for cell in board.compose([], start + step * 0.1, [overlay])[
+                    : config.ENCODERS_PER_BANK
+                ]
+            )
 
-        self.assertGreater(brightest(6.0), 0.5)
-        self.assertLess(brightest(50.0), brightest(6.0))
-        self.assertFalse(overlay.done(config.LAMP_TEST_SECONDS - 0.01))
-        self.assertTrue(overlay.done(config.LAMP_TEST_SECONDS))
+        early = brightest(2.0)
+        self.assertGreater(early, config.WAITING_BRIGHTNESS * 0.6)
+        self.assertLess(brightest(config.WAITING_SECONDS - 35.0), early / 2)
+        self.assertFalse(overlay.done(config.WAITING_SECONDS - 0.01))
+        self.assertTrue(overlay.done(config.WAITING_SECONDS))
 
-    def test_lamp_test_gets_out_of_the_way_when_a_session_shows_up(self):
-        overlay = board.LampTestOverlay(0.0)
+    def test_waiting_gets_out_of_the_way_when_a_session_shows_up(self):
+        overlay = board.WaitingOverlay(0.0)
         overlay.dismiss(10.0)
-        self.assertFalse(overlay.done(10.0 + config.LAMP_TEST_DISMISS_SECONDS / 2))
-        self.assertTrue(overlay.done(10.0 + config.LAMP_TEST_DISMISS_SECONDS))
+        self.assertFalse(overlay.done(10.0 + config.WAITING_DISMISS_SECONDS / 2))
+        self.assertTrue(overlay.done(10.0 + config.WAITING_DISMISS_SECONDS))
         # ...and it retreats rather than hard-cutting, so the first encoder to
         # light reads as emerging from the field.
         lit = board.compose([], 10.1, [overlay])[: config.ENCODERS_PER_BANK]
         self.assertTrue(any(c.brightness > 0 for c in lit))
 
-    def test_lamp_test_never_dims_a_live_session(self):
+    def test_waiting_never_dims_a_live_session(self):
         table = SessionTable()
         session = table.ensure("s", "/tmp/p")
         session.state = "waiting"
-        overlay = board.LampTestOverlay(0.0)
+        overlay = board.WaitingOverlay(0.0)
         overlay.dismiss(4.0)
         bare = board.compose(table.all(), 4.1)[session.slot]
         over = board.compose(table.all(), 4.1, [overlay])[session.slot]
         self.assertEqual(bare, over)
+
+    def test_waiting_waits_a_couple_of_frames_before_it_starts(self):
+        # The board is empty at the instant the boot word ends whether or not
+        # anything is running: a session that started during the word has only a
+        # hook in flight to say so. So the decision is deferred and re-taken
+        # every frame until it fires.
+        from mft.daemon import Visualizer
+        from mft.twister import NullTwister
+
+        vis = Visualizer(NullTwister())
+        vis._waiting_due = 10.0 + config.WAITING_START_DELAY_SECONDS
+        vis._check_waiting(10.0)
+        self.assertIsNone(vis._waiting)
+        vis._check_waiting(10.0 + config.WAITING_START_DELAY_SECONDS)
+        self.assertIsInstance(vis._waiting, board.WaitingOverlay)
+        self.assertIn(vis._waiting, vis._live_overlays(10.2))
+
+    def test_waiting_never_starts_on_a_board_that_was_never_empty(self):
+        from mft.daemon import Visualizer
+        from mft.twister import NullTwister
+
+        vis = Visualizer(NullTwister())
+        vis.table.ensure("s", "/tmp/p")
+        vis._waiting_due = 10.0 + config.WAITING_START_DELAY_SECONDS
+        for step in range(10):
+            vis._check_waiting(10.0 + step * 0.05)
+        self.assertIsNone(vis._waiting)
+        self.assertEqual(vis._live_overlays(11.0), [])
+
+    def test_a_session_that_ended_does_not_count_as_waiting_being_over(self):
+        # Its encoder is only lingering so you can see how it finished.
+        from mft.daemon import Visualizer
+        from mft.twister import NullTwister
+
+        vis = Visualizer(NullTwister())
+        session = vis.table.ensure("s", "/tmp/p")
+        session.ended_at = 5.0
+        vis._waiting_due = 10.0
+        vis._check_waiting(10.0)
+        self.assertIsInstance(vis._waiting, board.WaitingOverlay)
+        # ...and a live one does retire it, without a hard cut.
+        vis.table.ensure("t", "/tmp/q")
+        vis._check_waiting(11.0)
+        self.assertEqual(vis._waiting.dismissed_at, 11.0)
+        self.assertFalse(vis._waiting.done(11.0 + config.WAITING_DISMISS_SECONDS / 2))
 
     def test_spawn_strikes_bright_then_settles_into_the_session(self):
         table = SessionTable()

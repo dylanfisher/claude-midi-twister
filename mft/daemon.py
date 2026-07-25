@@ -205,9 +205,14 @@ class Visualizer:
         #: releasing the first would otherwise strand the first one on the
         #: board with nothing left to release it.
         self._peeks: dict[int, board_mod.PeekOverlay] = {}
-        #: The idle animation, held onto so the render loop can retire it the
+        #: The waiting animation, held onto so the render loop can retire it the
         #: moment there is a live session to retire it for.
-        self._lamp: board_mod.LampTestOverlay | None = None
+        self._waiting: board_mod.WaitingOverlay | None = None
+        #: When to start it, or `None` once that decision has been made. The
+        #: render loop holds off for a couple of frames after the boot word and
+        #: only starts the animation if the board is still genuinely empty; see
+        #: :meth:`_check_waiting`.
+        self._waiting_due: float | None = None
         self._lock = threading.Lock()
         #: The session a focus attempt is currently running for, so a second
         #: press on the same knob doesn't stack another AppleScript behind it.
@@ -662,20 +667,41 @@ class Visualizer:
             self._overlays = [o for o in self._overlays if not o.done(now)]
             return list(self._overlays)
 
-    def _check_lamp_test(self, now: float) -> None:
-        """Retire the idle animation once a Claude is actually on the board.
+    def _live_session(self) -> bool:
+        """Is there a Claude on the board right now?
 
         A session that has already ended does not count: its encoder is only
-        lingering so you can see how it finished, and the board is idle again
-        in every sense that matters here.
+        lingering so you can see how it finished, and the board is idle again in
+        every sense that matters to the waiting animation.
         """
-        lamp = self._lamp
-        if lamp is None:
+        return any(s.ended_at is None for s in self.table.all())
+
+    def _check_waiting(self, now: float) -> None:
+        """Start the waiting animation, or retire it once a Claude shows up.
+
+        The start is deferred by a couple of frames and re-checked every frame
+        until it fires. Discovery has already run by the time the boot word
+        ends, but a session that started *during* the word has only a hook in
+        flight to announce it -- and a waiting animation that appears for two
+        frames on a board that was never empty reads as a glitch, where a tenth
+        of a second of black reads as nothing at all.
+        """
+        if self._waiting_due is not None:
+            if self._live_session():
+                self._waiting_due = None  # never empty; there was nothing to wait for
+            elif now >= self._waiting_due:
+                self._waiting_due = None
+                self._waiting = board_mod.WaitingOverlay(now)
+                self.push_overlay(self._waiting)
             return
-        if lamp.done(now):
-            self._lamp = None
-        elif any(s.ended_at is None for s in self.table.all()):
-            lamp.dismiss(now)
+
+        waiting = self._waiting
+        if waiting is None:
+            return
+        if waiting.done(now):
+            self._waiting = None
+        elif self._live_session():
+            waiting.dismiss(now)
 
     def paint(
         self, now: float, overlays: list[board_mod.Overlay] | None = None
@@ -768,20 +794,21 @@ class Visualizer:
         self.device.clear_all()
         self.device.listen(self.on_midi)
         self.device.start_clock()
-        # Before the boot word rather than after it: the lamp test that follows
-        # retires the moment a session exists, and an encoder that lights up
-        # halfway through the idle field reads as a session that just started.
+        # Before the boot word rather than after it: the waiting animation that
+        # follows is for an empty board, and an encoder that lights up halfway
+        # through it reads as a session that just started.
         self.adopt_running_sessions()
         if config.BOOT_ANIMATION:
             self.animate(
                 board_mod.TextOverlay(config.BOOT_WORD, time.monotonic())
             )
-            # The word blocks; the lamp test does not. It goes on the overlay
-            # stack and keeps running inside the normal render loop, because
-            # the whole point is that it yields to the first real session --
-            # which it can only do if that session is being rendered too.
-            self._lamp = board_mod.LampTestOverlay(time.monotonic())
-            self.push_overlay(self._lamp)
+            # The word blocks; the waiting animation does not -- and it does not
+            # start here either. It is armed, and the render loop starts it a
+            # couple of frames later if the board is still empty by then, then
+            # keeps running it inside the normal loop, because the whole point
+            # is that it yields to the first real session -- which it can only
+            # do if that session is being rendered too.
+            self._waiting_due = time.monotonic() + config.WAITING_START_DELAY_SECONDS
 
         # After the boot word, not before it: the word blocks for a couple of
         # seconds and the clock the sleep timer runs on does not stop for it.
@@ -797,7 +824,7 @@ class Visualizer:
             # up to `idle` seconds -- exactly the case this is here to serve.
             self._wake.clear()
             now = time.monotonic()
-            self._check_lamp_test(now)
+            self._check_waiting(now)
             still = 0 if self.paint(now) else still + 1
             # Before the reap, so an ended session's tab is handed back while
             # the record that knows which tty it was on still exists.

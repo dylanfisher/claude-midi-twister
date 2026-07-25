@@ -193,36 +193,39 @@ class TextOverlay(Overlay):
             )
 
 
-class LampTestOverlay(Overlay):
-    """Every LED once, then a generative field that runs until Claude shows up.
+class WaitingOverlay(Overlay):
+    """Slow white gradients drifting over an empty board, until Claude shows up.
 
-    Two things in one overlay, because they are two halves of one gesture:
+    This is the *waiting* state and it is supposed to look like one. Two broad
+    raised-cosine gradients travel the grid -- one down the diagonal, one across
+    the columns -- at periods with no common factor, so the pair never lines up
+    twice and there is no loop for your eye to finish. A slow breath rides on
+    top of the sum. Nothing here is sharp and nothing here is bright: the whole
+    thing is capped at :data:`config.WAITING_BRIGHTNESS`, well under a live
+    session, because the board is saying nothing and a bright board is a board
+    saying something.
 
-    * the **sweep** is the lamp test proper, in the aircraft sense -- one arc
-      travelling across all 16 rings so a dead LED has nowhere to hide;
-    * the **field** it dissolves into is four travelling sine waves at mutually
-      unrelated rates, two of them driving brightness and two driving hue, with
-      the ripple's centre drifting. Nothing about it loops, so it never settles
-      into a pattern your eye can finish and stop watching.
+    What it replaced was a lamp test -- one arc lighting every ring on all 16
+    encoders at full, then a generative interference field at that same level.
+    Correct as a self-test and wrong as a resting state: sixteen knobs at full
+    is what this device looks like when everything at once needs you.
 
-    It is deliberately the *idle* state and nothing else: it fades out over a
-    minute on its own, and :meth:`dismiss` pulls it off the board the moment a
-    real session appears. It never paints a claimed encoder, and everywhere else
-    it only writes a cell it would light *more* than whatever is underneath, so
-    nothing the board actually has to say is ever dimmed by decoration.
+    It fades out over :data:`config.WAITING_SECONDS` on its own, and
+    :meth:`dismiss` pulls it off the board the moment a real session appears. It
+    never paints a claimed encoder, and everywhere else it only writes a cell it
+    would light *more* than whatever is underneath, so nothing the board actually
+    has to say is ever dimmed by decoration.
     """
 
     def __init__(
         self,
         started_at: float,
         bank: int = 0,
-        sweep: float = config.LAMP_TEST_SWEEP_SECONDS,
-        duration: float = config.LAMP_TEST_SECONDS,
+        duration: float = config.WAITING_SECONDS,
     ) -> None:
         self.started_at = started_at
         self.bank = bank
-        self.sweep = max(0.01, sweep)
-        self.duration = max(self.sweep, duration)
+        self.duration = max(0.01, duration)
         self.dismissed_at: Optional[float] = None
         #: Gain at the instant of dismissal, so the quick fade-out starts from
         #: wherever the slow one had got to rather than jumping back to full.
@@ -236,67 +239,70 @@ class LampTestOverlay(Overlay):
 
     def done(self, now: float) -> bool:
         if self.dismissed_at is not None:
-            return now - self.dismissed_at >= config.LAMP_TEST_DISMISS_SECONDS
+            return now - self.dismissed_at >= config.WAITING_DISMISS_SECONDS
         return now - self.started_at >= self.duration
 
     def _gain(self, now: float) -> float:
-        """The overall fade envelope: a cosine ease over the full minute, so it
-        holds near full for a while and then slides away, rather than visibly
-        dimming from the first second."""
+        """The overall envelope: eased up over a couple of seconds, then a
+        cosine slide over the full run, so it holds near full for a while and
+        then leaves, rather than visibly dimming from the first second."""
         if self.dismissed_at is not None:
-            gone = (now - self.dismissed_at) / config.LAMP_TEST_DISMISS_SECONDS
+            gone = (now - self.dismissed_at) / config.WAITING_DISMISS_SECONDS
             # Clamped at both ends. Only the lower one ever fires in the daemon,
             # where the dismissal and the frames after it come off the same
             # monotonic clock -- but a gain above 1.0 is an overbright cell
             # (ring > 127) rather than a slightly wrong one, and nothing
             # downstream re-clamps it.
             return self._dismiss_gain * _clamp01(1.0 - gone)
-        u = _clamp01((now - self.started_at) / self.duration)
-        return (1 + math.cos(math.pi * u)) / 2
-
-    def _sweep_fill(self, offset: int, t: float) -> float:
-        local = (t / self.sweep) * (config.ENCODERS_PER_BANK + 6) - offset
-        return _clamp01(local / 6.0)
+        t = now - self.started_at
+        u = _clamp01(t / self.duration)
+        rise = _smoothstep(t / config.WAITING_FADE_IN_SECONDS)
+        return rise * (1 + math.cos(math.pi * u)) / 2
 
     @staticmethod
-    def _field(x: float, y: float, t: float) -> float:
-        """One scalar field over the 4x4 grid, in -1..1.
+    def _gradient(u: float, t: float, period: float) -> float:
+        """One broad gradient travelling an axis, in 0..1.
 
-        Four travelling waves whose rates share no common factor, which is the
-        whole trick: the sum never repeats, so sixteen pixels are enough to read
-        as motion with somewhere to go.
-
-        It used to drive a hue off a second, independent field as well. Boot
-        does not light the RGB at all now, so there is nothing for that field to
-        colour and it is gone rather than left computing a number no one reads.
+        ``u`` is a position along that axis in 0..1 and the band wraps, so a
+        gradient leaving the bottom-right is already entering the top-left --
+        the grid is four encoders wide and a sweep that ran off the end would
+        spend most of its period on a dark board. Raised cosine rather than a
+        ramp with an edge: an edge is a thing arriving, and nothing is arriving.
         """
-        cx = 1.5 + 1.2 * math.sin(0.11 * t)
-        cy = 1.5 + 1.2 * math.cos(0.13 * t)
-        return (
-            math.sin(1.7 * x + 0.90 * t)
-            + math.sin(1.3 * y - 0.61 * t)
-            + math.sin(0.9 * (x + y) + 0.37 * t)
-            + math.sin(2.1 * math.hypot(x - cx, y - cy) - 1.13 * t)
-        ) / 4
+        head = (t / period) % 1.0
+        # Wrapped distance from the crest, 0..0.5.
+        gap = abs(((u - head + 0.5) % 1.0) - 0.5)
+        if gap >= config.WAITING_WIDTH:
+            return 0.0
+        return (1 + math.cos(math.pi * gap / config.WAITING_WIDTH)) / 2
+
+    def _level(self, x: float, y: float, t: float) -> float:
+        """The two gradients plus the breath, in 0..1, before the fade envelope.
+
+        The second period is the first times an irrational-enough ratio: two
+        gradients that lined up would beat, and a beat is a pattern you can
+        learn to expect. Weighted rather than averaged so neither one is quite
+        the whole picture, then breathed over ~40 seconds so even a still frame
+        of the pair is somewhere on a slower ramp.
+        """
+        slow = config.WAITING_PERIOD_SECONDS
+        diagonal = self._gradient((x + y) / 6.0, t, slow)
+        across = self._gradient(x / 3.0, -t, slow * 1.61)
+        breath = 0.72 + 0.28 * (1 + math.sin(2 * math.pi * t / 41.0)) / 2
+        return _clamp01(0.62 * diagonal + 0.48 * across) * breath
 
     def apply(self, board: list[Cell], now: float, claimed=frozenset()) -> None:
         t = now - self.started_at
         if t < 0:
             return
-        gain = self._gain(now)
-        # The sweep runs to completion first -- every ring has to actually reach
-        # full or it is not a lamp test -- and only then dissolves into the
-        # field, so the two read as one gesture rather than two clips spliced.
-        mix = _smoothstep((t - self.sweep) / (0.8 * self.sweep))
+        gain = self._gain(now) * config.WAITING_BRIGHTNESS
 
         for offset, slot in enumerate(bank_slots(self.bank)):
             if slot in claimed:
                 continue  # a session's own encoder is never decoration
             x = float(offset % 4)
             y = float(offset // 4)
-            level = _smoothstep((self._field(x, y, t) + 1) / 2)
-            level = level * mix + self._sweep_fill(offset, t) * (1 - mix)
-            level *= gain
+            level = self._level(x, y, t) * gain
             # Ambient breathing underneath is left alone wherever it is already
             # the brighter of the two, which is what turns the tail of the fade
             # into a crossfade back to the idle board rather than a blackout.
@@ -725,7 +731,7 @@ class Sleep:
         #: gain it was at when that happened -- so the ramp back up starts from
         #: where the fade had got to rather than jumping to the floor and rising
         #: from there. The same bookkeeping as
-        #: :attr:`LampTestOverlay._dismiss_gain`, in the other direction.
+        #: :attr:`WaitingOverlay._dismiss_gain`, in the other direction.
         self._woke_at: Optional[float] = None
         self._woke_from = 1.0
 
@@ -796,11 +802,12 @@ def dim(board: list[Cell], gain: float, spared: frozenset[int] = frozenset()) ->
 def ambient(board: list[Cell], now: float) -> None:
     """Nothing is running, so the board breathes rather than going dark.
 
-    It lies *underneath* everything, including the boot sequence -- the lamp
-    test only writes a cell it would light more than what is already there, so
-    whatever colour this is shows through the gaps in it. Which is why it is no
-    colour at all: a blue breathing through the lamp test was the blue on the
-    board at boot, and an idle board has by definition nothing to say.
+    It lies *underneath* everything, including the boot sequence -- the waiting
+    gradients only write a cell they would light more than what is already
+    there, so whatever colour this is shows through the gaps in them. Which is
+    why it is no colour at all: a blue breathing through the waiting animation
+    was the blue on the board at boot, and an idle board has by definition
+    nothing to say.
     """
     for slot in bank_slots(0):
         index = slot % config.ENCODERS_PER_BANK
