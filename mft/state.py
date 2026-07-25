@@ -14,7 +14,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 from . import config
 from .context import fraction as context_fraction
@@ -42,8 +42,11 @@ class Session:
     #: Whatever the SessionStart hook could learn about the terminal it lives
     #: in: TERM_PROGRAM, tty, tmux pane, iTerm GUID, ...
     terminal: dict[str, Any] = field(default_factory=dict)
-    #: Stable identity of the *terminal*, which is what actually owns the slot.
-    key: str = ""
+    #: Every identity token this session's terminal has ever answered to; see
+    #: :func:`terminal_keys`. The *terminal* is what owns the slot, and it is
+    #: described by a different subset of tokens depending on which hook is
+    #: talking, so a session accumulates them rather than holding one.
+    keys: set[str] = field(default_factory=set)
     created_at: float = field(default_factory=time.monotonic)
     last_event_at: float = field(default_factory=time.monotonic)
     state_since: float = field(default_factory=time.monotonic)
@@ -129,6 +132,18 @@ class Session:
         return self.permission_mode == "bypassPermissions"
 
     @property
+    def key(self) -> str:
+        """The strongest token this session is known by, for logs and /status.
+
+        Derived rather than stored: the set is the identity, and a single field
+        would go stale the moment a better token arrived. Falls back to the
+        session id, which owns nothing and survives nothing -- a session with no
+        terminal identity keeps its encoder by being the record it is, and
+        loses it to the next `/clear`.
+        """
+        return best_key(self.keys) or f"sid:{self.session_id}"
+
+    @property
     def short_id(self) -> str:
         return self.session_id[:8]
 
@@ -155,12 +170,67 @@ TERMINAL_KEYS = (
 )
 
 
-def terminal_key(terminal: dict[str, Any], cwd: str = "") -> Optional[str]:
-    for name in TERMINAL_KEYS:
-        value = terminal.get(name)
-        if value:
-            return f"{name}:{value}"
-    return f"cwd:{cwd}" if cwd else None
+_KEY_RANK = {name: index for index, name in enumerate(TERMINAL_KEYS)}
+
+
+def terminal_keys(terminal: dict[str, Any], cwd: str = "") -> list[str]:
+    """Every identity token a terminal payload carries, strongest first.
+
+    All of them rather than only the best one, because *which* fields a given
+    payload has is not stable. The SessionStart hook reads the whole
+    environment; ``notify.sh`` reports what it can learn without a process
+    spawn; discovery recovers a third subset from the process table. Matching on
+    one token per payload means two descriptions of the same tab that overlap
+    only in their weaker fields look like two tabs -- and that is exactly how a
+    session ends up lighting a second encoder while the first one keeps pointing
+    at its terminal. Matching on the whole set, a single field in common is
+    enough to recognise the tab.
+    """
+    keys = [f"{name}:{terminal[name]}" for name in TERMINAL_KEYS if terminal.get(name)]
+    if not keys and cwd:
+        keys = [f"cwd:{cwd}"]
+    return keys
+
+
+def merge_terminal(
+    stored: dict[str, Any], arriving: dict[str, Any]
+) -> dict[str, Any]:
+    """Fold a new description of a tab into what we already knew about it.
+
+    A union rather than a replacement, because the hooks do not all report the
+    same fields: ``register_session.py`` sends the whole environment and
+    ``notify.sh`` sends the little it can learn without spawning a process, so
+    taking the latest payload whole would keep dropping the details the focus
+    adapters need. The exception is an identifying field they *both* carry with
+    different values -- one tab cannot be two ttys, so what we stored describes
+    some other tab and the arriving payload is the entire truth about this one.
+    """
+    contradicted = any(
+        name in stored and stored[name] != value
+        for name, value in arriving.items()
+        if name in _KEY_RANK
+    )
+    return dict(arriving) if contradicted else {**stored, **arriving}
+
+
+def key_name(key: str) -> str:
+    """``tty`` out of ``tty:/dev/ttys004``: which field a token came from."""
+    return key.split(":", 1)[0]
+
+
+def key_rank(key: str) -> tuple[int, str]:
+    """Sort order for tokens: :data:`TERMINAL_KEYS` first, ties by value.
+
+    Every comparison between tokens is this one -- which of two names a tab
+    better -- and the weak end of the list is weak in a specific way: a pid names
+    a tab exactly until that process exits and the number comes back around.
+    """
+    return (_KEY_RANK.get(key_name(key), len(TERMINAL_KEYS)), key)
+
+
+def best_key(keys: Iterable[str]) -> Optional[str]:
+    """The most durable token in a set, or None if there are none."""
+    return min(keys, key=key_rank, default=None)
 
 
 class SessionTable:
@@ -173,8 +243,10 @@ class SessionTable:
         #: slot -> session_id, including recently-ended sessions during the
         #: linger window so a resumed session lands back where it was.
         self._slots: dict[int, str] = {}
-        #: terminal key -> slot, so a new session id in a known tab is adopted
-        #: by the slot that tab already owns.
+        #: Every identity token any session answers to -> its slot, so a new
+        #: session id in a known tab is adopted by the slot that tab already
+        #: owns. A cache of what the sessions themselves hold, rebuilt from them
+        #: by :meth:`_compact`, never the truth on its own.
         self._keys: dict[str, int] = {}
 
     # -- slot allocation ----------------------------------------------------
@@ -215,19 +287,151 @@ class SessionTable:
                 )
                 session.slot = slot
             self._slots[slot] = session.session_id
-        self._keys = {s.key: s.slot for s in ordered}
+        # Rebuilt from the sessions, in board order, first writer winning: a
+        # token two records somehow both claim resolves to the live one nearer
+        # the top-left rather than to whichever happened to be indexed last.
+        # `reconcile` is what notices that they clash at all.
+        self._keys = {}
+        for session in ordered:
+            for key in session.keys:
+                self._keys.setdefault(key, session.slot)
 
     def compact(self) -> None:
         with self._lock:
             self._compact()
+
+    # -- terminal identity --------------------------------------------------
+
+    def _bind(self, session: Session, keys: Sequence[str]) -> None:
+        """Record every token a payload just said this session answers to.
+
+        Tokens accumulate, with one exception: a token whose *field* the session
+        already holds under a different value is a contradiction, not an
+        addition. One tab cannot be two ttys, so the arriving value is the
+        session's and the old one is dropped -- which is what lets a record that
+        was handed the wrong tab's identity (see :meth:`_cleared_ghost`) correct
+        itself the moment the tab it really lives in says so.
+        """
+        fresh = [key for key in keys if key]
+        if not fresh:
+            return
+        names = {key_name(key) for key in fresh}
+        contradicted = {
+            key for key in session.keys if key_name(key) in names and key not in fresh
+        }
+        if any(key_name(key) != "cwd" for key in fresh):
+            # A directory is what a payload with no identity in it falls back to,
+            # and every tab in that directory shares it. The moment something
+            # names the tab properly, that guess stops being this session's.
+            contradicted |= {key for key in session.keys if key_name(key) == "cwd"}
+        if contradicted:
+            log.info(
+                "session %s is not %s after all; it is %s",
+                session.short_id,
+                ", ".join(sorted(contradicted)),
+                ", ".join(sorted(fresh)),
+            )
+            for key in contradicted:
+                if self._keys.get(key) == session.slot:
+                    del self._keys[key]
+            session.keys -= contradicted
+        session.keys.update(fresh)
+        for key in fresh:
+            self._keys[key] = session.slot
+
+    def _owner(self, keys: Sequence[str]) -> Optional[Session]:
+        """The session already holding any of these tokens, strongest first.
+
+        Strongest first because the weak end of :data:`TERMINAL_KEYS` is
+        reusable; see :func:`key_rank`. A stale token -- one indexed against a
+        slot nothing lives on any more -- is dropped as it is found rather than
+        answered with.
+        """
+        for key in sorted(keys, key=key_rank):
+            slot = self._keys.get(key)
+            if slot is None:
+                continue
+            session = self._sessions.get(self._slots.get(slot, ""))
+            if session is not None:
+                return session
+            del self._keys[key]
+        return None
+
+    def _absorb(self, live: Session, stale: Session) -> Session:
+        """One terminal, two records: keep the live one, on the older encoder.
+
+        The repair for an identity that arrived late. Whatever the daemon learned
+        about the tab while it could not name it belongs to the session that is
+        actually running there, so the live record takes the established slot and
+        inherits anything it is missing; the other is released. The lower slot
+        wins because that is the encoder the tab has been using -- healing this
+        must not also move the knob.
+        """
+        slot = min(live.slot, stale.slot)
+        log.warning(
+            "encoders %d and %d are the same terminal (%s); merging onto %d",
+            live.slot + 1,
+            stale.slot + 1,
+            best_key(live.keys | stale.keys) or "?",
+            slot + 1,
+        )
+        keys = set(live.keys) | set(stale.keys)
+        if not live.terminal:
+            live.terminal = dict(stale.terminal)
+        if not live.transcript_path:
+            live.transcript_path = stale.transcript_path
+        live.created_at = min(live.created_at, stale.created_at)
+        live.turn_count = max(live.turn_count, stale.turn_count)
+        self._release(stale)
+        live.slot = slot
+        live.keys = keys
+        self._compact()
+        return live
+
+    def _cleared_ghost(self, cwd: str, now: float) -> Optional[Session]:
+        """The record a `/clear` just emptied here, if it is about to be orphaned.
+
+        `/clear` retires a session id and hands out a new one in the same tab.
+        The replacement announces its terminal on SessionStart -- but that hook
+        runs a process to read the environment and is `async`, so a plain `curl`
+        event for the new id can beat it to the daemon by a wide margin. Keyed on
+        nothing, that event lights a *second* encoder: the tab's real knob sits
+        on the wiped record (still focusable, which is why pressing it works)
+        while the new one carries the session (and cannot be pressed, because it
+        knows no terminal). Both then survive an hour of TTL.
+
+        So a terminal-less event for an unknown session id, in the directory of a
+        record that was wiped by `/clear` moments ago and has not said anything
+        since, is taken for that clear's other half. The window is short and the
+        conditions are narrow, because the cost of being wrong is two tabs in one
+        directory sharing an encoder until the real identity arrives and
+        :meth:`_bind` sorts them out.
+        """
+        if not cwd:
+            return None
+        candidates = [
+            s
+            for s in self._sessions.values()
+            if s.cwd == cwd
+            and s.cleared_at is not None
+            and now - s.cleared_at <= config.CLEAR_ADOPT_SECONDS
+            # Silent since the wipe: anything that has spoken for itself since
+            # is a session, not the empty half of a pair.
+            and s.last_event_at <= s.cleared_at
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda s: s.cleared_at or 0.0)
 
     def _evict(self, slot: int) -> None:
         """Drop whatever currently holds ``slot``, keys included."""
         previous = self._slots.get(slot)
         if previous:
             stale = self._sessions.pop(previous, None)
-            if stale is not None and self._keys.get(stale.key) == slot:
-                del self._keys[stale.key]
+            if stale is not None:
+                for key in stale.keys:
+                    if self._keys.get(key) == slot:
+                        del self._keys[key]
         self._slots.pop(slot, None)
 
     def get(self, session_id: str) -> Optional[Session]:
@@ -249,47 +453,67 @@ class SessionTable:
     ) -> Optional[Session]:
         """Get the session, creating and assigning a slot if it's new.
 
-        ``terminal`` comes from the SessionStart command hook and is what makes
-        the slot durable: when it names a tab we already have a slot for, that
-        slot adopts this session id instead of a fresh encoder lighting up.
+        ``terminal`` is what makes the slot durable: when its tokens name a tab
+        we already have a slot for, that slot adopts this session id instead of a
+        fresh encoder lighting up. Every event that can carry one does -- see
+        :func:`terminal_keys` -- because an event that arrives without one has to
+        be answered by guessing, and the guesses are what this class spends most
+        of its length keeping honest.
 
         Returns ``None`` only when all slots are held by live sessions.
         """
         with self._lock:
-            key = terminal_key(terminal, cwd) if terminal else None
+            now = time.monotonic()
+            keys = terminal_keys(terminal, cwd) if terminal else []
             session = self._sessions.get(session_id)
 
             if session is not None:
                 if cwd:
                     session.cwd = cwd
-                if key and key != session.key:
-                    self._keys.pop(session.key, None)
-                    # Another tab claiming this key can only be a stale record.
-                    if self._keys.get(key) not in (None, session.slot):
-                        self._evict(self._keys[key])
-                    session.key = key
-                    self._keys[key] = session.slot
-                session.last_event_at = time.monotonic()
+                if keys:
+                    # This id already has a record, and the tokens that just
+                    # arrived may belong to a *different* record -- which means
+                    # one tab is on the board twice, and now we can prove it.
+                    owner = self._owner(keys)
+                    if owner is not None and owner is not session:
+                        session = self._absorb(session, owner)
+                    self._bind(session, keys)
+                session.last_event_at = now
                 return session
 
-            if key is not None:
-                slot = self._keys.get(key)
-                if slot is not None:
-                    existing = self._sessions.get(self._slots.get(slot, ""))
-                    if existing is not None:
-                        # Same tab, new session id: /clear, resume, compact or
-                        # fork. Keep the slot and everything on it.
-                        self._rekey(existing, session_id)
-                        existing.cwd = cwd or existing.cwd
-                        existing.last_event_at = time.monotonic()
-                        log.info(
-                            "session %s adopted encoder %d (%s)",
-                            existing.short_id,
-                            slot + 1,
-                            key,
-                        )
-                        return existing
-                    del self._keys[key]
+            if keys:
+                owner = self._owner(keys)
+                if owner is not None:
+                    # Same tab, new session id: /clear, resume, compact or fork.
+                    # Keep the slot and everything on it.
+                    self._rekey(owner, session_id)
+                    owner.cwd = cwd or owner.cwd
+                    owner.last_event_at = now
+                    self._bind(owner, keys)
+                    log.info(
+                        "session %s adopted encoder %d (%s)",
+                        owner.short_id,
+                        owner.slot + 1,
+                        owner.key,
+                    )
+                    return owner
+
+            # Only for an event with nothing to go on. One that named a tab and
+            # matched no slot is a new tab, whatever else is going on in this
+            # directory -- guessing is strictly for the events that force it.
+            ghost = self._cleared_ghost(cwd, now) if not keys else None
+            if ghost is not None:
+                self._rekey(ghost, session_id)
+                ghost.cwd = cwd or ghost.cwd
+                ghost.last_event_at = now
+                log.info(
+                    "session %s adopted encoder %d as the other half of a /clear "
+                    "in %s, with no terminal of its own yet",
+                    ghost.short_id,
+                    ghost.slot + 1,
+                    cwd,
+                )
+                return ghost
 
             slot = self._free_slot()
             if slot is None:
@@ -297,13 +521,17 @@ class SessionTable:
                 return None
             self._evict(slot)
 
-            session = Session(
-                session_id=session_id, slot=slot, cwd=cwd, key=key or f"sid:{session_id}"
-            )
+            session = Session(session_id=session_id, slot=slot, cwd=cwd)
             self._sessions[session_id] = session
             self._slots[slot] = session_id
-            self._keys[session.key] = slot
-            log.info("session %s -> encoder %d (%s)", session.short_id, slot + 1, cwd)
+            self._bind(session, keys)
+            log.info(
+                "session %s -> encoder %d (%s, %s)",
+                session.short_id,
+                slot + 1,
+                cwd,
+                session.key,
+            )
             return session
 
     def find_parent(self, session_id: str, cwd: str = "") -> Optional[Session]:
@@ -345,8 +573,9 @@ class SessionTable:
         self._sessions.pop(session.session_id, None)
         if self._slots.get(session.slot) == session.session_id:
             del self._slots[session.slot]
-        if self._keys.get(session.key) == session.slot:
-            del self._keys[session.key]
+        for key in session.keys:
+            if self._keys.get(key) == session.slot:
+                del self._keys[key]
         log.info("released encoder %d (%s)", session.slot + 1, session.short_id)
 
     def release(self, session: Session) -> None:
@@ -375,6 +604,111 @@ class SessionTable:
             if freed:
                 self._compact()
         return freed
+
+    # -- the no-orphans sweep -----------------------------------------------
+
+    def reconcile(self, now: Optional[float] = None) -> list[Session]:
+        """Repair the board's one structural invariant: **one encoder per tab.**
+
+        :meth:`ensure` already keeps that true for every identity that arrives
+        through it, which is nearly all of them. This is the fallback for the
+        rest, and it exists because the failure it catches is both invisible and
+        long-lived: an orphaned record renders as a plausible encoder, answers a
+        press by focusing the right terminal, and sits there for the full
+        `SESSION_TTL_SECONDS` while the session it used to be lights a second
+        knob that cannot be pressed. Nothing about that looks like a bug from
+        across the room, so it gets checked from outside rather than trusted.
+
+        Two repairs, in this order:
+
+        1.  Any token held by two records means one tab on two encoders; the
+            live one keeps the older encoder (:meth:`_absorb`). This is also
+            where identities written straight onto a session get indexed --
+            :mod:`mft.discover` sets ``terminal`` on a record it did not create,
+            and the press path upgrades one out of the process table.
+        2.  A record wiped by a `/clear` that has been silent ever since, in a
+            directory where a *newer* record with no terminal identity of its own
+            is running, is the ghost of that clear rather than a session. It is
+            released. The identity test is what keeps this off a genuine second
+            tab in the same directory: a real session announces its terminal
+            within a turn, and one that has is never taken for a ghost.
+
+        Returns the records it dropped. Cheap enough to call on every reap:
+        sixteen slots, a handful of tokens each, no I/O.
+        """
+        now = time.monotonic() if now is None else now
+        dropped: list[Session] = []
+        with self._lock:
+            # One merge per pass, because a merge renumbers every slot under it.
+            # Bounded by the number of sessions: each pass removes one record.
+            for _ in range(len(self._sessions) + 1):
+                if not self._merge_one_duplicate(dropped):
+                    break
+            for ghost in self._ghosts(now):
+                log.warning(
+                    "encoder %d is the ghost of a /clear in %s (%s); releasing it",
+                    ghost.slot + 1,
+                    ghost.cwd or "?",
+                    ghost.short_id,
+                )
+                self._release(ghost)
+                dropped.append(ghost)
+            if dropped:
+                self._compact()
+        return dropped
+
+    def _merge_one_duplicate(self, dropped: list[Session]) -> bool:
+        """Find the first pair of records describing one terminal and merge it."""
+        owners: dict[str, Session] = {}
+        for session in sorted(self._sessions.values(), key=lambda s: s.slot):
+            # What the record says it is, plus anything written onto its
+            # `terminal` from outside this class and never indexed. No `cwd`
+            # fallback: two tabs in one directory are two tabs.
+            keys = set(session.keys) | set(terminal_keys(session.terminal))
+            clash = next((owners[key] for key in keys if key in owners), None)
+            if clash is None:
+                self._bind(session, sorted(keys))
+                for key in keys:
+                    owners.setdefault(key, session)
+                continue
+            # The one that spoke most recently is the session; the other is
+            # whatever it used to be called.
+            live, stale = (
+                (session, clash)
+                if session.last_event_at >= clash.last_event_at
+                else (clash, session)
+            )
+            live.keys |= keys
+            self._absorb(live, stale)
+            dropped.append(stale)
+            return True
+        return False
+
+    def _ghosts(self, now: float) -> list[Session]:
+        """Records left behind by a `/clear` whose replacement never found them.
+
+        See :meth:`reconcile`. The window is the same one :meth:`_cleared_ghost`
+        uses to adopt: inside it the replacement may still be about to arrive and
+        say so itself, and there is nothing to repair until it has had the chance.
+        """
+        keyless = [
+            s
+            for s in self._sessions.values()
+            if not s.keys and s.ended_at is None and not s.terminal
+        ]
+        if not keyless:
+            return []
+        return [
+            s
+            for s in self._sessions.values()
+            if s.cleared_at is not None
+            and s.last_event_at <= s.cleared_at
+            and now - s.cleared_at > config.CLEAR_ADOPT_SECONDS
+            and any(
+                other is not s and other.cwd == s.cwd and other.created_at >= s.cleared_at
+                for other in keyless
+            )
+        ]
 
 
 # --- hook event -> state ----------------------------------------------------

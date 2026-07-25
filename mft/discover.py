@@ -14,7 +14,7 @@ Two sources, joined:
     is whether that session is still *running*: a transcript you Ctrl-C'd two
     minutes ago looks exactly like one waiting for your answer.
 *   **The process table.** Proves liveness, and carries the tty, which is what
-    :func:`mft.state.terminal_key` wants for a durable slot.
+    :func:`mft.state.terminal_keys` wants for a durable slot.
 
 Neither is sufficient alone, so nothing is adopted without both. The bias
 throughout is toward showing too little: a missing encoder is a session you

@@ -15,7 +15,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mft import board, config, context, font, twister  # noqa: E402
 from mft.render import Cell, attention_debt, render  # noqa: E402
-from mft.state import SessionTable, apply_event, classify_notification  # noqa: E402
+from mft.state import (  # noqa: E402
+    SessionTable,
+    apply_event,
+    classify_notification,
+    merge_terminal,
+    terminal_keys,
+)
 
 
 def event(name: str, **kw) -> dict:
@@ -119,6 +125,272 @@ class TerminalIdentity(unittest.TestCase):
         table = SessionTable()
         session = table.ensure("a", "", {"TMUX_PANE": "%3", "tty": "/dev/ttys004"})
         self.assertEqual(session.key, "TMUX_PANE:%3")
+
+    def test_one_field_in_common_is_enough_to_recognise_a_tab(self):
+        # `register_session.py` reports the whole environment and `notify.sh`
+        # reports the little it can get cheaply, so two events about one tab
+        # overlap only partly. Matching on the strongest token of each payload
+        # would make those two descriptions two tabs.
+        table = SessionTable()
+        full = table.ensure("a", "/tmp/p", {"TERM_SESSION_ID": "w0:1", "tty": "/dev/ttys004"})
+        thin = table.ensure("b", "/tmp/p", {"tty": "/dev/ttys004"})
+        self.assertIs(thin, full)
+        self.assertEqual(len(table.all()), 1)
+
+    def test_a_tab_never_ends_up_on_two_encoders(self):
+        # The orphan: a plain event for the new session id lands before anything
+        # says which tab it is in, so it gets an encoder of its own. When the
+        # identity finally arrives, the two records are one tab and the live one
+        # keeps the encoder the tab has been using.
+        table = SessionTable()
+        first = table.ensure("old", "/tmp/p", self.TERM)
+        first.terminal = dict(self.TERM)
+        blind = table.ensure("new", "/tmp/p")
+        self.assertNotEqual(blind.slot, first.slot, "nothing to key on yet")
+
+        merged = table.ensure("new", "/tmp/p", self.TERM)
+        self.assertEqual(len(table.all()), 1)
+        self.assertEqual(merged.session_id, "new")
+        self.assertEqual(merged.slot, 0, "on the encoder the tab already had")
+        self.assertEqual(
+            merged.terminal, self.TERM, "and focusable, which the blind record was not"
+        )
+
+    def test_a_record_handed_the_wrong_tab_corrects_itself(self):
+        table = SessionTable()
+        session = table.ensure("a", "/tmp/p", self.TERM)
+        moved = table.ensure("a", "/tmp/p", {**self.TERM, "tty": "/dev/ttys009"})
+        self.assertIs(moved, session)
+        self.assertEqual(moved.key, "tty:/dev/ttys009")
+        self.assertNotIn("tty:/dev/ttys004", moved.keys)
+        # And the tty it gave up no longer answers for it.
+        other = table.ensure("b", "/tmp/p", self.TERM)
+        self.assertIsNot(other, moved)
+
+    def test_terminal_descriptions_are_unioned_not_replaced(self):
+        stored = {"TERM_PROGRAM": "Apple_Terminal", "tty": "/dev/ttys004", "pid": "9"}
+        thin = {"tty": "/dev/ttys004"}
+        self.assertEqual(merge_terminal(stored, thin), stored)
+        # ...unless they disagree about which tab this is, and then the new one
+        # is the whole truth rather than half of a mixture of two tabs.
+        self.assertEqual(
+            merge_terminal(stored, {"tty": "/dev/ttys009"}), {"tty": "/dev/ttys009"}
+        )
+
+    def test_tokens_are_ordered_by_how_well_they_survive(self):
+        self.assertEqual(
+            terminal_keys({"tty": "/dev/ttys004", "TMUX_PANE": "%3", "pid": "9"}),
+            ["TMUX_PANE:%3", "tty:/dev/ttys004", "pid:9"],
+        )
+
+
+class ClearedSlots(unittest.TestCase):
+    """`/clear` retires a session id and keeps the tab. The replacement's first
+    event routinely beats the hook that says where it lives, so the wiped slot
+    has to be able to recognise its own other half with nothing to go on."""
+
+    TERM = {"TERM_PROGRAM": "Apple_Terminal", "tty": "/dev/ttys004"}
+
+    def cleared_table(self):
+        table = SessionTable()
+        session = table.ensure("old", "/tmp/p", self.TERM)
+        session.terminal = dict(self.TERM)
+        apply_event(session, {"hook_event_name": "SessionEnd", "reason": "clear"})
+        return table, session
+
+    def test_the_replacement_lands_on_the_wiped_encoder(self):
+        table, old = self.cleared_table()
+        new = table.ensure("new", "/tmp/p")  # a tool call, no terminal
+        self.assertIs(new, old)
+        self.assertEqual(new.session_id, "new")
+        self.assertEqual(new.slot, 0)
+        self.assertEqual(len(table.all()), 1)
+        self.assertEqual(new.terminal, self.TERM, "still focusable")
+
+    def test_a_different_tab_in_the_same_directory_is_left_alone(self):
+        # It says which tab it is in, so it is not the other half of anything.
+        table, old = self.cleared_table()
+        other = table.ensure("b", "/tmp/p", {**self.TERM, "tty": "/dev/ttys009"})
+        self.assertIsNot(other, old)
+        self.assertEqual(len(table.all()), 2)
+
+    def test_the_window_closes(self):
+        table, old = self.cleared_table()
+        old.cleared_at = time.monotonic() - config.CLEAR_ADOPT_SECONDS - 1
+        self.assertIsNot(table.ensure("new", "/tmp/p"), old)
+
+    def test_a_cleared_session_that_spoke_again_is_not_a_ghost(self):
+        table, old = self.cleared_table()
+        apply_event(old, {"hook_event_name": "UserPromptSubmit"})
+        self.assertIsNot(table.ensure("new", "/tmp/p"), old)
+
+
+class NoOrphans(unittest.TestCase):
+    """The fallback sweep. Whatever gets past `ensure`, a tab may not hold two
+    encoders -- and an orphaned record is invisible from across the room, so it
+    is checked rather than trusted."""
+
+    TERM = {"TERM_PROGRAM": "Apple_Terminal", "tty": "/dev/ttys004"}
+
+    def test_an_identity_written_from_outside_is_still_reconciled(self):
+        # `discover` sets `terminal` on a session it did not create, so the
+        # duplicate it makes never passes through `ensure` at all.
+        table = SessionTable()
+        live = table.ensure("a", "/tmp/p", self.TERM)
+        stray = table.ensure("b", "/tmp/q")
+        stray.terminal = dict(self.TERM)
+        stray.last_event_at = live.last_event_at + 1
+
+        dropped = table.reconcile()
+        self.assertEqual([s.session_id for s in dropped], ["a"])
+        self.assertEqual(len(table.all()), 1)
+        self.assertEqual(table.by_slot(0), stray)
+        self.assertEqual(stray.slot, 0, "on the older encoder")
+
+    def test_the_ghost_of_a_clear_is_released(self):
+        table = SessionTable()
+        old = table.ensure("old", "/tmp/p", self.TERM)
+        old.terminal = dict(self.TERM)
+        apply_event(old, {"hook_event_name": "SessionEnd", "reason": "clear"})
+        # A replacement that landed outside the adoption window, so it is on an
+        # encoder of its own and knows no terminal: nothing will ever join these
+        # two up, and both would sit there for an hour of TTL.
+        old.cleared_at = time.monotonic() - config.CLEAR_ADOPT_SECONDS - 1
+        old.last_event_at = old.cleared_at
+        stray = table.ensure("new", "/tmp/p")
+        self.assertEqual(len(table.all()), 2)
+
+        dropped = table.reconcile()
+        self.assertEqual([s.session_id for s in dropped], ["old"])
+        self.assertEqual(table.all(), [stray])
+        self.assertEqual(stray.slot, 0, "and the board closes up behind it")
+
+    def test_a_quiet_second_tab_is_not_a_ghost(self):
+        # Same directory, cleared, silent -- but the other session named its own
+        # tab, so it is a session and not the other half of this clear.
+        table = SessionTable()
+        old = table.ensure("old", "/tmp/p", self.TERM)
+        apply_event(old, {"hook_event_name": "SessionEnd", "reason": "clear"})
+        old.cleared_at = time.monotonic() - config.CLEAR_ADOPT_SECONDS - 1
+        old.last_event_at = old.cleared_at
+        table.ensure("b", "/tmp/p", {**self.TERM, "tty": "/dev/ttys009"})
+
+        self.assertEqual(table.reconcile(), [])
+        self.assertEqual(len(table.all()), 2)
+
+    def test_hooks_that_arrive_out_of_order_still_leave_one_knob(self):
+        """The whole reported failure, driven through the daemon in the order it
+        actually happens: `/clear`, then a tool call from the new session id, and
+        only later the hook that says which tab that id lives in."""
+        from mft.daemon import Visualizer
+        from mft.twister import NullTwister
+
+        vis = Visualizer(NullTwister())
+        term = {"TERM_PROGRAM": "Apple_Terminal", "tty": "/dev/ttys004", "pid": "900"}
+        vis.handle_event(
+            {
+                "session_id": "old",
+                "cwd": "/tmp/p",
+                "hook_event_name": "SessionStart",
+                "terminal": term,
+            }
+        )
+        vis.handle_event({"session_id": "old", "hook_event_name": "Stop", "cwd": "/tmp/p"})
+        vis.handle_event(
+            {
+                "session_id": "old",
+                "cwd": "/tmp/p",
+                "hook_event_name": "SessionEnd",
+                "reason": "clear",
+            }
+        )
+        # `notify.sh` names the tab on every event, so the ordinary path is that
+        # even this one is recognised...
+        vis.handle_event(
+            {
+                "session_id": "new",
+                "cwd": "/tmp/p",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "terminal": {"tty": "/dev/ttys004", "TERM_PROGRAM": "Apple_Terminal"},
+            }
+        )
+        # ...and the late SessionStart changes nothing.
+        vis.handle_event(
+            {
+                "session_id": "new",
+                "cwd": "/tmp/p",
+                "hook_event_name": "SessionStart",
+                "source": "clear",
+                "terminal": term,
+            }
+        )
+        sessions = vis.table.all()
+        self.assertEqual(len(sessions), 1, "one tab, one encoder")
+        self.assertEqual(sessions[0].session_id, "new")
+        self.assertEqual(sessions[0].slot, 0)
+        self.assertEqual(
+            sessions[0].terminal["pid"], "900", "the full identity survived the thin one"
+        )
+        self.assertIs(vis.table.by_slot(0), sessions[0], "and the press finds it")
+
+    def test_an_anonymous_event_after_a_clear_lands_on_the_same_knob(self):
+        # The same sequence with a hook that cannot name the tab at all: an
+        # `http` hook, or a `notify.sh` older than this behaviour.
+        from mft.daemon import Visualizer
+        from mft.twister import NullTwister
+
+        vis = Visualizer(NullTwister())
+        vis.handle_event(
+            {
+                "session_id": "old",
+                "cwd": "/tmp/p",
+                "hook_event_name": "SessionStart",
+                "terminal": {"tty": "/dev/ttys004"},
+            }
+        )
+        vis.handle_event(
+            {
+                "session_id": "old",
+                "cwd": "/tmp/p",
+                "hook_event_name": "SessionEnd",
+                "reason": "clear",
+            }
+        )
+        vis.handle_event(
+            {
+                "session_id": "new",
+                "cwd": "/tmp/p",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+            }
+        )
+        self.assertEqual(len(vis.table.all()), 1)
+        session = vis.table.by_slot(0)
+        self.assertEqual(session.session_id, "new")
+        self.assertEqual(session.state, "working")
+        self.assertEqual(session.terminal, {"tty": "/dev/ttys004"}, "still focusable")
+
+    def test_the_terminal_header_names_the_tab(self):
+        from mft.daemon import parse_terminal_header
+
+        self.assertEqual(
+            parse_terminal_header("tty=/dev/ttys004;TERM_SESSION_ID=w0t0p0:AB-12;"),
+            {"tty": "/dev/ttys004", "TERM_SESSION_ID": "w0t0p0:AB-12"},
+        )
+        # An identity we can't read costs the event its tab, never the event.
+        self.assertEqual(parse_terminal_header(""), {})
+        self.assertEqual(parse_terminal_header("nonsense"), {})
+        self.assertEqual(parse_terminal_header("tty=;=x;tty=/dev/ttys1"), {"tty": "/dev/ttys1"})
+        self.assertEqual(parse_terminal_header("x=" + "y" * 8192), {})
+
+    def test_a_healthy_board_is_left_exactly_as_it_was(self):
+        table = SessionTable()
+        a = table.ensure("a", "/tmp/a", {"tty": "/dev/ttys001"})
+        b = table.ensure("b", "/tmp/b", {"tty": "/dev/ttys002"})
+        c = table.ensure("c", "/tmp/c")  # no identity at all, and that is fine
+        self.assertEqual(table.reconcile(), [])
+        self.assertEqual([s.slot for s in (a, b, c)], [0, 1, 2])
 
 
 class StateMachine(unittest.TestCase):

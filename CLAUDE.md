@@ -81,7 +81,12 @@ These are load-bearing. Breaking one is a design change, not a refactor.
    happens; the daemon answers every event with a bodiless 204 and never puts a
    body on the wire. A dead daemon costs a failed connect and nothing more.
 3. **Encoders belong to terminals, not sessions.** Slot identity comes from
-   `state.terminal_key`, so `/clear` keeps its encoder. See the README section.
+   `state.terminal_keys`, so `/clear` keeps its encoder — and **one terminal
+   never holds two encoders**. Every hook carries what it can of the tab's
+   identity, records that turn out to describe the same tab merge onto the older
+   encoder, and `SessionTable.reconcile` re-checks that from outside once every
+   reap. Anything that creates or rekeys a session goes through
+   `SessionTable.ensure`. See the README section.
 4. **One fast animation on the board at a time** (`board.arbitrate_motion`),
    always on the encoder where a human is blocking. Motion is a budget.
 5. **Overlays are pure paint.** They never mutate session state, so one dropped

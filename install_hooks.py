@@ -9,8 +9,11 @@ Every event runs a command hook that posts the event JSON to the daemon and
 exits 0 whatever happens. SessionStart and UserPromptSubmit run
 ``register_session.py``, because only a command hook can see the environment --
 and the environment is the only thing that says which terminal tab the session
-lives in, which is what press-to-focus needs. The rest run ``notify.sh``, which
-is a `curl` and nothing else. All but SessionEnd are ``async``, so nothing you
+lives in, which is what press-to-focus needs. The rest run ``notify.sh``: a
+`curl`, plus one `ps` to name the tab in a header, because an event that arrives
+without one has to be answered by guessing which session it belongs to and
+`/clear` is where that guess costs you an encoder. All but SessionEnd are
+``async``, so nothing you
 are waiting on is ever behind one; SessionEnd is synchronous because the
 process is about to go away and the board needs to hear about it.
 

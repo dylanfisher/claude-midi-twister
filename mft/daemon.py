@@ -40,6 +40,7 @@ from .state import (
     Session,
     SessionTable,
     apply_event,
+    merge_terminal,
 )
 
 log = logging.getLogger("mft.daemon")
@@ -65,12 +66,48 @@ COMPACTING_EVENTS = frozenset({"SessionStart", "SessionEnd"})
 #: in the first place, whatever the order the pair arrives in.
 UPDATE_ONLY_EVENTS = frozenset({"SessionEnd"})
 
+#: Header `hooks/notify.sh` carries the terminal identity in, as
+#: ``name=value;name=value``. A header rather than a field spliced into the
+#: event JSON: the script's whole job is to pipe stdin at `curl` untouched, and
+#: rewriting JSON in `sh` to add one object is how that stops being reliable.
+#:
+#: The point of it is that *every* event names its tab, not just the two that
+#: run the Python hook. An event that arrives anonymous can only be answered by
+#: guessing which session it belongs to, and a wrong guess is a knob that lies.
+TERMINAL_HEADER = "X-MFT-Terminal"
+
+#: Bounds on what we will read out of that header: it is trusted input from our
+#: own hook, but it arrives over a socket and nothing else here is unbounded.
+TERMINAL_HEADER_MAX = 4096
+TERMINAL_HEADER_FIELDS = 24
+
 #: A frame that fails fails every frame, so the traceback is rate-limited to
 #: roughly one a minute rather than 30 a second.
 PAINT_ERROR_LOG_SECONDS = 60.0
 
 #: How often the reaper sweeps for sessions that ended or went silent.
 REAP_INTERVAL_SECONDS = 5.0
+
+
+def parse_terminal_header(raw: str) -> dict:
+    """``name=value;name=value`` -> a terminal dict, or ``{}`` if it says nothing.
+
+    Deliberately forgiving: this is a display, and an identity we cannot parse
+    should cost the event its tab, not the event. Values are taken verbatim up to
+    the first ``;`` -- terminal identifiers are short, printable and delimiter
+    free (``w0t0p0:UUID``, ``%3``, ``/dev/ttys004``) -- and anything else is
+    dropped rather than repaired.
+    """
+    if not raw or len(raw) > TERMINAL_HEADER_MAX:
+        return {}
+    terminal: dict[str, str] = {}
+    for field in raw.split(";")[:TERMINAL_HEADER_FIELDS]:
+        name, sep, value = field.partition("=")
+        name, value = name.strip(), value.strip()
+        if not sep or not name or not value:
+            continue
+        terminal[name] = value
+    return terminal
 
 
 def warn_about_hook_drift() -> None:
@@ -286,10 +323,11 @@ class Visualizer:
             log.debug("%s for a session we don't have (%s)", name, session_id[:8])
             return {"ok": True}
 
-        # The SessionStart command hook enriches the payload with whatever it
-        # could learn about the terminal; plain HTTP hooks don't have env. That
-        # terminal identity is what owns the encoder, so it goes in before the
-        # slot is chosen, not after.
+        # Whatever this event could tell us about the terminal it came from --
+        # the full environment from `register_session.py`, the tab identity from
+        # `notify.sh`'s header, nothing at all from an `http` hook. That identity
+        # is what owns the encoder, so it goes in before the slot is chosen, not
+        # after.
         terminal = event.get("terminal")
         terminal = terminal if isinstance(terminal, dict) and terminal else None
 
@@ -297,7 +335,9 @@ class Visualizer:
         if session is None:
             return {"ok": False, "error": "no free encoder"}
         if terminal:
-            session.terminal = terminal
+            # Merged, not assigned: the thin identity on a tool-call event would
+            # otherwise overwrite the full environment the focus adapters need.
+            session.terminal = merge_terminal(session.terminal, terminal)
 
         before = session.subagents
         effects = apply_event(session, event)
@@ -327,6 +367,10 @@ class Visualizer:
                     "encoder": s.slot + 1,
                     "bank": s.slot // config.ENCODERS_PER_BANK + 1,
                     "key": s.key,
+                    # Every token it answers to, not just the strongest: when a
+                    # knob is on the wrong session this is the field that says
+                    # which tab the daemon thinks it belongs to, and why.
+                    "keys": sorted(s.keys),
                     "state": s.state,
                     "cwd": s.cwd,
                     "turns": s.turn_count,
@@ -569,6 +613,10 @@ class Visualizer:
         now = time.monotonic()
         for session in adopted:
             self.refresh_context(session, now)
+        # Discovery reconstructs identities from the process table and writes
+        # them onto sessions a hook may already have created, so this is exactly
+        # the moment one tab can end up described twice.
+        self.table.reconcile(now)
         self.table.compact()
         if adopted:
             # These sessions have been running without us and none of them has
@@ -619,6 +667,11 @@ class Visualizer:
             still = 0 if self.paint(now) else still + 1
             if now - last_reap > REAP_INTERVAL_SECONDS:
                 self.table.reap()
+                # Alongside the reaper, and for the same reason it exists: what
+                # this catches is a board that looks entirely plausible and is
+                # quietly wrong -- one tab on two encoders -- and would stay that
+                # way for an hour of TTL. See `SessionTable.reconcile`.
+                self.table.reconcile(now)
                 last_reap = now
             # Nothing moving means nothing to be smooth for. Sweeps, fades and
             # brightness decay all change their cells every frame, so a board
@@ -680,10 +733,20 @@ class HookHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b"{}"
         try:
-            return json.loads(raw or b"{}")
+            event = json.loads(raw or b"{}")
         except json.JSONDecodeError as exc:
             log.warning("bad json from hook: %s", exc)
             return None
+        if not isinstance(event, dict):
+            log.warning("hook payload is not an object: %r", type(event).__name__)
+            return None
+        # The body wins: `register_session.py` puts a richer terminal in it than
+        # a header can carry, and it is the same field either way.
+        if not isinstance(event.get("terminal"), dict) or not event["terminal"]:
+            identity = parse_terminal_header(self.headers.get(TERMINAL_HEADER, ""))
+            if identity:
+                event["terminal"] = identity
+        return event
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib naming
         event = self._read_event()

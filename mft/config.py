@@ -38,7 +38,7 @@ FPS = 30.0
 #: :meth:`mft.daemon.Visualizer.run`. A hook event wakes the loop immediately,
 #: so this is not the latency of anything you do; it is only how often a board
 #: that is genuinely static asks itself whether it still is.
-IDLE_FPS = 4.0
+IDLE_FPS = 1.0
 
 #: Consecutive identical frames before the loop drops to `IDLE_FPS`. Half a
 #: second of hysteresis, because an animation can hold the same value for a
@@ -54,8 +54,11 @@ RING_REFRESH_SECONDS = 0.25
 #: (crashed terminal never fires SessionEnd) and its encoder is reclaimed.
 SESSION_TTL_SECONDS = 60 * 60
 
-#: How long a finished session keeps its encoder lit before fading out.
-DONE_FADE_SECONDS = 90.0
+#: How long a finished session keeps its encoder lit before fading out. Three
+#: minutes: long enough that a session that finished while you were in another
+#: window is still on the board when you look back, and the fade itself is slow
+#: enough to read as *going* rather than as another steady state.
+DONE_FADE_SECONDS = 180.0
 
 #: Sessions that ended cleanly hold their encoder this long. Slots are keyed on
 #: the *terminal*, not the session id, so a `/clear` lands back on the same knob
@@ -604,6 +607,16 @@ CLEAR_SETTLE = 0.6
 #: whichever arrives first fires the wipe and the other is a no-op this long.
 CLEAR_DEBOUNCE_SECONDS = 5.0
 
+#: How long a slot just wiped by a `/clear` will answer to a session it cannot
+#: identify. The replacement session id arrives immediately, but the hook that
+#: says which *tab* it is in runs a process and is `async`, so a plain `curl`
+#: event for the new id can be a long way ahead of it. Inside this window such
+#: an event is taken for the other half of the clear rather than being given an
+#: encoder of its own; see :meth:`mft.state.SessionTable._cleared_ghost`. Long
+#: enough to cover a slow hook, short enough that a genuinely new session in the
+#: same directory a minute later is still a new session.
+CLEAR_ADOPT_SECONDS = 30.0
+
 # --- Subagents --------------------------------------------------------------
 # Subagents are not sessions and must never be mistaken for one. They own no
 # encoder, they answer no gesture, and they vanish when the parent's turn ends.
@@ -622,10 +635,16 @@ SUBAGENT_TOOLS = frozenset({"Task", "Agent"})
 #: A hue used for nothing else on the board, so a lit encoder that isn't any of
 #: the state colours is unambiguously a subagent.
 SUBAGENT_COLOR = "violet"
-SUBAGENT_BRIGHTNESS = 0.3
-#: Slower than SLOW_ANIM, which is the slowest any *session* is allowed to move,
-#: so subagents read as alive without ever competing with a session for your eye.
-SUBAGENT_ANIM = ANIM_PULSE["1/8"]
+#: Held steady, and that is the whole point: channel 3 carries an animation *or*
+#: a brightness level, so anything pulsing here is at the hardware's own levels
+#: and spends most of each cycle near off -- where a dim RGB reads blue whatever
+#: hue you sent it (see WHITE above). The pile used to breathe on ANIM_PULSE
+#: ["1/8"] and what you actually saw was a row of faint blue pips, which is the
+#: one thing a subagent must not look like. A constant mid-level violet costs the
+#: liveness and buys the identification, and the stack already moves plenty: it
+#: grows and collapses as the parent spawns and reaps.
+SUBAGENT_BRIGHTNESS = 0.45
+SUBAGENT_ANIM = ANIM_NONE
 #: A short stub rather than a gauge or a full ring: the ring is meaningless here
 #: (a subagent has no context reading of its own) and it should not look like it
 #: is trying to mean something.
