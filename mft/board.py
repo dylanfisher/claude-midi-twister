@@ -9,7 +9,10 @@ decidable across the whole board lives here:
   peripheral vision reliably catches, so it is a budget, not a decoration.
 * **subagent stack** -- subagents pile up from the bottom-right of the parent's
   bank into *unclaimed* encoders, in a hue of their own, making parallelism
-  physically visible without disturbing anyone's slot.
+  physically visible without disturbing anyone's slot. Each dot carries its own
+  brightness shimmer, off the ``agent_id`` on the tool calls that subagent
+  makes; the level is the only per-subagent thing the hooks can tell us and the
+  only one a violet dot is allowed to say.
 * **overlays** -- boot, compaction, a spelled-out banner, the press-and-hold
   detail view. They paint over the steady-state board and expire on their own,
   so nothing has to be torn back down.
@@ -22,10 +25,10 @@ import time
 from dataclasses import replace
 from functools import lru_cache
 from itertools import islice
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Iterator, Optional, Sequence
 
 from . import config, font
-from .render import Cell, render
+from .render import Cell, _lerp, render
 from .state import Session, priority
 
 #: A dark encoder. Shared rather than rebuilt: :class:`~mft.render.Cell` is
@@ -789,8 +792,24 @@ def subagent_owners(
     parent's terminal, so the only window a press could ever raise is the one
     the parent is already sitting in.
     """
+    return {slot: session for slot, session, _ in _subagent_pile(
+        sessions, claimed, slot_count
+    )}
+
+
+def _subagent_pile(
+    sessions: Sequence[Session],
+    claimed: Iterable[int] = (),
+    slot_count: int = config.SLOT_COUNT,
+) -> Iterator[tuple[int, Session, int]]:
+    """Placement proper: ``(slot, parent, index within that parent's pile)``.
+
+    The index is what the painter needs and the daemon does not, which is why
+    this sits behind :func:`subagent_owners` rather than replacing it -- a press
+    resolves to a parent and nothing finer, and widening that return type would
+    invite a caller to think otherwise.
+    """
     taken = set(claimed)
-    owners: dict[int, Session] = {}
     # Deterministic across frames: parents are served in encoder order, so a
     # subagent doesn't hop to a different knob because a dict reordered.
     for session in sorted(sessions, key=lambda s: s.slot):
@@ -802,14 +821,32 @@ def subagent_owners(
             for s in spawn_order(bank_of(session.slot))
             if s not in taken and s < slot_count
         )
-        for slot in islice(free, count):
+        for index, slot in enumerate(islice(free, count)):
             taken.add(slot)
-            owners[slot] = session
-    return owners
+            yield slot, session, index
+
+
+def subagent_brightness(last_tool_at: Optional[float], now: float) -> float:
+    """How lit one violet dot is, given when its subagent last called a tool.
+
+    Bright on the call, decaying to a floor between them -- :func:`_lerp` on the
+    same shape as a session's shimmer, minus the stall stage. A subagent has no
+    stall reading worth drawing: it is short-lived by construction and dies with
+    its parent's turn, so "quiet for two minutes" is a state the dot will rarely
+    live long enough to reach, and sinking it toward invisible would only hide
+    the one that hung.
+
+    ``None`` -- no per-subagent signal at all -- holds the flat level the whole
+    pile used to sit at, so an install without SubagentStart loses nothing.
+    """
+    if last_tool_at is None or not config.SUBAGENT_SHIMMER:
+        return config.SUBAGENT_BRIGHTNESS
+    kick = max(0.0, 1.0 - (now - last_tool_at) / config.SUBAGENT_KICK_SECONDS)
+    return _lerp(config.SUBAGENT_IDLE_BRIGHTNESS, config.SUBAGENT_KICK_BRIGHTNESS, kick)
 
 
 def stack_subagents(
-    board: list[Cell], sessions: Sequence[Session], claimed: set[int]
+    board: list[Cell], sessions: Sequence[Session], claimed: set[int], now: float
 ) -> None:
     """Pile in-flight subagents into the bottom-right of their parent's bank.
 
@@ -817,14 +854,21 @@ def stack_subagents(
     because the one thing you must never do is mistake a subagent for a session:
     it owns no encoder of its own, it answers only the one gesture its parent
     would have answered, and it disappears when the parent's turn ends.
+
+    The one thing that does move is brightness, per dot, on each tool call that
+    subagent makes -- see :func:`subagent_brightness`. That stays on the right
+    side of the line: a level is not a state, and no amount of shimmer makes a
+    violet dot read as a session.
     """
-    for slot in subagent_owners(sessions, claimed, len(board)):
+    activity: dict[int, list[Optional[float]]] = {}
+    for slot, session, index in _subagent_pile(sessions, claimed, len(board)):
         claimed.add(slot)
+        stamps = activity.setdefault(session.slot, session.subagent_activity)
         board[slot] = Cell(
             config.SUBAGENT_COLOR,
             config.SUBAGENT_ANIM,
             config.SUBAGENT_RING,
-            config.SUBAGENT_BRIGHTNESS,
+            subagent_brightness(stamps[index] if index < len(stamps) else None, now),
         )
 
 
@@ -971,7 +1015,7 @@ def compose(
             claimed.add(session.slot)
 
     if config.SUBAGENT_STACK:
-        stack_subagents(board, sessions, claimed)
+        stack_subagents(board, sessions, claimed, now)
     arbitrate_motion(board, sessions)
 
     if config.AMBIENT and not claimed:

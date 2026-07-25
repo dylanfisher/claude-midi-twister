@@ -80,14 +80,20 @@ class Session:
     tool_history: deque[str] = field(
         default_factory=lambda: deque(maxlen=config.PEEK_HISTORY)
     )
-    #: Identifiers of the subagents currently in flight. Two independent signals
-    #: feed this -- SubagentStart/Stop by ``agent_id``, and PreToolUse/PostToolUse
-    #: on Task/Agent by tool use id -- because SubagentStart is a recent hook and
+    #: Identifiers of the subagents currently in flight, each mapped to when it
+    #: was last seen doing something. Two independent signals feed this --
+    #: SubagentStart/Stop by ``agent_id``, and PreToolUse/PostToolUse on
+    #: Task/Agent by tool use id -- because SubagentStart is a recent hook and
     #: a settings file that predates it silently reports no subagents at all.
-    #: A set rather than a counter because neither signal is guaranteed to pair
+    #: Keyed rather than counted because neither signal is guaranteed to pair
     #: up (a killed subagent never stops) and both may describe the same subagent.
     #: Reset at the top of every turn, which is the only real floor available.
-    subagents_in_flight: set[str] = field(default_factory=set)
+    #:
+    #: A dict rather than a set because the keys are only half of it: the values
+    #: are what let the pile shimmer per dot instead of sitting at one level. It
+    #: is ordered by arrival and stays that way -- a dot must not hop knobs
+    #: because its neighbour called a tool.
+    subagents_in_flight: dict[str, float] = field(default_factory=dict)
     #: From the hook payload; "bypassPermissions" means nobody is watching.
     permission_mode: str = ""
     #: Set when the session wants a human. Cleared by pressing the encoder.
@@ -135,6 +141,23 @@ class Session:
         """
         agents = sum(1 for k in self.subagents_in_flight if k.startswith(_AGENT_KEY))
         return max(agents, len(self.subagents_in_flight) - agents)
+
+    @property
+    def subagent_activity(self) -> list[Optional[float]]:
+        """One entry per violet dot, in the order they arrived: when that
+        subagent last called a tool, or ``None`` if nothing ever said.
+
+        ``None`` is the common case and not a defect. Only the ``agent_id``
+        signal is fine-grained enough to attribute a tool call to one subagent,
+        so a dot owed by the tool-use path alone has no activity of its own and
+        renders at the flat level the whole pile used to sit at. The padding is
+        at the end because that path's dots are the ones :attr:`subagents` adds
+        beyond the agent-keyed records.
+        """
+        stamps: list[Optional[float]] = [
+            at for k, at in self.subagents_in_flight.items() if k.startswith(_AGENT_KEY)
+        ]
+        return (stamps + [None] * self.subagents)[: self.subagents]
 
     @property
     def unsupervised(self) -> bool:
@@ -952,6 +975,27 @@ def _agent_key(event: dict[str, Any]) -> Optional[str]:
     return f"{_AGENT_KEY}{agent_id}" if agent_id else None
 
 
+def _touch_subagent(session: Session, event: dict[str, Any], now: float) -> None:
+    """Credit a tool call to the subagent that made it, if one did.
+
+    Every hook payload Claude Code builds carries `agent_id`, not just the
+    subagent events: a tool call made *inside* a subagent arrives as an ordinary
+    PreToolUse on the parent's `session_id` with the subagent's id alongside it.
+    That is the whole activity signal, and it is the only one -- there is no
+    per-subagent state, notification or permission to read.
+
+    Only ever stamps a record that already exists; never creates one. A pile
+    that grows from a signal nothing will ever retract is exactly the phantom
+    encoder invariant 6 is about, and the spawn paths above already cover every
+    subagent worth a dot. So an install too old to send SubagentStart keeps the
+    flat pile it has always had rather than gaining a dot that outlives its
+    subagent by a turn.
+    """
+    key = _agent_key(event)
+    if key and key in session.subagents_in_flight:
+        session.subagents_in_flight[key] = now
+
+
 #: Effects the daemon acts on, because they need the board or the wire rather
 #: than the session record: transient animations and banners.
 EFFECT_COMPACT_START = "compact:start"
@@ -1100,7 +1144,8 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
         session.last_tool_at = now
         key = _tool_use_key(event)
         if key:
-            session.subagents_in_flight.add(key)
+            session.subagents_in_flight[key] = now
+        _touch_subagent(session, event, now)
         if session.turn_started_at is None:
             session.turn_started_at = now
         session.set_state("working")
@@ -1111,7 +1156,8 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
         session.last_tool_at = now
         key = _tool_use_key(event)
         if key:
-            session.subagents_in_flight.discard(key)
+            session.subagents_in_flight.pop(key, None)
+        _touch_subagent(session, event, now)
         # The arc is the activity signal: one segment per completed call, so
         # spin rate is tool-call frequency and a ring that stops is a stall.
         session.arc = (session.arc + 1) % config.ARC_SEGMENTS
@@ -1140,13 +1186,16 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
     elif name == "SubagentStart":
         key = _agent_key(event)
         if key:
-            session.subagents_in_flight.add(key)
+            # Born bright. A subagent that has not called a tool yet is thinking,
+            # not stalled, and starting it at the floor would make every spawn
+            # look like it arrived already dead.
+            session.subagents_in_flight[key] = now
         still_working(session)
 
     elif name == "SubagentStop":
         key = _agent_key(event)
         if key:
-            session.subagents_in_flight.discard(key)
+            session.subagents_in_flight.pop(key, None)
         else:
             # No id to match on, but something definitely finished, and a pile
             # that only ever grows is worse than one that shrinks arbitrarily.
@@ -1155,7 +1204,7 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
                 None,
             )
             if stale:
-                session.subagents_in_flight.discard(stale)
+                session.subagents_in_flight.pop(stale, None)
         still_working(session)
 
     elif name == "PreCompact":

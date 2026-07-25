@@ -996,6 +996,33 @@ SUBAGENT_COLOR = "violet"
 #: grows and collapses as the parent spawns and reaps.
 SUBAGENT_BRIGHTNESS = 0.45
 SUBAGENT_ANIM = ANIM_NONE
+
+#: Per-dot shimmer: a subagent brightens on each tool call it makes and sinks
+#: back between them, the same signal :func:`mft.render._working_brightness`
+#: puts on a session and for the same reason -- from the corner of your eye the
+#: rate reads as how hard the pile is working, and one dot that stops sinking
+#: while its neighbours shimmer is a subagent that has hung.
+#:
+#: On the *brightness* ramp, deliberately, not the animation band. That is the
+#: whole lesson of SUBAGENT_ANIM above: channel 3 carries an animation or a
+#: level, and anything on the animation side spends most of its cycle near off,
+#: where violet reads as a faint blue pip. This rides the ramp instead, so the
+#: hue never leaves mid-violet and the dot stays identifiable at every level.
+#:
+#: `MFT_SUBAGENT_SHIMMER=0` puts the flat pile back. Worth reaching for if you
+#: run wide fan-outs: sixteen dots each on their own decay curve is a lot of
+#: motion in the corner, even slow motion.
+SUBAGENT_SHIMMER = _flag("MFT_SUBAGENT_SHIMMER", True)
+#: The kicked peak, and the floor it decays to. The peak is above the flat level
+#: rather than the floor being below it, so an idle pile looks like it always
+#: did and activity is what's new -- and the floor stays clear of the bottom of
+#: the ramp, because a subagent you can't see is worse than one that isn't busy.
+SUBAGENT_KICK_BRIGHTNESS = 0.85
+SUBAGENT_IDLE_BRIGHTNESS = 0.30
+#: How long the kick takes to decay back to the floor. Longer than a session's
+#: TOOL_KICK_SECONDS: the dots are small, they sit in a clump, and a fast decay
+#: across a pile of them flickers rather than shimmers.
+SUBAGENT_KICK_SECONDS = 3.0
 #: A short stub rather than a gauge or a full ring: the ring is meaningless here
 #: (a subagent has no context reading of its own) and it should not look like it
 #: is trying to mean something.

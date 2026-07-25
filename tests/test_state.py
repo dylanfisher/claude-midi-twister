@@ -38,8 +38,11 @@ def set_subagents(session, count: int) -> None:
     `Session.subagents` is derived from the identifiers of the subagents in
     flight rather than being a number anyone can set, so the tests that only
     care about how many dots appear go through here.
+
+    Activity stamps are left at zero -- long ago, so every dot sits at the
+    shimmer floor. Tests about brightness set their own.
     """
-    session.subagents_in_flight = {f"agent:{i}" for i in range(count)}
+    session.subagents_in_flight = {f"agent:{i}": 0.0 for i in range(count)}
 
 
 class SlotAllocation(unittest.TestCase):
@@ -707,6 +710,59 @@ class StateMachine(unittest.TestCase):
             counts.append(self.session.subagents)
         self.assertEqual(counts, [1, 2, 2, 2])
 
+    def test_a_tool_call_inside_a_subagent_credits_that_subagent(self):
+        """Every hook payload carries `agent_id`, not just the subagent events,
+        so a tool call made inside a subagent arrives on the parent's session
+        with the subagent's id alongside it. That is the whole activity signal.
+        """
+        self.feed(
+            event("SubagentStart", agent_id="x"),
+            event("SubagentStart", agent_id="y"),
+        )
+        before = dict(self.session.subagents_in_flight)
+        self.feed(event("PostToolUse", tool_name="Grep", agent_id="y"))
+        after = self.session.subagents_in_flight
+        self.assertEqual(after["agent:x"], before["agent:x"])
+        self.assertGreater(after["agent:y"], before["agent:y"])
+
+    def test_the_parents_own_tool_calls_touch_no_subagent(self):
+        self.feed(event("SubagentStart", agent_id="x"))
+        before = dict(self.session.subagents_in_flight)
+        self.feed(event("PostToolUse", tool_name="Read"))
+        self.assertEqual(self.session.subagents_in_flight, before)
+
+    def test_an_unknown_agent_id_never_creates_a_dot(self):
+        """Invariant 6. A record this path invented has nothing that would ever
+        retract it, so it would hold a violet pip for the rest of the turn."""
+        self.feed(event("PostToolUse", tool_name="Grep", agent_id="ghost"))
+        self.assertEqual(self.session.subagents, 0)
+        self.assertEqual(self.session.subagents_in_flight, {})
+
+    def test_dots_owed_to_the_tool_path_alone_have_no_activity(self):
+        """`subagent_activity` still has to be one entry per dot: the pile is
+        sized by `subagents`, and only the agent path can attribute a call."""
+        self.feed(
+            event("PreToolUse", tool_name="Task", tool_use_id="t1"),
+            event("PreToolUse", tool_name="Task", tool_use_id="t2"),
+        )
+        self.assertEqual(self.session.subagent_activity, [None, None])
+        self.feed(event("SubagentStart", agent_id="x"))
+        activity = self.session.subagent_activity
+        self.assertEqual(len(activity), 2)
+        self.assertIsNotNone(activity[0])
+        self.assertIsNone(activity[1])
+
+    def test_a_subagent_is_born_bright(self):
+        """One that hasn't called a tool yet is thinking, not stalled."""
+        self.feed(event("SubagentStart", agent_id="x"))
+        self.assertAlmostEqual(
+            board.subagent_brightness(
+                self.session.subagent_activity[0], time.monotonic()
+            ),
+            config.SUBAGENT_KICK_BRIGHTNESS,
+            places=3,
+        )
+
     def test_a_subagent_finishing_after_the_turn_does_not_undo_the_green(self):
         """Ten background subagents outlive the turn that spawned them: `Stop`
         lands while they run, and their stops arrive seconds later. Taken as
@@ -822,7 +878,7 @@ class Clearing(unittest.TestCase):
         session = vis.table.get("old")
         session.tool_history.extend(["Read", "Bash"])
         session.arc, session.tool_calls, session.context_tokens = 5, 9, 120_000
-        session.subagents_in_flight.add("agent:x")
+        session.subagents_in_flight["agent:x"] = 0.0
         session.alert = True
         session.attention_since = 0.0
 
@@ -1468,10 +1524,63 @@ class Board(unittest.TestCase):
         set_subagents(parent, 2)
         cells = board.blank_board()
         claimed = {parent.slot}
-        board.stack_subagents(cells, [parent], claimed)
+        board.stack_subagents(cells, [parent], claimed, 0.0)
         painted = set(self.subagent_slots(cells))
         self.assertTrue(painted)
         self.assertTrue(painted <= claimed)
+
+    def test_a_dot_brightens_on_its_own_tool_call_and_sinks_between_them(self):
+        now = 1000.0
+        kicked = board.subagent_brightness(now, now)
+        mid = board.subagent_brightness(now - config.SUBAGENT_KICK_SECONDS / 2, now)
+        cold = board.subagent_brightness(now - config.SUBAGENT_KICK_SECONDS * 10, now)
+        self.assertAlmostEqual(kicked, config.SUBAGENT_KICK_BRIGHTNESS)
+        self.assertAlmostEqual(cold, config.SUBAGENT_IDLE_BRIGHTNESS)
+        self.assertGreater(kicked, mid)
+        self.assertGreater(mid, cold)
+
+    def test_the_floor_stays_visible(self):
+        """A subagent you can't see is worse than one that isn't busy, and a
+        dark violet dot is indistinguishable from an encoder nobody owns."""
+        self.assertGreater(config.SUBAGENT_IDLE_BRIGHTNESS, 0.0)
+
+    def test_a_dot_with_no_signal_holds_the_level_the_pile_always_had(self):
+        """An install too old to send SubagentStart loses nothing."""
+        self.assertEqual(
+            board.subagent_brightness(None, 1000.0), config.SUBAGENT_BRIGHTNESS
+        )
+
+    def test_each_dot_shimmers_on_its_own(self):
+        """The point of keying the pile: one busy subagent must not light up
+        its idle siblings, or the shimmer says nothing the count didn't."""
+        now = 1000.0
+        parent = self.table.ensure("a", "/tmp/p")
+        parent.state = "working"
+        parent.subagents_in_flight = {"agent:x": now - 600.0, "agent:y": now}
+        cells = board.blank_board()
+        board.stack_subagents(cells, [parent], {parent.slot}, now)
+        levels = sorted(c.brightness for c in cells if c.color == config.SUBAGENT_COLOR)
+        self.assertEqual(len(levels), 2)
+        self.assertAlmostEqual(levels[0], config.SUBAGENT_IDLE_BRIGHTNESS)
+        self.assertAlmostEqual(levels[1], config.SUBAGENT_KICK_BRIGHTNESS)
+
+    def test_the_shimmer_can_be_turned_off(self):
+        with mock.patch.object(config, "SUBAGENT_SHIMMER", False):
+            self.assertEqual(
+                board.subagent_brightness(1000.0, 1000.0), config.SUBAGENT_BRIGHTNESS
+            )
+
+    def test_the_pile_never_animates(self):
+        """Invariant 4: the shimmer is a level, never a rate. Nothing in the
+        corner may compete with the encoder a human is blocking on."""
+        now = 1000.0
+        parent = self.table.ensure("a", "/tmp/p")
+        parent.state = "working"
+        parent.subagents_in_flight = {"agent:x": now, "agent:y": now - 5.0}
+        cells = board.compose([parent], now)
+        pile = [c for c in cells if c.color == config.SUBAGENT_COLOR]
+        self.assertEqual(len(pile), 2)
+        self.assertTrue(all(c.rgb_anim == config.ANIM_NONE for c in pile))
 
     def test_an_empty_board_breathes_rather_than_going_dark(self):
         lit = [c for c in board.compose([], 1.0) if c.brightness > 0]

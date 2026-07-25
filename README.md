@@ -16,8 +16,8 @@ terminal tab to the front**.
 ├────┼────┼────┼────┤   ● green solid   finished, then fading out
 │    │    │ ◦  │ ◦  │   ● dim green     idle — the ring is its context window
 └────┴────┴────┴────┘   ● magenta       running unsupervised
-  press → focus that tab       ◦ violet dim   subagents, stacked from the corner
-  hold  → peek at its history
+  press → focus that tab       ◦ violet        subagents, stacked from the corner,
+  hold  → peek at its history                  each shimmering on its own tool calls
 ```
 
 Nothing on the device can answer a prompt, approve a tool call, or block a
@@ -121,7 +121,7 @@ notifications rather than a telemetry stream:
 |---|---|
 | `SessionStart` | claim an encoder, `idle` |
 | `UserPromptSubmit` | `thinking`, new turn, reset counters |
-| `PreToolUse` / `PostToolUse` / `PostToolUseFailure` | `working`, re-read the context gauge |
+| `PreToolUse` / `PostToolUse` / `PostToolUseFailure` | `working`, re-read the context gauge — and if it carries an `agent_id`, brighten that subagent's dot |
 | `Notification` | `permission` / `plan` / `waiting` / `done`, by `notification_type` |
 | `SubagentStart` / `SubagentStop` | stack up from the bottom-right of the bank |
 | `PreCompact` / `PostCompact` | drain the ring, then refill it |
@@ -618,10 +618,33 @@ ones after it slide up to close the gap.
 ```
 
 Subagents are not sessions and never look like one: violet — a hue used for
-nothing else — held at a steady mid brightness, with a stub ring. They own no
-encoder of their own, never take a claimed slot, and collapse back when the
-parent's turn ends. The stub ring is deliberate: a subagent has no context
-reading of its own. `MFT_SUBAGENT_STACK=0` turns them off.
+nothing else — with a stub ring and no animation. They own no encoder of their
+own, never take a claimed slot, and collapse back when the parent's turn ends.
+The stub ring is deliberate: a subagent has no context reading of its own.
+`MFT_SUBAGENT_STACK=0` turns them off.
+
+Each dot **brightens on the tool calls its own subagent makes** and sinks back
+between them — the same shimmer a session's encoder carries, and the same thing
+it means: rate reads as how hard the pile is working, and one dot sitting at the
+floor while its neighbours flicker is a subagent that has hung. Crucially it is
+*per dot*, not per pile: a fan-out where one agent is grinding and four are
+blocked looks different from five all working, which is the distinction you
+actually want out of the corner of your eye. `MFT_SUBAGENT_SHIMMER=0` puts the
+flat pile back — worth reaching for if you run wide fan-outs, since sixteen
+independent decay curves in one corner is a lot of motion even when it's slow.
+
+This works because every hook payload Claude Code writes carries `agent_id`, not
+just the subagent events: a tool call made *inside* a subagent arrives as an
+ordinary `PreToolUse` on the **parent's** `session_id`, with the subagent's id
+alongside it. That is the entire per-subagent signal available, and it is enough
+for exactly one thing — a level. There is no per-subagent state, notification or
+permission to read, and a dot must never grow one: a violet pip that could go
+alert-red would be a subagent impersonating a session.
+
+A tool call whose `agent_id` names a subagent the daemon never saw start is
+*ignored*, never counted. Nothing would ever retract such a record, so it would
+hold a pip for the rest of the turn — invariant 6, and the same reasoning as the
+unreadable `tool_use_id` below.
 
 Pressing one raises the **parent's** tab, and holding one peeks at the parent —
 the same two gestures the parent's own encoder answers. There is nothing finer
@@ -638,8 +661,15 @@ a reason worth writing down: channel 3 carries an animation *or* a brightness
 level, so a pulsing encoder runs at the hardware's own levels and sits near off
 for most of every cycle — and a dim RGB LED reads blue whatever hue you send it.
 The pile looked like faint blue pips, which is the one thing it must not look
-like. Identification beat liveness; the stack moves anyway, growing and
-collapsing as the parent spawns and reaps.
+like. Identification beat liveness.
+
+The shimmer above is what liveness looks like once you accept that: it rides the
+*brightness* ramp rather than the animation band, so the hue never leaves mid
+violet and the dot stays identifiable at every level it passes through. Same
+signal the abandoned pulse was reaching for, on the channel that could carry it.
+It also stays clear of `arbitrate_motion` entirely — a level is not a rate, so
+the pile cannot compete with the one fast animation the board allows itself, and
+that animation belongs to whichever encoder a human is blocking on.
 
 If your settings predate the `SubagentStart` hook you'd see no subagents at all,
 silently, so `PreToolUse`/`PostToolUse` for `Task` and `Agent` are counted as a
@@ -747,6 +777,7 @@ likely want at runtime:
 | `MFT_CONTEXT_SETTINGS_MODEL` | `0` reads the context window off the transcript alone, never `settings.json` |
 | `MFT_FOLLOW_ALERTS` | `0` stops the board following a block onto its bank |
 | `MFT_SUBAGENT_STACK` | the violet pile in the corner |
+| `MFT_SUBAGENT_SHIMMER` | `0` holds every dot at one level instead of brightening it on its own tool calls |
 | `MFT_TAB_TITLE`, `MFT_TAB_TITLE_MAX` | the glyph in the terminal tab strip |
 | `MFT_CLOCK_BPM` | MIDI clock; `0` stops sending it |
 | `MFT_BOOT_ANIMATION`, `MFT_CLEAR_ANIMATION`, `MFT_SPAWN_ANIMATION`, `MFT_AMBIENT` | the decorative layers |

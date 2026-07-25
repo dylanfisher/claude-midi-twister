@@ -124,7 +124,9 @@ def run_session(url: str, rng: random.Random, index: int, stop: threading.Event)
         # it and watch the rate drop back to its base in one frame.
         stop.wait()
         return
+    turn = 0
     while not stop.is_set():
+        turn += 1
         stop.wait(rng.uniform(2, 8))
         if stop.is_set():
             return
@@ -144,18 +146,31 @@ def run_session(url: str, rng: random.Random, index: int, stop: threading.Event)
 
         # Fan out a variable number, so the stack in the bottom-right corner
         # visibly grows and shrinks rather than always being two deep.
+        #
+        # With real `agent_id`s, because the daemon keys the pile on them and a
+        # SubagentStart without one is counted by nothing at all -- the fanout
+        # here used to be invisible on the board for exactly that reason. They
+        # are also what makes the shimmer show up: a tool call carrying one is
+        # credited to that dot alone.
         fanout = rng.choice([0, 0, 0, 1, 2, 3, 5])
-        for _ in range(fanout):
-            send(hook_event_name="SubagentStart")
+        agents = [f"sim-{index}-{turn}-{n}" for n in range(fanout)]
+        for agent_id in agents:
+            send(hook_event_name="SubagentStart", agent_id=agent_id, agent_type="Explore")
 
         for _ in range(rng.randint(1, 8)):
             if stop.is_set():
                 return
             tool = rng.choice(TOOLS)
-            send(hook_event_name="PreToolUse", tool_name=tool)
+            # Some calls come from a subagent rather than the parent, which is
+            # what a real fan-out looks like on the wire: same session_id, an
+            # agent_id alongside it. Uneven on purpose -- the interesting thing
+            # to look at is one dot shimmering while its neighbours sit still.
+            inside = rng.choice(agents) if agents and rng.random() < 0.6 else None
+            attribution = {"agent_id": inside} if inside else {}
+            send(hook_event_name="PreToolUse", tool_name=tool, **attribution)
             stop.wait(rng.uniform(0.3, 1.5))
             transcript.grow(rng.randint(2_000, 12_000))
-            send(hook_event_name="PostToolUse", tool_name=tool)
+            send(hook_event_name="PostToolUse", tool_name=tool, **attribution)
 
             if rng.random() < 0.12:
                 send(
@@ -168,9 +183,9 @@ def run_session(url: str, rng: random.Random, index: int, stop: threading.Event)
                 stop.wait(rng.uniform(3, 9))
                 send(hook_event_name="UserPromptSubmit")
 
-        for _ in range(fanout):
+        for agent_id in agents:
             stop.wait(rng.uniform(0.2, 1.0))
-            send(hook_event_name="SubagentStop")
+            send(hook_event_name="SubagentStop", agent_id=agent_id)
 
         if rng.random() < 0.15:
             send(hook_event_name="PreCompact", trigger="auto")
