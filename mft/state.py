@@ -83,7 +83,6 @@ class Session:
     #: When this session started owing you attention. Debt ramps from here and
     #: is forgiven the moment you focus the tab.
     attention_since: Optional[float] = None
-    snoozed_until: Optional[float] = None
     compacting_since: Optional[float] = None
     #: When this slot was last wiped by a `/clear`. Only ever read to keep the
     #: two halves of the SessionEnd/SessionStart pair from wiping it twice.
@@ -128,21 +127,6 @@ class Session:
     @property
     def unsupervised(self) -> bool:
         return self.permission_mode == "bypassPermissions"
-
-    def snoozed_at(self, now: float) -> bool:
-        """Is this session snoozed as of ``now``?
-
-        Takes the clock rather than reading it, so that everything rendered from
-        one frame's timestamp agrees with itself -- :mod:`mft.render` promises to
-        be a pure function of (session, clock), and a boolean that quietly
-        consulted the wall clock is exactly how that promise stops being true.
-        """
-        return self.snoozed_until is not None and now < self.snoozed_until
-
-    @property
-    def snoozed(self) -> bool:
-        """As of right now. For callers outside a frame, like ``/status``."""
-        return self.snoozed_at(time.monotonic())
 
     @property
     def short_id(self) -> str:

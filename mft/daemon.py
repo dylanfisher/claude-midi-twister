@@ -28,6 +28,7 @@ from . import (
     context as context_mod,
     discover as discover_mod,
     focus as focus_mod,
+    render as render_mod,
     twister as twister_mod,
 )
 from .state import (
@@ -132,35 +133,16 @@ def clear_pid() -> None:
     Path(config.PID_FILE).unlink(missing_ok=True)
 
 
-# --- encoder turns ----------------------------------------------------------
-
-
-def turn_delta(previous: int | None, value: int, mode: str = config.ENCODER_MODE) -> int:
-    """Detents turned since the last message, positive for clockwise.
-
-    The Midi Fighter Utility offers both relative and absolute encoder modes,
-    and which one you picked changes what arrives here entirely. Relative mode
-    sends 63 for one detent left and 65 for one right; absolute mode sends a
-    position, so the delta is the difference from last time. "auto" recognises
-    the relative encoding by its values and falls back to absolute, which covers
-    both stock modes without making you configure anything. Absolute mode is
-    still the worse choice overall, because the hardware also fights the ring
-    positions we write.
-    """
-    if mode == "relative" or (mode == "auto" and value in (63, 65)):
-        return value - 64
-    if previous is None:
-        return 0
-    return value - previous
-
-
 class Visualizer:
     def __init__(self, device: twister_mod.Twister) -> None:
         self.device = device
         self.table = SessionTable()
         self._stop = threading.Event()
+        #: Set by anything that changes what the board should say, so the render
+        #: loop can sleep long between static frames without an event having to
+        #: wait out that sleep. See :meth:`run`.
+        self._wake = threading.Event()
         self._press_started: dict[int, float] = {}
-        self._encoder_values: dict[int, int] = {}
         self._overlays: list[board_mod.Overlay] = []
         #: Keyed by session, not slot: the board compacts under sessions that
         #: end, so a slot is not a stable handle for anything long-lived.
@@ -179,12 +161,21 @@ class Visualizer:
         self._focusing = ""
         #: When the render loop last logged a dropped frame; see :meth:`paint`.
         self._last_paint_error = float("-inf")
+        #: When every ring was last restated regardless of the de-dup cache.
+        #: Negative infinity so the very first frame is a refresh.
+        self._last_ring_refresh = float("-inf")
+        #: The cells the last frame composed, to tell a board that is animating
+        #: from one that is merely lit. `None` until the first frame.
+        self._last_cells: list[render_mod.Cell] | None = None
 
     # -- overlays -----------------------------------------------------------
 
     def push_overlay(self, overlay: board_mod.Overlay) -> None:
         with self._lock:
             self._overlays.append(overlay)
+        # Every overlay is an animation, so the loop has to be at full rate for
+        # it whatever the board underneath was doing.
+        self._wake.set()
 
     def _apply_effects(self, session: Session, effects: list[str]) -> None:
         now = time.monotonic()
@@ -245,6 +236,20 @@ class Visualizer:
     # -- hook events --------------------------------------------------------
 
     def handle_event(self, event: dict) -> dict:
+        """Apply one hook event, and wake the render loop for it.
+
+        The wake goes in a `finally` around the whole thing rather than at each
+        of the returns below: an event that decided to change nothing has cost
+        one early frame, while an event whose wake was forgotten leaves the
+        board a quarter-second behind the agent it is supposed to be reporting
+        on. Only one of those is worth being careful about.
+        """
+        try:
+            return self._apply_hook_event(event)
+        finally:
+            self._wake.set()
+
+    def _apply_hook_event(self, event: dict) -> dict:
         session_id = event.get("session_id")
         if not session_id:
             return {"ok": False, "error": "missing session_id"}
@@ -327,9 +332,6 @@ class Visualizer:
                     ),
                     "alert": s.alert,
                     "unsupervised": s.unsupervised,
-                    "snoozed_for": (
-                        round(s.snoozed_until - now, 1) if s.snoozed_at(now) else 0
-                    ),
                     "attention_for": (
                         round(now - s.attention_since, 1) if s.attention_since else 0
                     ),
@@ -347,12 +349,18 @@ class Visualizer:
             return
         if msg.channel == config.CH_SWITCH:
             self._on_switch(msg.control, msg.value)
-        elif msg.channel == config.CH_ENCODER:
-            self.on_encoder_turn(msg.control, msg.value)
+        # A turn is deliberately ignored: the board is a display, not a control
+        # surface, and the ring it lit locally is undone by the next frame --
+        # see :meth:`Twister.forget_rings`.
 
     def _on_switch(self, slot: int, value: int) -> None:
         session = self.table.by_slot(slot)
         now = time.monotonic()
+        # A press forgives an unattended session, and a board full of nothing
+        # but unattended sessions is exactly the static one the loop will have
+        # slowed down for. The dimming has to land on the press, not a quarter
+        # second after it.
+        self._wake.set()
         if value >= 64:  # press down
             self._press_started[slot] = now
             if session is not None:
@@ -452,24 +460,6 @@ class Visualizer:
 
         threading.Thread(target=run, name="mft-focus", daemon=True).start()
 
-    def on_encoder_turn(self, slot: int, value: int) -> None:
-        """Right snoozes, left un-snoozes."""
-        previous = self._encoder_values.get(slot)
-        self._encoder_values[slot] = value
-        delta = turn_delta(previous, value)
-        if not delta:
-            return
-        session = self.table.by_slot(slot)
-        if session is None:
-            return
-
-        now = time.monotonic()
-        base = max(now, session.snoozed_until or now)
-        remaining = base - now + delta * config.SNOOZE_STEP_SECONDS
-        remaining = max(0.0, min(config.SNOOZE_MAX_SECONDS, remaining))
-        session.snoozed_until = now + remaining if remaining else None
-        log.info("%s snoozed for %.0fs", session.label, remaining)
-
     # -- render loop --------------------------------------------------------
 
     def _live_overlays(self, now: float) -> list[board_mod.Overlay]:
@@ -492,16 +482,33 @@ class Visualizer:
         elif any(s.ended_at is None for s in self.table.all()):
             lamp.dismiss(now)
 
-    def paint(self, now: float, overlays: list[board_mod.Overlay] | None = None) -> None:
-        """Compose one frame and push it to the hardware.
+    def paint(
+        self, now: float, overlays: list[board_mod.Overlay] | None = None
+    ) -> bool:
+        """Compose one frame, push it to the hardware, and say whether anything
+        on the board actually moved since the last one.
+
+        The answer is what :meth:`run` paces itself off. It compares composed
+        cells rather than bytes sent, because the de-dup cache makes "we wrote
+        nothing" true of an animation whose values happen to repeat as well as
+        of a board that is genuinely still. A :class:`~mft.render.Cell` is a
+        frozen dataclass and :func:`~mft.render.render` is a pure function of
+        (session, clock), so equal cells really do mean an unchanged frame.
 
         Never raises. A display that dies on one bad frame takes the whole
         daemon's board with it and leaves the last frame frozen on the desk,
         which is worse than a wrong frame -- and every hook event is already
         wrapped this way on the HTTP side. Logged at most once a minute, because
-        anything that fails here fails 30 times a second.
+        anything that fails here fails 30 times a second. A dropped frame counts
+        as movement: whatever went wrong, this is not the moment to go quiet.
         """
         try:
+            if now - self._last_ring_refresh >= config.RING_REFRESH_SECONDS:
+                # Periodically, not every frame: a knob turned by hand lights
+                # its own ring and the cache would believe that ring is already
+                # where we want it, but undoing that only has to look instant.
+                self._last_ring_refresh = now
+                self.device.forget_rings()
             cells = board_mod.compose(
                 self.table.all(),
                 now,
@@ -509,10 +516,14 @@ class Visualizer:
             )
             for slot, cell in enumerate(cells):
                 self.device.write(slot, cell)
+            changed = cells != self._last_cells
+            self._last_cells = cells
+            return changed
         except Exception:
             if now - self._last_paint_error > PAINT_ERROR_LOG_SECONDS:
                 self._last_paint_error = now
                 log.exception("frame dropped")
+            return True
 
     def animate(self, overlay: board_mod.Overlay) -> None:
         """Run one overlay to completion, blocking. Used for boot and shutdown,
@@ -568,16 +579,27 @@ class Visualizer:
             self._lamp = board_mod.LampTestOverlay(time.monotonic())
             self.push_overlay(self._lamp)
 
-        period = 1.0 / config.FPS
+        active = 1.0 / config.FPS
+        idle = 1.0 / config.IDLE_FPS
+        still = 0  # consecutive frames that composed to the same board
         last_reap = time.monotonic()
         while not self._stop.is_set():
+            # Cleared before the frame, not after it: an event that lands while
+            # we are composing has to be able to cancel the sleep that follows,
+            # or a board that just went still would sit on the stale frame for
+            # up to `idle` seconds -- exactly the case this is here to serve.
+            self._wake.clear()
             now = time.monotonic()
             self._check_lamp_test(now)
-            self.paint(now)
+            still = 0 if self.paint(now) else still + 1
             if now - last_reap > REAP_INTERVAL_SECONDS:
                 self.table.reap()
                 last_reap = now
-            self._stop.wait(period)
+            # Nothing moving means nothing to be smooth for. Sweeps, fades and
+            # brightness decay all change their cells every frame, so a board
+            # with any of them on it never gets here; what does is a board of
+            # idle, ended and stalled sessions, or no sessions at all.
+            self._wake.wait(idle if still >= config.IDLE_FRAMES else active)
 
     def shutdown_animation(self) -> None:
         """A spiral in from the top-left corner, a held beat, then all sixteen
@@ -602,6 +624,7 @@ class Visualizer:
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()  # don't sit out an idle sleep on the way to the door
 
 
 class HookHandler(BaseHTTPRequestHandler):

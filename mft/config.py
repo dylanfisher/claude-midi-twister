@@ -34,6 +34,22 @@ PID_FILE = os.path.join(STATE_DIR, "daemon.pid")
 #: Render loop rate. 30Hz is smooth for ring sweeps and cheap on USB bandwidth.
 FPS = 30.0
 
+#: The rate the loop falls back to once nothing on the board is moving -- see
+#: :meth:`mft.daemon.Visualizer.run`. A hook event wakes the loop immediately,
+#: so this is not the latency of anything you do; it is only how often a board
+#: that is genuinely static asks itself whether it still is.
+IDLE_FPS = 4.0
+
+#: Consecutive identical frames before the loop drops to `IDLE_FPS`. Half a
+#: second of hysteresis, because an animation can hold the same value for a
+#: frame or two -- backing off on the first repeat would stutter the sweeps.
+IDLE_FRAMES = 15
+
+#: How often every LED ring is restated whether or not we think it changed, to
+#: undo a ring the hardware lit by itself under a turned knob. Not every frame:
+#: that is 64 messages a frame for a repair that only has to look instant.
+RING_REFRESH_SECONDS = 0.25
+
 #: A session that has not sent any hook event for this long is presumed dead
 #: (crashed terminal never fires SessionEnd) and its encoder is reclaimed.
 SESSION_TTL_SECONDS = 60 * 60
@@ -370,20 +386,10 @@ ATTENTION_CEILING = 1.0
 #: block so it can never outshout one.
 DONE_DEBT_CEILING = 0.5
 
-#: Each detent of a right-turn adds this much snooze; left-turn removes it.
-SNOOZE_STEP_SECONDS = 300.0
-SNOOZE_MAX_SECONDS = 3600.0
-
 # --- Input ------------------------------------------------------------------
 
 #: A press held longer than this peeks at the session instead of focusing it.
 HOLD_SECONDS = 0.6
-
-#: How the encoders are configured in the Midi Fighter Utility. "auto" reads
-#: the classic relative encodings (63/65 and 1/127) as deltas and treats
-#: anything else as an absolute position, which covers both stock modes without
-#: making you pick. Force with "relative" or "absolute" if yours is unusual.
-ENCODER_MODE = os.environ.get("MFT_ENCODER_MODE", "auto")
 
 # --- Peek -------------------------------------------------------------------
 

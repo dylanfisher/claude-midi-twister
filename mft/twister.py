@@ -209,6 +209,24 @@ class Twister:
         self.rgb_off(slot, force=force)
         self.ring_off(slot, force=force)
 
+    def forget_rings(self) -> None:
+        """Drop what the de-dup cache believes every encoder's ring holds.
+
+        For when something other than us moved them -- a turn in absolute mode
+        lights the ring locally -- and the cached value is now a lie that would
+        suppress the write that puts it back. Only the rings: a knob cannot
+        touch the RGB, and the hues are the expensive half of a frame.
+
+        Called every frame (:meth:`mft.daemon.Daemon.paint`) rather than off the
+        incoming turn, so a ring the daemon never asked for is undone whether or
+        not we saw the message that made it -- there is no MIDI input port on
+        every setup, and a knob nudged before the daemon started was never a
+        message at all.
+        """
+        with self._lock:
+            for slot in range(config.SLOT_COUNT):
+                self._last.pop((config.CH_ENCODER, slot), None)
+
     def clear_all(self, force: bool = False) -> None:
         for slot in range(config.SLOT_COUNT):
             self.clear(slot, force=force)

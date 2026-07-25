@@ -135,14 +135,6 @@ def render(session: Session, now: float) -> Cell:
     if state == "ended":
         return Cell(None, config.ANIM_NONE, 0, 0.0)
 
-    if session.snoozed_at(now):
-        # Muted on purpose: dim, still, and the arc counts the snooze down so
-        # you can see how long you have left to not care.
-        assert session.snoozed_until is not None
-        remaining = max(0.0, session.snoozed_until - now)
-        fraction = min(1.0, remaining / config.SNOOZE_MAX_SECONDS)
-        return Cell(color, config.ANIM_NONE, int(127 * fraction), config.IDLE_BRIGHTNESS)
-
     if state == "idle":
         # A dim single pip: the encoder is claimed, nothing is happening.
         ring = 2

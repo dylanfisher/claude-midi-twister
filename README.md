@@ -17,7 +17,6 @@ terminal tab to the front**.
 └────┴────┴────┴────┘   ● magenta       running unsupervised
   press → focus that tab       ◦ violet dim   subagents, stacked from the corner
   hold  → peek at its history
-  turn right / left → snooze / un-snooze
 ```
 
 Nothing on the device can answer a prompt, approve a tool call, or block a
@@ -325,21 +324,25 @@ five minutes — more insistent the longer you ignore it — and goes quiet the
 moment you focus its tab. Same for one that's been idle-waiting a while. Finished
 work is capped well below a live block, so it can never outshout one.
 
-Turning a knob right snoozes that slot in five-minute steps: dim, still, with the
-arc counting down what's left. Turning left gives the time back.
-
 ## Gestures
 
 | Gesture | Does |
 |---|---|
 | press | focus that terminal tab, and forgive its attention debt |
 | hold | peek: the rest of the bank becomes that session's last 15 tool calls |
-| turn right / left | snooze / un-snooze, in 5-minute steps |
+| turn | nothing |
 
-That's the whole input surface, and it's meant to be. Every gesture affects the
-*board* — what you're looking at, what it's allowed to nag you about — and none
-of them affects a session. The device can't approve a tool call, answer a prompt,
+That's the whole input surface, and it's meant to be. Both gestures affect the
+*board* — what you're looking at, what it's allowed to nag you about — and
+neither affects a session. The device can't approve a tool call, answer a prompt,
 or hold anything up.
+
+A knob is not a control: there is no setting on this board for you to reach in
+and change, so turning one is defined as doing nothing. It isn't merely ignored,
+either. An encoder in absolute mode drives its own white ring on the way past,
+so a turn leaves LEDs lit that no session asked for; the daemon takes a turn as
+notice that it no longer knows what that ring holds, and the next frame puts it
+back where the session says it belongs.
 
 **Peek** is a modal zoom out of a grid with no screen. Hold a knob and its 15
 neighbours re-render as that session's recent tool calls, oldest to newest, hue
@@ -347,11 +350,6 @@ by tool kind — edits orange, bash magenta, searches cyan, reads blue. Release 
 the board snaps back. "This agent has done nothing but grep for four minutes" is
 legible from across the room, and there's no other way to learn it without
 opening the tab.
-
-Which encoding a turn arrives in depends on the mode you picked in the Midi
-Fighter Utility. Relative mode sends 63 and 65; absolute mode sends a position
-and also fights the ring positions the daemon writes, so prefer relative. The
-daemon reads both (`MFT_ENCODER_MODE=auto|relative|absolute`).
 
 ## Subagents
 
@@ -533,10 +531,10 @@ revisions, so `mft/config.py` ships anchors rather than gospel. Sweep your own:
 ```
 
 Everything else worth tuning — frame rate, colours per state, fade durations,
-attention ramp, snooze steps, brightness floors — is in `mft/config.py` too, and
+attention ramp, brightness floors — is in `mft/config.py` too, and
 the switches you'd most likely want at runtime are environment variables:
 `MFT_CLOCK_BPM`, `MFT_BOOT_ANIMATION`, `MFT_AMBIENT`, `MFT_SUBAGENT_STACK`,
-`MFT_ENCODER_MODE`, `MFT_CONTEXT_RING`, `MFT_DARK_VALUE`, `MFT_RING_DARK_VALUE`,
+`MFT_CONTEXT_RING`, `MFT_DARK_VALUE`, `MFT_RING_DARK_VALUE`,
 `MFT_DARK_COLOR`, `MFT_WHITE`.
 
 ## Tests

@@ -115,11 +115,16 @@ class TextOverlay(Overlay):
     Used for the boot animation (CLAUDE), for shouting a short reason at you
     (RATE when a turn dies on a rate limit) and for showing a count.
 
-    Each letter **strikes in at full brightness and then decays to nothing**
-    before the next one strikes. Two letters are never on the board at once, so
-    the darkness between them is what separates them: a fade *out* leaves the
-    glyph legible for the whole time it is visible, where a crossfade spends its
-    middle showing a blend of two letters that is neither.
+    Each letter **strikes in at full brightness and then decays** before the
+    next one strikes, so what separates two letters is a fade rather than a
+    crossfade: a fade *out* leaves the glyph legible for the whole time it is
+    visible, where a crossfade spends its middle showing a blend of two letters
+    that is neither.
+
+    The exception is a pixel the next letter also lights. That one holds instead
+    of decaying -- it is a lamp staying on across the boundary, not one going
+    out and another coming up in the same place -- so the board never blinks
+    fully black between letters that overlap.
 
     ``color`` of ``None`` is the boot default and means the white LED ring
     alone, with the RGB switch underneath switched off -- the one thing on this
@@ -168,8 +173,18 @@ class TextOverlay(Overlay):
         # is the part that separates one letter from the next.
         level = 1.0 - _smoothstep(max(0.0, within - self.hold) / self.fade)
         glyph = font.pixels(self.text[index])
+        # A pixel the next letter also lights never decays: it is the same lamp
+        # staying on across the boundary, not one going out and another coming
+        # up in the same place. Only the pixels that actually change fade.
+        nxt = (
+            font.pixels(self.text[index + 1])
+            if index + 1 < len(self.text)
+            else None
+        )
         for offset, slot in enumerate(bank_slots(self.bank)):
             lit = glyph[offset] * level
+            if nxt is not None:
+                lit = max(lit, glyph[offset] * nxt[offset])
             board[slot] = Cell(
                 self.color if lit > 0.02 else None,
                 config.ANIM_NONE,
@@ -600,9 +615,7 @@ class PeekOverlay(Overlay):
 # --- composition ------------------------------------------------------------
 
 
-def arbitrate_motion(
-    board: list[Cell], sessions: Sequence[Session], now: float
-) -> None:
+def arbitrate_motion(board: list[Cell], sessions: Sequence[Session]) -> None:
     """Leave the fast animation on exactly one encoder.
 
     Several sessions blocking at once would otherwise fill the board with
@@ -613,7 +626,7 @@ def arbitrate_motion(
     animated = [
         s
         for s in sessions
-        if 0 <= s.slot < len(board) and board[s.slot].rgb_anim and not s.snoozed_at(now)
+        if 0 <= s.slot < len(board) and board[s.slot].rgb_anim
     ]
     if len(animated) <= 1:
         return
@@ -630,7 +643,7 @@ def arbitrate_motion(
 
 
 def stack_subagents(
-    board: list[Cell], sessions: Sequence[Session], claimed: set[int], now: float
+    board: list[Cell], sessions: Sequence[Session], claimed: set[int]
 ) -> None:
     """Pile in-flight subagents into the bottom-right of their parent's bank.
 
@@ -645,7 +658,7 @@ def stack_subagents(
     # subagent doesn't hop to a different knob because a dict reordered.
     for session in sorted(sessions, key=lambda s: s.slot):
         count = session.subagents
-        if not count or session.snoozed_at(now):
+        if not count:
             continue
         free = (
             s
@@ -704,8 +717,8 @@ def compose(
             claimed.add(session.slot)
 
     if config.SUBAGENT_STACK:
-        stack_subagents(board, sessions, claimed, now)
-    arbitrate_motion(board, sessions, now)
+        stack_subagents(board, sessions, claimed)
+    arbitrate_motion(board, sessions)
 
     if config.AMBIENT and not claimed:
         ambient(board, now)

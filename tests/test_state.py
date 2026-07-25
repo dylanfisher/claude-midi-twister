@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mft import board, config, context, twister  # noqa: E402
+from mft import board, config, context, font, twister  # noqa: E402
 from mft.render import Cell, attention_debt, render  # noqa: E402
 from mft.state import SessionTable, apply_event, classify_notification  # noqa: E402
 
@@ -514,13 +516,6 @@ class Rendering(unittest.TestCase):
         self.session.attended()
         self.assertEqual(attention_debt(self.session, 1_000), 0.0)
 
-    def test_snoozed_session_is_dim_and_still(self):
-        self.session.state = "permission"
-        self.session.snoozed_until = __import__("time").monotonic() + 60
-        cell = render(self.session, 3.0)
-        self.assertEqual(cell.rgb_anim, config.ANIM_NONE)
-        self.assertLessEqual(cell.brightness, config.IDLE_BRIGHTNESS)
-
     def test_a_working_ring_is_a_context_gauge(self):
         self.session.state = "working"
         self.session.context_limit = 200_000
@@ -718,13 +713,6 @@ class Board(unittest.TestCase):
         # Slower than the slowest a session is ever allowed to move, so a
         # subagent can never compete with one for the eye.
         self.assertLess(cell.rgb_anim, config.SLOW_ANIM)
-
-    def test_a_snoozed_parent_spawns_nothing(self):
-        parent = self.table.ensure("a", "/tmp/p")
-        parent.state = "working"
-        set_subagents(parent, 4)
-        parent.snoozed_until = __import__("time").monotonic() + 60
-        self.assertEqual(self.subagent_slots(board.compose(self.table.all(), 1.0)), [])
 
     def test_an_empty_board_breathes_rather_than_going_dark(self):
         lit = [c for c in board.compose([], 1.0) if c.brightness > 0]
@@ -928,20 +916,48 @@ class Overlays(unittest.TestCase):
             t += 1.0 / config.FPS
         self.assertEqual(seen, set(range(config.ENCODERS_PER_BANK)))
 
-    def test_each_boot_letter_strikes_full_then_decays_to_dark(self):
-        # The gap is what separates one letter from the next: a letter is at
-        # full the instant it appears and at nothing by the time the next one
-        # strikes, so two glyphs are never on the board together.
+    def test_each_boot_letter_strikes_full_then_decays_to_its_successor(self):
+        # A letter is at full the instant it appears, and by the time the next
+        # one strikes the only pixels still lit are the ones that letter is
+        # about to light anyway -- those hold rather than blinking off and
+        # straight back on. Everything else is gone.
         overlay = board.TextOverlay(config.BOOT_WORD, 0.0)
-        for index in range(len(config.BOOT_WORD)):
+        for index, char in enumerate(config.BOOT_WORD):
             start = board.compose([], index * overlay.step + 0.001, [overlay])
             end = board.compose([], (index + 1) * overlay.step - 0.001, [overlay])
             lit = [c.brightness for c in start[: config.ENCODERS_PER_BANK] if c.brightness > 0]
             self.assertTrue(lit, f"letter {index} should strike")
             self.assertAlmostEqual(max(lit), 1.0, places=2, msg="strikes at full")
+
+            glyph = font.pixels(char)
+            nxt = (
+                font.pixels(config.BOOT_WORD[index + 1])
+                if index + 1 < len(config.BOOT_WORD)
+                else (0.0,) * config.ENCODERS_PER_BANK
+            )
+            for offset, cell in enumerate(end[: config.ENCODERS_PER_BANK]):
+                shared = glyph[offset] and nxt[offset]
+                if shared:
+                    self.assertAlmostEqual(
+                        cell.brightness, 1.0, places=2,
+                        msg=f"{char}[{offset}] is also in the next letter and should hold",
+                    )
+                else:
+                    self.assertLess(
+                        cell.brightness, 0.02,
+                        f"{char}[{offset}] should be gone before the next letter",
+                    )
+
+    def test_the_board_never_goes_black_between_overlapping_letters(self):
+        # The bug this guards: every letter decayed all the way to nothing, so
+        # CLAUDE flickered through full darkness five times on the way past.
+        overlay = board.TextOverlay("CLAUDE", 0.0)
+        for index in range(len(overlay.text) - 1):
+            boundary = (index + 1) * overlay.step - 0.001
+            frame = board.compose([], boundary, [overlay])
             self.assertTrue(
-                all(c.brightness < 0.02 for c in end[: config.ENCODERS_PER_BANK]),
-                "and is gone before the next letter",
+                any(c.brightness > 0.02 for c in frame[: config.ENCODERS_PER_BANK]),
+                f"board went black between letter {index} and {index + 1}",
             )
 
     def test_boot_letters_are_white(self):
@@ -1205,17 +1221,113 @@ class Overlays(unittest.TestCase):
 
 
 class EncoderTurns(unittest.TestCase):
-    def test_relative_encoding(self):
-        from mft.daemon import turn_delta
+    """A knob is not a control. Turning one changes nothing and is undone."""
 
-        self.assertEqual(turn_delta(None, 65), 1)
-        self.assertEqual(turn_delta(None, 63), -1)
+    def visualizer(self):
+        from mft.daemon import Visualizer
+        from mft.twister import NullTwister
 
-    def test_absolute_encoding_needs_a_previous_value(self):
-        from mft.daemon import turn_delta
+        return Visualizer(NullTwister())
 
-        self.assertEqual(turn_delta(None, 40), 0)
-        self.assertEqual(turn_delta(40, 44), 4)
+    def test_a_turn_changes_nothing_about_the_session(self):
+        vis = self.visualizer()
+        vis.handle_event(
+            {"session_id": "a", "cwd": "/tmp/a", "hook_event_name": "SessionStart"}
+        )
+        session = vis.table.by_slot(0)
+        before = dataclasses.asdict(session)
+        vis.on_midi(
+            SimpleNamespace(
+                type="control_change", channel=config.CH_ENCODER, control=0, value=65
+            )
+        )
+        self.assertEqual(dataclasses.asdict(vis.table.by_slot(0)), before)
+
+    def recorder_visualizer(self):
+        from mft.daemon import Visualizer
+        from test_twister import Recorder
+
+        return Visualizer(Recorder())
+
+    def rings_sent(self, device) -> set[int]:
+        return {slot for ch, slot, _ in device.sent if ch == config.CH_ENCODER}
+
+    def test_a_static_board_still_restates_every_ring_periodically(self):
+        """A knob turned by hand lights its own ring, and the daemon may never
+        hear about it -- the MIDI input port is optional, and a knob nudged
+        before the daemon started was never a message at all. So the repair
+        cannot depend on noticing: the rings go out again on a timer."""
+        vis = self.recorder_visualizer()
+        vis.handle_event(
+            {"session_id": "a", "cwd": "/tmp/a", "hook_event_name": "SessionStart"}
+        )
+        vis.paint(1.0)
+        vis.device.sent.clear()
+
+        # Mid-interval: the de-dup cache is right about every ring, so nothing
+        # about an unchanged board goes on the wire.
+        vis.paint(1.0 + config.RING_REFRESH_SECONDS / 2)
+        self.assertEqual(self.rings_sent(vis.device), set())
+
+        # A refresh frame restates all of them anyway, cache or no cache.
+        vis.paint(1.0 + config.RING_REFRESH_SECONDS)
+        self.assertEqual(self.rings_sent(vis.device), set(range(config.SLOT_COUNT)))
+
+
+class FrameRate(unittest.TestCase):
+    """The loop paces itself off whether the board is moving, so a desk full of
+    idle sessions costs nothing to keep lit."""
+
+    def visualizer(self):
+        from mft.daemon import Visualizer
+        from mft.twister import NullTwister
+
+        return Visualizer(NullTwister())
+
+    def start(self, vis, session_id="a"):
+        vis.handle_event(
+            {
+                "session_id": session_id,
+                "cwd": f"/tmp/{session_id}",
+                "hook_event_name": "SessionStart",
+            }
+        )
+        return vis.table.get(session_id)
+
+    def test_an_idle_board_reports_nothing_moving(self):
+        vis = self.visualizer()
+        self.start(vis)
+        self.assertTrue(vis.paint(1.0), "the first frame is always a change")
+        self.assertFalse(vis.paint(1.1))
+        self.assertFalse(vis.paint(9.9))
+
+    def test_a_sweeping_session_reports_movement_every_frame(self):
+        vis = self.visualizer()
+        self.start(vis)
+        vis.handle_event({"session_id": "a", "hook_event_name": "UserPromptSubmit"})
+        t = 1.0
+        vis.paint(t)
+        for _ in range(10):
+            t += 1.0 / config.FPS
+            self.assertTrue(vis.paint(t), "a sweep moves on every frame")
+
+    def test_an_event_wakes_the_loop_out_of_its_slow_sleep(self):
+        vis = self.visualizer()
+        self.start(vis)
+        vis.paint(1.0)
+        vis._wake.clear()
+        vis.handle_event({"session_id": "a", "hook_event_name": "UserPromptSubmit"})
+        self.assertTrue(vis._wake.is_set())
+
+    def test_a_press_wakes_the_loop_too(self):
+        # Attention is forgiven on the press, and a board of unattended sessions
+        # sitting at their ceiling is precisely a static one.
+        vis = self.visualizer()
+        self.start(vis)
+        vis.paint(1.0)
+        vis._wake.clear()
+        vis._on_switch(0, 127)
+        self.assertTrue(vis._wake.is_set())
 
 
 class NothingAnswersBack(unittest.TestCase):
