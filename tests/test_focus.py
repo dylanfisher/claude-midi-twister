@@ -134,6 +134,79 @@ class Detection(unittest.TestCase):
             self.assertEqual(focus._norm_tty(absent), "")
 
 
+class NeverStartsASession(unittest.TestCase):
+    """The tail of the chain reaches for a whole application, and `open` is not
+    the inert verb it looks like: on Claude Code's own bundle it answers with a
+    *new* Claude, which posts a SessionStart, claims the next free encoder and
+    flashes it. A press may raise a running app and it may do nothing at all,
+    but it may never create the thing the board exists to watch."""
+
+    def setUp(self):
+        self.opened: list[list[str]] = []
+        self.patch("_run", lambda cmd, timeout=4.0: self.opened.append(cmd) or True)
+
+    def patch(self, name: str, value) -> None:
+        original = getattr(focus, name)
+        setattr(focus, name, value)
+        self.addCleanup(setattr, focus, name, original)
+
+    def owns(self, bundle: str, pid: int = 7) -> None:
+        self.patch("_owning_app", lambda _: (bundle, pid))
+
+    def test_claude_is_recognised_by_bundle_id_and_by_bundle_path(self):
+        """The two adapters arrive holding different spellings of the app."""
+        self.assertTrue(focus._spawns_a_session("com.anthropic.claude-code"))
+        self.assertTrue(focus._spawns_a_session("/Users/me/.local/share/claude/ClaudeCode.app"))
+        self.assertTrue(focus._spawns_a_session("/Applications/ClaudeCode.app/"))
+
+    def test_ordinary_terminals_are_left_alone(self):
+        for app in ("com.apple.Terminal", "/Applications/Ghostty.app", "iTerm", ""):
+            self.assertFalse(focus._spawns_a_session(app))
+
+    def test_the_bundle_adapter_declines_claudes_own_app(self):
+        ctx = {"__CFBundleIdentifier": "com.anthropic.claude-code"}
+        self.assertFalse(focus._bundle_focus(ctx))
+        self.assertEqual(self.opened, [])
+
+    def test_the_bundle_adapter_still_opens_a_terminal(self):
+        self.assertTrue(focus._bundle_focus({"__CFBundleIdentifier": "com.apple.Terminal"}))
+        self.assertEqual(self.opened, [["open", "-b", "com.apple.Terminal"]])
+
+    def test_the_app_name_adapter_declines_claudes_own_app(self):
+        """`TERM_PROGRAM` is whatever the environment says, so it reaches
+        `open` unvetted unless this adapter checks too."""
+        self.assertFalse(focus._app_focus({"TERM_PROGRAM": "ClaudeCode.app"}))
+        self.assertEqual(self.opened, [])
+
+    def test_a_running_app_is_fronted_rather_than_opened(self):
+        self.owns("/Applications/Ghostty.app")
+        self.patch("_raise_pid", lambda pid, label="": pid == 7)
+        self.assertTrue(focus._ancestor_focus({"pid": "42"}))
+        self.assertEqual(self.opened, [])
+
+    def test_a_terminal_that_cannot_be_fronted_is_still_opened(self):
+        """Fronting fails for ordinary reasons -- no windows yet, Automation
+        refused -- and for a terminal `open` remains a fair second try."""
+        self.owns("/Applications/Ghostty.app")
+        self.patch("_raise_pid", lambda pid, label="": False)
+        self.assertTrue(focus._ancestor_focus({"pid": "42"}))
+        self.assertEqual(self.opened, [["open", "-a", "/Applications/Ghostty.app"]])
+
+    def test_claudes_app_that_cannot_be_fronted_is_left_alone(self):
+        """The press does nothing, and that is the point: the session really is
+        in there, so nothing further down the chain would do better, and `open`
+        would answer by starting a second Claude beside it."""
+        self.owns("/Users/me/.local/share/claude/ClaudeCode.app")
+        self.patch("_raise_pid", lambda pid, label="": False)
+        self.assertFalse(focus._ancestor_focus({"pid": "42"}))
+        self.assertEqual(self.opened, [])
+
+    def test_a_session_outside_any_app_is_still_nothing_to_raise(self):
+        self.owns("", pid=0)
+        self.assertFalse(focus._ancestor_focus({"pid": "42"}))
+        self.assertEqual(self.opened, [])
+
+
 class Recovery(unittest.TestCase):
     """Reading a session's terminal back out of the process table, which is the
     only thing a session that missed the hook has left."""

@@ -16,6 +16,18 @@ came back empty because the app was mid-launch -- so a failure falls through to
 the next adapter rather than ending the attempt. The tail of the chain needs
 nothing but a pid, which every session has, so "pressed the knob and nothing
 happened" takes a real failure rather than a missing environment variable.
+
+The tail is also where this module came closest to breaking the first
+invariant. ``open`` was treated as inert -- on a running app it activates, so
+"raise the app" and "open the app" looked like the same sentence. They are not:
+Claude Code's own bundle answers ``open`` by starting *another* Claude, which
+posts a SessionStart, claims the next free encoder and flashes it. Pressing a
+knob was creating the sessions the board is supposed to be watching. So every
+adapter that reaches for a whole application refuses to hand ``open`` a bundle
+that would answer with a new session, and the one that has a pid to work with
+tries :func:`_raise_pid` first -- addressing a live unix id, which can only
+front something already running. A press that does nothing is a press that told
+the truth.
 """
 
 from __future__ import annotations
@@ -251,6 +263,50 @@ def _kitty_focus(ctx: Ctx) -> bool:
     return _run(["kitty", "@", "focus-window", "--match", f"id:{window}"])
 
 
+#: Apps that answer ``open`` by starting a new Claude instead of raising the
+#: one already running -- by bundle id, and by the bundle's name on disk, since
+#: the two adapters below arrive holding one or the other. Opening any of these
+#: turns a press into a session, which is the first invariant's whole subject;
+#: see the module docstring for how this was found.
+SESSION_APPS = frozenset({"com.anthropic.claude-code", "claudecode.app"})
+
+
+def _spawns_a_session(app: str) -> bool:
+    """Would ``open``ing this app create a Claude rather than reveal one?
+
+    Takes a bundle id or a bundle path: ``basename`` leaves the former alone
+    and reduces the latter to the name that identifies it.
+    """
+    return os.path.basename(str(app).strip().rstrip("/")).lower() in SESSION_APPS
+
+
+def _raise_pid(pid: int, label: str = "") -> bool:
+    """Front a process that is already running, launching nothing.
+
+    The distinction ``open`` cannot make. System Events is addressing a live
+    unix id, so the failure mode when the process is gone is "notfound" rather
+    than a fresh copy of the application -- which is the only reason the two
+    adapters below can still offer to raise an app at all.
+
+    A process with no windows can't be fronted, so a False here is ordinary and
+    the caller carries on down the chain.
+    """
+    if pid <= 0:
+        return False
+    script = f"""
+    tell application "System Events"
+        set matches to (every process whose unix id is {int(pid)})
+        if matches is {{}} then return "notfound"
+        set frontmost of item 1 of matches to true
+    end tell
+    return "ok"
+    """
+    result = _osascript(script)
+    if result != "ok":
+        log.info("could not front pid %d%s", pid, f" ({label})" if label else "")
+    return result == "ok"
+
+
 def _bundle_focus(ctx: Ctx) -> bool:
     """Raise by bundle id.
 
@@ -261,6 +317,9 @@ def _bundle_focus(ctx: Ctx) -> bool:
     """
     bundle = str(ctx.get("__CFBundleIdentifier", "")).strip()
     if not bundle:
+        return False
+    if _spawns_a_session(bundle):
+        log.info("not opening %s: it would start a Claude rather than show this one", bundle)
         return False
     return _run(["open", "-b", bundle])
 
@@ -288,6 +347,12 @@ def _app_focus(ctx: Ctx) -> bool:
     term = str(ctx.get("TERM_PROGRAM", "")).lower()
     app = _APP_NAMES.get(term) or ctx.get("TERM_PROGRAM")
     if not app:
+        return False
+    # `TERM_PROGRAM` is whatever the environment says, so it reaches `open`
+    # unvetted; the same rule has to hold here as in the two adapters that
+    # know what they are holding.
+    if _spawns_a_session(str(app)):
+        log.info("not opening %s: it would start a Claude rather than show this one", app)
         return False
     log.info("no tab-level adapter took for %s; raising the app", app)
     return _run(["open", "-a", str(app)])
@@ -333,22 +398,27 @@ def _ancestors(pid: int, limit: int = 12) -> list[tuple[int, str]]:
     return chain
 
 
-def _owning_app(pid: int) -> str:
-    """The ``.app`` bundle a process is running inside, walking up its parents.
+def _owning_app(pid: int) -> tuple[str, int]:
+    """The ``.app`` a process is running inside, and *that app's* pid.
 
     Terminals are GUI apps, so every session process is a descendant of one:
     ``/Applications/Ghostty.app/Contents/MacOS/ghostty``. This is the identity
     that survives when a terminal exports nothing at all about itself.
+
+    The pid comes back alongside the path because the two answer different
+    questions -- the path says which application, the pid says which running
+    copy of it -- and only the second can be raised without the risk of
+    starting a third.
     """
-    for _, argv in _ancestors(pid):
+    for ancestor, argv in _ancestors(pid):
         head = argv.split(None, 1)[0]
         marker = "/Contents/MacOS/"
         if marker not in head:
             continue
         bundle = head[: head.index(marker)]
         if bundle.endswith(".app") and os.path.isdir(bundle):
-            return bundle
-    return ""
+            return bundle, ancestor
+    return "", 0
 
 
 def _ancestor_focus(ctx: Ctx) -> bool:
@@ -356,9 +426,18 @@ def _ancestor_focus(ctx: Ctx) -> bool:
         pid = int(str(ctx.get("pid", "")).strip())
     except (TypeError, ValueError):
         return False
-    bundle = _owning_app(pid)
+    bundle, app_pid = _owning_app(pid)
     if not bundle:
         log.info("pid %d is not running inside a .app; nothing left to raise", pid)
+        return False
+    if _raise_pid(app_pid, bundle):
+        log.info("fronted %s (pid %d), found by walking up from pid %d", bundle, app_pid, pid)
+        return True
+    if _spawns_a_session(bundle):
+        # The session really does live in there, so there is nothing further
+        # down the chain that would do better -- and `open` would answer by
+        # starting a Claude beside it. Nothing is the honest result.
+        log.info("not opening %s: it would start a Claude rather than show this one", bundle)
         return False
     log.info("raising %s, found by walking up from pid %d", bundle, pid)
     return _run(["open", "-a", bundle])
