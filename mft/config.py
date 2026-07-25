@@ -50,6 +50,37 @@ IDLE_FRAMES = 15
 #: that is 64 messages a frame for a repair that only has to look instant.
 RING_REFRESH_SECONDS = 0.25
 
+# --- Sleep and wake ---------------------------------------------------------
+# macOS keeps the USB bus powered while it sleeps, so a board left lit stays
+# lit in an empty room; and `time.monotonic()` here does not tick through a
+# suspend, so nothing in the render loop can notice on its own. See mft.power.
+
+#: Darken the board when the machine goes to sleep, and light it again on wake.
+#: Off leaves whatever was on the encoders glowing overnight -- which is a real
+#: preference if the desk is somewhere you want a nightlight.
+SLEEP_BLACKOUT = _flag("MFT_SLEEP_BLACKOUT", True)
+
+#: Re-run discovery on wake. Cheap insurance rather than a fix for anything
+#: sleep does: processes are frozen while the machine is, so no session can
+#: start, end or change state in there. What it buys is a table re-checked
+#: against the process table after the one moment the daemon was provably
+#: blind, at the cost of a couple of `ps` calls per wake.
+WAKE_REDISCOVER = _flag("MFT_WAKE_REDISCOVER", True)
+
+#: How long a wake reported by one detector suppresses the other. Both fire for
+#: the same wake by design (see mft.power); this is what keeps that from being
+#: two rediscoveries.
+WAKE_DEBOUNCE_SECONDS = 10.0
+
+#: Slept-through time below this is a scheduling hiccup, not a suspend. Only
+#: used by the clock fallback, which measures a wake rather than being told.
+WAKE_MIN_SLEEP_SECONDS = 2.0
+
+#: How often to retry a MIDI port that has started refusing writes -- a sleep
+#: that invalidated the endpoint, or a cable pulled out. Not every frame: each
+#: attempt enumerates the system's ports.
+PORT_RETRY_SECONDS = 5.0
+
 #: A session that has not sent any hook event for this long is presumed dead
 #: (crashed terminal never fires SessionEnd) and its encoder is reclaimed.
 SESSION_TTL_SECONDS = 60 * 60
@@ -197,6 +228,15 @@ ANIM_PULSE = {
     "8": 15,
     "16": 16,
 }
+#: The two rate bands, each slowest to fastest, derived from the tables above
+#: rather than written out again -- a second copy of a vocabulary is how one entry
+#: ends up in only one of them (see the note on STATE_PRIORITY below).
+#:
+#: Used to answer "what is the next rate up from this one, without leaving the
+#: kind of animation it is": a gate that escalates into the pulse band stops being
+#: a gate, and the difference between a strobe and a breathe is carrying meaning.
+ANIM_BANDS = (tuple(ANIM_GATE.values()), tuple(ANIM_PULSE.values()))
+
 #: Ring brightness ramp on channel 6: a linear fade from dimmest to full.
 #:
 #: Not the same band as the RGB's. The two channels share a layout in spirit and
@@ -386,6 +426,19 @@ CONTEXT_LIMITS = (
 #: agent with a nearly empty context still shows a legible pip.
 CONTEXT_RING_FLOOR = 4
 
+#: Show the gauge in the resting states too, not only while an agent is running.
+#:
+#: A session idling at 95% is the one you have to deal with before it compacts on
+#: you, and it used to look exactly like a fresh one -- both were the same dim
+#: green pip. Costs nothing anywhere else: ring position is channel 1, which is
+#: neither the animation channel nor the brightness channel, so this is the one
+#: signal on the board that can be added without taking something away.
+#:
+#: Only where the ring has nothing better to say. `thinking` and `streaming`
+#: sweep, and motion outranks a level; the blocking states pin the ring at full,
+#: where it means "you" rather than "tokens".
+CONTEXT_RING_IDLE = _flag("MFT_CONTEXT_RING_IDLE", True)
+
 # --- Terminal tab -----------------------------------------------------------
 # The same state, in the one other place you are already looking: the tab strip.
 # See :mod:`mft.tab` for how the title is written and why Claude Code has to be
@@ -481,6 +534,55 @@ ATTENTION_CEILING = 1.0
 #: A finished-but-unvisited session ramps too, but capped well below a genuine
 #: block so it can never outshout one.
 DONE_DEBT_CEILING = 0.5
+
+#: How many rate steps a fully-neglected encoder climbs inside its own band.
+#:
+#: Rate rather than level, because on the states that carry debt the level cannot
+#: do this job at all. Channels 3 and 6 carry an animation *or* a brightness, and
+#: `Twister.write` only sends `rgb_brightness` when there is no animation -- so a
+#: strobing encoder's brightness never reaches its RGB. Since the blocking states
+#: also pin the ring at 127, five minutes of debt on a permission gate used to
+#: change nothing you could see. This is the one quantity on the board that
+#: describes you, and it was the one that failed to arrive.
+#:
+#: Two, not eight: the band holds eight rates, and climbing all of them turns a
+#: five-minute-old prompt into a seizure. Two is one visible step, twice.
+ATTENTION_ANIM_STEPS = 2
+
+# --- Banks ------------------------------------------------------------------
+# Sessions fill from slot 0 and `_compact` squeezes them back down, so with
+# sixteen or fewer of them everything lives on bank 1 and none of this matters.
+# Past that -- or after you have wandered onto another bank by hand -- the board
+# is showing you sixteen of sixty-four encoders and not saying which sixteen. A
+# permission gate three banks away is invisible, and an empty bank looks exactly
+# like a dead daemon.
+
+#: Bank select on channel 4, one CC per bank. Documented by DJTT and unverified
+#: per unit: run `python -m mft.calibrate banks` and watch which one moves the
+#: board. An empty tuple disables every bank gesture, which is also the honest
+#: setting for a unit where the sweep found nothing.
+BANK_SELECT_CC = (0, 1, 2, 3)
+BANK_SELECT_VALUE = 127
+
+#: Pull the device to the bank where a human is blocking. The whole promise of
+#: the board is that a prompt is visible; a prompt on a bank you are not looking
+#: at is not, and no amount of brightness or rate on the encoder fixes that.
+#:
+#: This is the one thing the daemon writes to the device for a reason other than
+#: painting. It is still a display and not a control surface -- a bank select
+#: changes which sixteen encoders you see, never a session -- but it is the
+#: closest thing here to the device acting on its own, hence the cooldown.
+FOLLOW_ALERTS = _flag("MFT_FOLLOW_ALERTS", True)
+#: Which states are worth moving the view for: the ones where a human is the
+#: thing standing in the way. Not `error` -- a rate limit resolves itself and the
+#: board being wrong about which bank you want is worse than a late red. Not
+#: `working` or `done`, which would move the board constantly and for nothing.
+FOLLOW_STATES = ("permission", "plan", "waiting")
+#: ...but never argue with a hand. A side button just pressed means you chose
+#: this view, and that choice outlives one notification. Also the floor on how
+#: often the view can move at all: two prompts arriving together should not
+#: bounce the board between their banks.
+FOLLOW_ALERT_COOLDOWN_SECONDS = 30.0
 
 # --- Input ------------------------------------------------------------------
 

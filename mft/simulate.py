@@ -80,6 +80,12 @@ def run_session(url: str, rng: random.Random, index: int, stop: threading.Event)
     # One session in the batch runs unsupervised, so you can see what that
     # looks like without actually running one unsupervised.
     mode = "bypassPermissions" if index == 0 else "default"
+    # ...and one opens a permission prompt and never answers it, because every
+    # other prompt here is answered inside ten seconds and attention debt takes
+    # five minutes to saturate. Without this, the escalating strobe -- the whole
+    # visible consequence of neglect -- never gets far enough to look at, and the
+    # thing you want to compare it against is a fresh gate on another encoder.
+    abandoned = index == 1
     send = lambda **kw: post(
         url,
         {
@@ -97,6 +103,17 @@ def run_session(url: str, rng: random.Random, index: int, stop: threading.Event)
     # land back on the same knob.
     terminal = {"TERM_PROGRAM": "Apple_Terminal", "tty": f"/dev/ttys{index:03d}"}
     send(hook_event_name="SessionStart", terminal=terminal)
+    if abandoned:
+        stop.wait(rng.uniform(2, 6))
+        send(
+            hook_event_name="Notification",
+            notification_type="permission_prompt",
+            message="Claude needs your permission to use Bash",
+        )
+        # And that is the last thing it ever says. Press the encoder to forgive
+        # it and watch the rate drop back to its base in one frame.
+        stop.wait()
+        return
     while not stop.is_set():
         stop.wait(rng.uniform(2, 8))
         if stop.is_set():

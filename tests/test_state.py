@@ -15,6 +15,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mft import board, config, context, font, twister  # noqa: E402
+from mft import render as render_mod  # noqa: E402
 from mft.render import Cell, attention_debt, render  # noqa: E402
 from mft.state import (  # noqa: E402
     SessionTable,
@@ -850,6 +851,86 @@ class Rendering(unittest.TestCase):
         self.assertIsNone(self.session.context_fraction)
         self.assertEqual(render(self.session, 0.0).ring, int(127 * 4 / config.ARC_SEGMENTS))
 
+    def test_an_idle_session_still_shows_its_gauge(self):
+        # How full the window is outlives the turn that filled it. A session
+        # resting at 95% is the one to deal with before it compacts, and it used
+        # to look exactly like a fresh one.
+        self.session.state = "idle"
+        self.session.context_limit = 200_000
+        self.session.context_tokens = 190_000
+        full = render(self.session, 0.0)
+        self.session.context_tokens = 10_000
+        empty = render(self.session, 0.0)
+        self.assertGreater(full.ring, empty.ring)
+        # Still resting, though: the gauge is on the ring, and nothing about it
+        # makes the encoder any brighter.
+        self.assertEqual(full.brightness, config.IDLE_BRIGHTNESS)
+        self.assertEqual(full.brightness, empty.brightness)
+
+    def test_an_idle_session_with_no_reading_is_still_a_pip(self):
+        # Deliberately not the arc: a spinner on a session that stopped working
+        # is frozen at whatever segment the last call left it on, which says
+        # nothing at all.
+        self.session.state = "idle"
+        self.session.arc = 4
+        self.assertIsNone(self.session.context_fraction)
+        self.assertEqual(render(self.session, 0.0).ring, render_mod.PIP)
+
+    def test_a_settled_done_session_keeps_its_gauge(self):
+        self.session.state = "done"
+        self.session.state_since = 0.0
+        self.session.context_limit = 200_000
+        self.session.context_tokens = 190_000
+        settled = render(self.session, config.DONE_FADE_SECONDS + 1).ring
+        self.assertGreater(settled, render_mod.PIP)
+        # The unwinding ring starts above the gauge and decays through it, so
+        # there is no visible handover -- just a fade that stops mattering.
+        self.assertEqual(render(self.session, 0.0).ring, 127)
+
+    def test_neglect_speeds_the_gate_up_rather_than_brightening_it(self):
+        # The brightness below is discarded by the wire on any animated cell
+        # (see Twister.write), so rate is the only channel debt has here.
+        for state in ("permission", "plan", "waiting"):
+            with self.subTest(state=state):
+                self.session.state = state
+                self.session.attention_since = 0.0
+                fresh = render(self.session, 0.0).rgb_anim
+                neglected = render(self.session, config.ATTENTION_RAMP_SECONDS).rgb_anim
+                self.assertEqual(fresh, config.STATE_ANIM[state])
+                self.assertGreater(neglected, fresh)
+
+    def test_a_stale_plan_stays_a_gate_and_stays_ordered(self):
+        # It does *not* stay below a fresh permission gate's rate -- the band has
+        # no room between the two base rates. What it must not do is leave the
+        # band (a plan that breathes is a different message) or overtake a
+        # permission gate carrying the same debt. Board.test_a_plan_never
+        # _out_strobes_a_gate covers the case where both are on screen at once.
+        self.session.state = "plan"
+        self.session.attention_since = 0.0
+        stale = render(self.session, config.ATTENTION_RAMP_SECONDS * 10).rgb_anim
+        self.assertIn(stale, config.ANIM_GATE.values())
+
+        gate = SessionTable().ensure("g", "/tmp/p")
+        gate.state = "permission"
+        gate.attention_since = 0.0
+        equal_debt = render(gate, config.ATTENTION_RAMP_SECONDS * 10).rgb_anim
+        self.assertGreater(equal_debt, stale)
+
+    def test_a_breathe_never_escalates_into_a_strobe(self):
+        self.session.state = "waiting"
+        self.session.attention_since = 0.0
+        neglected = render(self.session, config.ATTENTION_RAMP_SECONDS * 10).rgb_anim
+        self.assertIn(neglected, config.ANIM_PULSE.values())
+
+    def test_an_attended_session_is_back_to_its_base_rate(self):
+        self.session.state = "permission"
+        self.session.attention_since = 0.0
+        self.session.attended()
+        self.assertEqual(
+            render(self.session, config.ATTENTION_RAMP_SECONDS).rgb_anim,
+            config.STATE_ANIM["permission"],
+        )
+
     def test_unsupervised_sessions_get_their_own_colour(self):
         self.session.permission_mode = "bypassPermissions"
         for state in ("working", "idle", "permission"):
@@ -956,6 +1037,22 @@ class Board(unittest.TestCase):
         self.assertEqual(len(fast), 1, "motion is a budget, not a decoration")
         slow = [c for c in cells if c.rgb_anim == config.SLOW_ANIM]
         self.assertEqual(len(slow), 2)
+
+    def test_a_plan_never_out_strobes_a_gate_on_the_same_board(self):
+        # A fully-neglected plan does climb past a fresh gate's rate -- the gate
+        # band has no room between the two base rates. This is what makes that
+        # safe: ranked by state before debt, the plan loses the board's one fast
+        # animation outright, however long it has been sitting there.
+        stale = self.table.ensure("plan", "/tmp/p", {"tty": "/dev/plan"})
+        stale.state = "plan"
+        stale.attention_since = 0.0
+        fresh = self.blocked("gate", at=1_000.0)
+
+        cells = board.compose(self.table.all(), 1_000.0)
+        self.assertEqual(cells[stale.slot].rgb_anim, config.SLOW_ANIM)
+        self.assertGreaterEqual(
+            cells[fresh.slot].rgb_anim, config.STATE_ANIM["permission"]
+        )
 
     def test_the_oldest_neediest_session_wins_the_motion(self):
         first = self.blocked("a", at=0.0)

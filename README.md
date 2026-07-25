@@ -13,7 +13,7 @@ brings that session's terminal tab to the front**.
 ├────┼────┼────┼────┤   ● orange fill   working — the ring is its context window
 │    │    │    │    │   ● cyan sweep    thinking
 ├────┼────┼────┼────┤   ● green solid   finished, then fading out
-│    │    │ ◦  │ ◦  │   ● dim green     idle, and the resting state
+│    │    │ ◦  │ ◦  │   ● dim green     idle — the ring is still its context
 └────┴────┴────┴────┘   ● magenta       running unsupervised
   press → focus that tab       ◦ violet dim   subagents, stacked from the corner
   hold  → peek at its history
@@ -23,7 +23,8 @@ Nothing on the device can answer a prompt, approve a tool call, or block a
 session. It reports; you decide, in the terminal.
 
 4 banks × 16 encoders = 64 simultaneous sessions, which is more terminals than
-you have.
+you have. Only sixteen are on the front panel at a time, so a block on another
+bank [pulls the view onto itself](#banks-and-the-board-following-a-prompt).
 
 ## Install
 
@@ -235,12 +236,20 @@ invisible until you turn your head. So motion is a budget.
 - **Everything that blinks, blinks together.** The daemon sends MIDI clock, so
   gates stay in phase instead of drifting apart and reading as broken hardware.
   `MFT_CLOCK_BPM=0` turns it off.
-- **A working ring is a fuel gauge.** It fills as that agent's context window
-  fills, so "this one is about to compact" is legible from across the room. Read
-  out of `transcript_path`, since no hook payload carries token counts. Activity
-  is carried by *brightness* instead: every tool call kicks it back to full and
-  it decays between them, so shimmer rate is tool-call frequency.
+- **The ring is a fuel gauge.** It fills as that agent's context window fills, so
+  "this one is about to compact" is legible from across the room. Read out of
+  `transcript_path`, since no hook payload carries token counts. Activity is
+  carried by *brightness* instead: every tool call kicks it back to full and it
+  decays between them, so shimmer rate is tool-call frequency.
   `MFT_CONTEXT_RING=0` falls back to a rotating tool-call arc everywhere.
+
+  It shows in the resting states too, not just while an agent is running: how
+  full the window is outlives the turn that filled it, and a session idling at
+  95% is the one to deal with before it compacts on you. It used to look exactly
+  like a fresh one — both were the same dim green pip. Not in the states where
+  the ring is already saying something louder: `thinking` and `streaming` sweep,
+  and a blocking state pins the ring at full, where it means *you* rather than
+  tokens. `MFT_CONTEXT_RING_IDLE=0` goes back to the pip.
 - **Green is one continuous ramp, not three states.** A finished turn is solid
   bright green, fades over 90s, rests dim green. Orange means the agent has the
   floor; green means you do.
@@ -261,6 +270,22 @@ minutes — more insistent the longer you ignore it — and goes quiet the momen
 focus its tab. Same for one that's been idle-waiting a while. Finished work is
 capped well below a live block, so it can never outshout one.
 
+For the states that *animate*, that ramp goes on the rate instead: an ignored
+permission gate strobes faster, climbing two steps over the same five minutes.
+This isn't a flourish, it's the only channel available. Channels 3 and 6 carry an
+animation **or** a brightness, never both, and `Twister.write` only sends a
+brightness when there's no animation — so on a strobing encoder the brightness
+never reaches the RGB at all. Since a blocking state also pins the ring at full,
+neglect used to have nowhere to land: five minutes of ignoring a gate looked
+exactly like five seconds. The escalation stays inside its own band, so a strobe
+stays a strobe and a breathe stays a breathe.
+
+A fully-neglected plan does end up strobing faster than a *fresh* permission
+gate — the gate band has no room between the two base rates. What keeps them
+apart is the motion budget: it ranks by state before debt, so with both on the
+board the plan loses the fast animation outright and drops to a slow pulse. The
+escalated rate only ever appears when the plan is the loudest thing there.
+
 ## Gestures
 
 | Gesture | Does |
@@ -272,6 +297,44 @@ capped well below a live block, so it can never outshout one.
 That's the whole input surface, and it's meant to be. Both gestures affect the
 *board* — what you're looking at, what it's allowed to nag you about — and
 neither affects a session.
+
+## Banks, and the board following a prompt
+
+Four banks of sixteen is sixty-four encoders, but only sixteen are on the front
+panel at a time. Sessions fill from the first encoder and the allocator squeezes
+them back down as they end, so with sixteen or fewer everything lives on bank 1
+and none of this matters. Past that — or after you've wandered onto another bank
+by hand — the board is showing you sixteen of sixty-four and not saying which
+sixteen. **A permission gate three banks away is invisible**, and an empty bank
+looks exactly like a dead daemon.
+
+So a block on a bank you aren't looking at pulls the view onto itself. Everything
+the escalating strobe buys is lost if the encoder isn't on the panel.
+
+This is the one thing the daemon writes to the device for a reason other than
+painting, and it's the closest anything here comes to acting on its own — so it's
+braked three ways. It won't move within 30s of the last move, so two prompts on
+two banks can't bounce the view between them and a bank you picked by hand stays
+picked. It won't move during a peek, which is a modal view of one session's
+history that another bank's encoders would silently replace. And it won't move
+while the boot word or the waiting animation still owns the board.
+
+It follows only the states where a human is the thing in the way —
+`permission`, `plan`, `waiting` — and only unattended ones. Not `error`: a rate
+limit resolves itself, and the board being wrong about which bank you want is
+worse than a late red. Not `working`, which would move the view more or less
+permanently for something you don't have to see.
+
+It's still a display and not a control surface: a bank select changes which
+sixteen encoders you're looking at, never a session. `MFT_FOLLOW_ALERTS=0` turns
+it off, and `curl localhost:7654/status` reports the visible bank alongside each
+session's own — which is the other answer to "why is my board empty".
+
+Nothing on this hardware reports the current bank, so the daemon assumes bank 1
+at startup and learns the truth from the first side button or the first followed
+alert. The bank-select CCs are documented by DJTT and unverified per unit; run
+`python -m mft.calibrate banks`, and if nothing moves, set `MFT_FOLLOW_ALERTS=0`
+and leave the banks alone on that unit.
 
 ### Peek
 
@@ -330,6 +393,66 @@ is not an alert, and sleeps with everything else.
 `MFT_SLEEP=0` turns it off; `MFT_SLEEP_SECONDS` moves the first stage (also how
 you watch it happen without waiting half an hour). `GET /status` reports the
 current level as `sleep`, so a dark desk is distinguishable from a dead daemon.
+
+## When the *machine* sleeps
+
+A different thing entirely, and easy to confuse with the section above: that one
+is the board deciding nobody is there, this one is the Mac actually suspending.
+
+macOS keeps the USB bus powered through sleep, so a board left lit **stays lit**
+— close the lid on a session mid-turn and sixteen encoders go on describing it
+at an empty desk all night. So the daemon darkens the board on the way down and
+puts it back on the way up.
+
+**Nothing is lost while you're away, and that is not luck.** `time.monotonic()`
+on macOS is `mach_absolute_time`, which does not advance while the machine is
+asleep, and every deadline in the daemon rides it. A nine-hour suspend is one
+frame that took a moment longer than usual: no session ages, no TTL expires, no
+`working` encoder decays into a stall it never had. The board you come back to
+is the board you left. Nothing is missed on the hook side either — the sessions
+are frozen along with everything else, so there are no events to miss.
+
+What that frozen clock also means is that a suspend is undetectable from inside
+the loop, so it has to be reported from outside. Two detectors, in `power.py`:
+
+- **IOKit power notifications** (`IORegisterForSystemPower`, through `ctypes` —
+  this project is not taking on a framework bridge for one callback). The only
+  thing that fires *before* the machine goes down, which the darkening half
+  needs; there is no blacking out a board after the fact. The handler consents
+  to the sleep immediately and unconditionally, and never calls
+  `IOCancelPowerChange`: vetoing a sleep is not a thing a display gets to do.
+- **A clock comparison**, for when that fails to attach. `mach_continuous_time`
+  counts time spent asleep and `mach_absolute_time` doesn't, so the gap between
+  them grows only across a suspend. It can report a wake and never a sleep, and
+  only after the fact — but after the fact is still in time to repaint.
+
+Both fire for the same wake on a healthy machine, on purpose: the handler is
+cheap and debounced, and the cost of trusting either one alone is a dead board.
+
+On wake the de-dup cache is dropped before anything else, because a repaint the
+cache suppresses is exactly as dark as no repaint at all. Then discovery runs
+again — not a fix for anything sleep does, since no session can start or end
+while the machine is down, just the table re-checked against the process table
+after the one moment the daemon was provably blind.
+
+**The board does not brighten on wake.** A dark wake — Power Nap, a backup —
+looks identical to you opening the lid, and a board that comes up to full for a
+3am backup is worse than one that resumes at the dim level it went down at. That
+level is still exactly right, because the clock behind it froze too. Your first
+keystroke in any session brings it back up, the way it always does.
+
+**The port is the failure you'd actually see.** A sleep can leave the USB
+endpoint invalid without closing it: every write raises, and the de-dup cache —
+believing the device already holds what it last sent — would go on suppressing
+the writes that would fix it even after the hardware came back. So a port that
+has started refusing writes is reopened, cache and clock and all, every five
+seconds until it takes. The same path covers a cable pulled out and pushed back
+in an hour later.
+
+`MFT_SLEEP_BLACKOUT=0` leaves the board glowing overnight, if it's somewhere you
+want a nightlight. `MFT_WAKE_REDISCOVER=0` skips the rediscovery. `GET /status`
+reports `suspended` and `port_failing`, which are the other two ways to be dark
+and healthy.
 
 ## Subagents
 
@@ -471,6 +594,8 @@ likely want at runtime:
 |---|---|
 | `MFT_SLEEP`, `MFT_SLEEP_SECONDS` | board sleep, and when the first stage lands |
 | `MFT_CONTEXT_RING` | ring is a context gauge (`0` = tool-call arc everywhere) |
+| `MFT_CONTEXT_RING_IDLE` | `0` keeps the gauge off the resting states |
+| `MFT_FOLLOW_ALERTS` | `0` stops the board following a block onto its bank |
 | `MFT_SUBAGENT_STACK` | the violet pile in the corner |
 | `MFT_TAB_TITLE`, `MFT_TAB_TITLE_MAX` | the glyph in the terminal tab strip |
 | `MFT_CLOCK_BPM` | MIDI clock; `0` stops sending it |
@@ -505,7 +630,14 @@ so `config.py` ships anchors rather than gospel. Sweep your own:
 .venv/bin/python -m mft.calibrate ring     # channel 6 band
 .venv/bin/python -m mft.calibrate ramp     # ring positions
 .venv/bin/python -m mft.calibrate dark     # find "off" if a firmware update moved it
+.venv/bin/python -m mft.calibrate banks    # which channel-4 CCs actually switch bank
 ```
+
+`banks` is the odd one out: it varies the CC *number* rather than the value,
+because a bank select is one message per bank all at the same value, and you read
+the answer on the front panel rather than in the lights. It paints each bank a
+different colour first, so a board that changes colour is a bank that moved, and
+the colour says which one it moved to.
 
 **Off is a specific number and it is not the obvious one.** Channel 2 is hue all
 the way down (0 is bright blue, not dark), so the RGB is only switched off on

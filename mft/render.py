@@ -15,6 +15,10 @@ from dataclasses import dataclass
 from . import config
 from .state import Session
 
+#: The shortest ring that still reads as "this encoder is claimed and nothing is
+#: happening" rather than as an unlit one. The floor under every resting state.
+PIP = 2
+
 #: Continuous sweep rates, in revolutions per second. Only for states with no
 #: discrete event to advance on; `working` uses the tool-call arc instead.
 SWEEP_RATE = {
@@ -82,6 +86,36 @@ def _insistence(session: Session, now: float, ceiling: float | None = None) -> f
     return _lerp(config.ATTENTION_FLOOR, top, attention_debt(session, now))
 
 
+def _debt_anim(base: int, debt: float) -> int:
+    """Escalate an animation rate by neglect, without leaving its own band.
+
+    The counterpart to :func:`_insistence` for the states that animate: they are
+    exactly the states whose brightness the wire discards (see
+    :attr:`mft.config.ATTENTION_ANIM_STEPS`), so debt has to be spent on rate or
+    it is not spent at all.
+
+    Stays inside the band it started in, so a gate stays a gate and a breathe
+    stays a breathe -- the difference between a strobe and a breathe is carrying
+    meaning, and escalation must not spend it.
+
+    Staying in the band is *not* what keeps a stale plan from impersonating a
+    permission gate: the gate band has no room between the two base rates, so a
+    fully-neglected plan does strobe faster than a fresh gate. What separates them
+    is :func:`mft.board.arbitrate_motion`, which ranks by state before debt --
+    with both on the board the plan is forced to ``SLOW_ANIM``, so the escalated
+    rate only ever appears when the plan is the loudest thing there and there is
+    no gate to confuse it with. At equal debt the ordering always holds.
+    """
+    steps = int(debt * config.ATTENTION_ANIM_STEPS)
+    if not base or steps <= 0:
+        return base
+    for band in config.ANIM_BANDS:
+        if base in band:
+            top = len(band) - 1
+            return band[min(band.index(base) + steps, top)]
+    return base
+
+
 def _arc_ring(session: Session) -> int:
     """Ring position from the tool-call counter, so the arc rotates one segment
     per completed call rather than sweeping on a timer."""
@@ -89,21 +123,32 @@ def _arc_ring(session: Session) -> int:
     return int(fraction * 127)
 
 
-def _working_ring(session: Session) -> int:
+def _gauge_ring(session: Session, fallback: int) -> int:
     """A fuel gauge: the ring fills as the agent's context window fills.
 
     Activity is already carried by brightness -- every tool call kicks it back
     to full -- so the ring is free to show the one thing about a long-running
     agent you otherwise cannot see until it compacts on you.
 
-    Falls back to the rotating tool-call arc when there is no reading yet (a
-    fresh session, or a transcript we couldn't read), so a session never sits
-    there looking empty when it isn't.
+    ``fallback`` is what the ring says when there is no reading (a fresh session,
+    or a transcript we couldn't read), and it differs by state rather than being
+    one constant: a running agent shows the rotating tool-call arc, so it never
+    sits there looking empty when it isn't, while a resting one shows its pip. An
+    arc is a spinner, and a spinner on a session that stopped working means
+    nothing -- it would be frozen at whatever segment the last call left it on.
     """
     fraction = session.context_fraction if config.CONTEXT_RING else None
     if fraction is None:
-        return _arc_ring(session)
+        return fallback
     return max(config.CONTEXT_RING_FLOOR, int(127 * fraction))
+
+
+def _resting_gauge(session: Session) -> int:
+    """The gauge for a session that has stopped running, or ``PIP`` if we have no
+    reading and there is nothing to draw."""
+    if not config.CONTEXT_RING_IDLE:
+        return PIP
+    return _gauge_ring(session, PIP)
 
 
 def _working_brightness(session: Session, now: float) -> float:
@@ -136,12 +181,15 @@ def render(session: Session, now: float) -> Cell:
         return Cell(None, config.ANIM_NONE, 0, 0.0)
 
     if state == "idle":
-        # A dim single pip: the encoder is claimed, nothing is happening.
-        ring = 2
+        # A dim single pip -- the encoder is claimed, nothing is happening -- or
+        # the gauge, if we have a reading. How full the window is outlives the
+        # turn that filled it, and this is the state a session spends most of its
+        # life in, so it is where the number is worth the most.
+        ring = _resting_gauge(session)
         brightness = config.IDLE_BRIGHTNESS
 
     elif state == "working":
-        ring = _working_ring(session)
+        ring = _gauge_ring(session, _arc_ring(session))
         brightness = _working_brightness(session, now)
 
     elif state in SWEEP_RATE:
@@ -151,19 +199,25 @@ def render(session: Session, now: float) -> Cell:
     elif state == "permission":
         # The only thing on the board allowed to move fast (board.arbitrate
         # enforces that), because it is the only thing that means a human is
-        # blocking progress right now.
+        # blocking progress right now. Ignore it and it strobes faster: the
+        # brightness below never reaches the RGB while there is an animation on
+        # it, so rate is the only channel neglect has here.
         ring = 127
+        anim = _debt_anim(anim, attention_debt(session, now))
         brightness = _insistence(session, now)
 
     elif state == "plan":
         # Same shape as `permission` -- it is the same kind of block -- but its
         # own hue and a slower flash, because the answer is "read this and
-        # decide", not "unblock me".
+        # decide", not "unblock me". It escalates within the gate band only, so
+        # it never arrives at the permission rate.
         ring = 127
+        anim = _debt_anim(anim, attention_debt(session, now))
         brightness = _insistence(session, now)
 
     elif state == "waiting":
         ring = 127
+        anim = _debt_anim(anim, attention_debt(session, now))
         brightness = _breathe(now, 2.4, 0.3, _insistence(session, now))
 
     elif state == "error":
@@ -177,7 +231,11 @@ def render(session: Session, now: float) -> Cell:
         # back up. Capped so it can never outshout a live block.
         age = max(0.0, now - session.state_since)
         fade = min(1.0, max(0.0, 1.0 - age / config.DONE_FADE_SECONDS))
-        ring = max(2, int(127 * fade))
+        # The unwinding ring settles onto the gauge rather than onto the pip. It
+        # starts at full and decays *through* whatever the gauge reads, so there
+        # is no moment of handover to smooth: the fade simply stops mattering
+        # once it drops below the level underneath it.
+        ring = max(_resting_gauge(session), int(127 * fade))
         brightness = _lerp(config.IDLE_BRIGHTNESS, config.ACTIVE_BRIGHTNESS, fade)
         debt = attention_debt(session, now)
         brightness = max(

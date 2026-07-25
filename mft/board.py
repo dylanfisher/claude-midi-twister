@@ -618,6 +618,45 @@ class PeekOverlay(Overlay):
         board[held] = Cell("purple", config.ANIM_NONE, 127, 1.0)
 
 
+# --- banks ------------------------------------------------------------------
+
+
+def bank_to_show(sessions: Sequence[Session], current: int) -> Optional[int]:
+    """The bank the board should be showing, or ``None`` to leave it alone.
+
+    Everything the escalating strobe of a permission gate buys is lost if the
+    gate is on a bank you are not looking at: sixteen encoders are visible and
+    the other forty-eight are a filing cabinet. So the loudest unattended block
+    gets to pull the view onto itself.
+
+    Deliberately only the *blocking* states, and only unattended ones. Following
+    a working session would move the board constantly and for nothing -- work
+    happening elsewhere is not a thing you have to see -- and following a block
+    you have already acknowledged would undo the acknowledgement.
+
+    Pure, and returning a bank rather than sending one, so the policy is testable
+    with no hardware and the wire stays in :mod:`mft.daemon`. The daemon owns the
+    cooldown too: this function has no memory and will happily name the same bank
+    every frame.
+    """
+    if not config.FOLLOW_ALERTS or not config.BANK_SELECT_CC:
+        return None
+    blocking = [
+        s
+        for s in sessions
+        if s.alert and s.ended_at is None and s.state in config.FOLLOW_STATES
+    ]
+    if not blocking:
+        return None
+
+    def rank(session: Session) -> tuple[int, float]:
+        owed = session.attention_since
+        return priority(session.state), session.state_since if owed is None else owed
+
+    want = bank_of(min(blocking, key=rank).slot)
+    return None if want == current else want
+
+
 # --- composition ------------------------------------------------------------
 
 

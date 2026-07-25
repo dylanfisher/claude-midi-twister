@@ -20,7 +20,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m mft.daemon --no-device         # run it without hardware
 .venv/bin/python -m mft.daemon --status | --stop | --discover
 .venv/bin/python -m mft.simulate --sessions 6      # fake sessions, no Claude needed
-.venv/bin/python -m mft.calibrate colors|white|anim|ring|ramp|dark
+.venv/bin/python -m mft.calibrate colors|white|anim|ring|ramp|dark|banks
 
 curl -s localhost:7654/status | python3 -m json.tool
 .venv/bin/python install_hooks.py --print|--check|--uninstall
@@ -55,6 +55,7 @@ hooks/notify.sh, hooks/register_session.py  ──POST /event──►  mft/daem
         mft/twister.py (CC writes, de-duplicated)  ───────────────┘
         mft/focus.py  (encoder press -> raise a terminal tab)
         mft/tab.py    (state glyph -> that tab's title, via OSC on its tty)
+        mft/power.py  (machine sleeps -> board dark; wakes -> board back)
 ```
 
 - `config.py` — every tunable, all env-overridable (`MFT_*`). Colours,
@@ -73,14 +74,21 @@ hooks/notify.sh, hooks/register_session.py  ──POST /event──►  mft/daem
   README section.
 - `discover.py` — adopt sessions that predate the daemon (transcripts joined
   with the process table).
+- `power.py` — system sleep and wake, over `ctypes` into IOKit. Load-bearing
+  fact, documented at length there and in the README: `time.monotonic()` on
+  macOS does not advance while the machine is asleep, so every deadline in the
+  daemon pauses with it and a suspend is invisible from inside the loop. That is
+  the behaviour you want and the reason this module has to exist.
 - `font.py` — 4×4 bitmap alphabet; a bank is a 16-pixel display.
 
 The daemon does all I/O; `state`/`render`/`board`/`font` are pure and that is
 what makes them testable. Keep it that way — if a new feature wants a
-subprocess or a socket, it belongs in `daemon.py`, `focus.py` or `tab.py`.
-Those last two are the only places that touch something outside this process,
-and `tab.py` is the only one that *writes* there — a tty it does not own, which
-is why the write is short, non-blocking, and handed back when the session ends.
+subprocess, a socket or a framework, it belongs in `daemon.py`, `focus.py`,
+`tab.py` or `power.py`. Those four are the only places that touch something
+outside this process, and `tab.py` is the only one that *writes* there — a tty
+it does not own, which is why the write is short, non-blocking, and handed back
+when the session ends. `power.py` is the only one something outside calls *in*
+to, which is why its callbacks are quick, never raise, and always consent.
 
 ## Invariants
 
@@ -89,6 +97,10 @@ These are load-bearing. Breaking one is a design change, not a refactor.
 1. **The device is a display, never a control surface.** Nothing on the hardware
    may answer a prompt, approve a tool call, or block a session. Encoder press
    raises a terminal and nothing else; knob turns are ignored entirely.
+   The one write that isn't paint is the bank select in `_follow_alerts`, and it
+   is not an exception: it changes which sixteen encoders you are looking at,
+   never a session. Anything else that wants to write to the device for a
+   non-painting reason needs the same argument and the same cooldown.
 2. **No hook can block or slow a session.** Hooks post and exit 0 whatever
    happens; the daemon answers every event with a bodiless 204 and never puts a
    body on the wire. A dead daemon costs a failed connect and nothing more.

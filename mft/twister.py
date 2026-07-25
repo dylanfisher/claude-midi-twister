@@ -50,6 +50,15 @@ class Twister:
         self._lock = threading.RLock()
         self._last: dict[tuple[int, int], int] = {}
         self._clock_stop = threading.Event()
+        #: Consecutive failed sends. Nonzero means the endpoint is gone -- a
+        #: pulled cable, or a USB device that did not survive a sleep -- and is
+        #: what :meth:`failing` answers so the daemon can try :meth:`reopen`.
+        self._failures = 0
+        #: What to restart after a reopen. A new pair of ports needs the input
+        #: pump and the clock put back on them, and only this object knows they
+        #: were ever running.
+        self._callback: Optional[Callable[[object], None]] = None
+        self._clock_bpm: Optional[float] = None
         # Imported here rather than at module scope so that importing this
         # module -- which the daemon does before it knows whether there is any
         # hardware -- does not require mido to be installed.
@@ -66,8 +75,15 @@ class Twister:
         with self._lock:
             try:
                 self._out.send(msg)
+                self._failures = 0
             except Exception as exc:  # a yanked USB cable shouldn't kill the daemon
-                log.warning("MIDI send failed: %s", exc)
+                # Logged once per outage, not once per message: whatever breaks
+                # a port breaks it for every one of the ~200 writes a frame, 30
+                # times a second, and a log that says so is not more informative
+                # than a log that says it once.
+                if not self._failures:
+                    log.warning("MIDI send failed: %s", exc)
+                self._failures += 1
 
     def cc(self, channel: int, control: int, value: int, force: bool = False) -> None:
         """One control change, dropped if the device already has that value.
@@ -109,6 +125,27 @@ class Twister:
     def rgb_anim(self, slot: Slot, value: int) -> None:
         """RGB gate/pulse animation (0 = none)."""
         self.cc(config.CH_SWITCH_ANIM, slot, value)
+
+    def bank(self, index: int) -> None:
+        """Show one of the four banks.
+
+        The only write in this class that changes what the *device* is doing
+        rather than what one encoder looks like. It is still a display -- a bank
+        select swaps which sixteen encoders are on the front panel, and touches no
+        session -- but it is the one message the daemon sends for a reason other
+        than painting, so it goes through `force=True`: the de-duplicating cache
+        is keyed on (channel, control) and every bank select shares a value, so a
+        cached one would be swallowed exactly when the board needs to move back to
+        a bank it has been to before.
+        """
+        if not (0 <= index < len(config.BANK_SELECT_CC)):
+            return
+        self.cc(
+            config.CH_SYSTEM,
+            config.BANK_SELECT_CC[index],
+            config.BANK_SELECT_VALUE,
+            force=True,
+        )
 
     def rgb_off(self, slot: Slot, force: bool = False) -> None:
         """Switch the RGB off.
@@ -176,17 +213,26 @@ class Twister:
         """
         if bpm <= 0 or self._out is None:
             return
+        self.stop_clock()
+        self._clock_bpm = bpm
+        # A fresh event per clock thread rather than clearing the shared one:
+        # the outgoing thread may not have looked at the flag yet when the
+        # incoming one clears it, and two threads driving the beat is a device
+        # running at double rate -- which reads as animations that will not sit
+        # still and no error anywhere. Only reachable through `reopen`, which is
+        # why it took a fake port to find.
+        stop = self._clock_stop = threading.Event()
         interval = 60.0 / (bpm * 24)  # MIDI clock is 24 pulses per quarter note
 
         def tick() -> None:
             self._send(self._mido.Message("start"))
             next_at = time.monotonic()
-            while not self._clock_stop.is_set():
+            while not stop.is_set():
                 self._send(self._mido.Message("clock"))
                 next_at += interval
                 # Sleep to an absolute deadline; sleeping `interval` each time
                 # accumulates drift and the whole point here is phase.
-                self._clock_stop.wait(max(0.0, next_at - time.monotonic()))
+                stop.wait(max(0.0, next_at - time.monotonic()))
 
         threading.Thread(target=tick, name="mft-clock", daemon=True).start()
         log.info("sending MIDI clock at %.0f bpm", bpm)
@@ -227,6 +273,18 @@ class Twister:
             for slot in range(config.SLOT_COUNT):
                 self._last.pop((config.CH_ENCODER, slot), None)
 
+    def forget_all(self) -> None:
+        """Drop the whole de-dup cache, so the next frame restates every cell.
+
+        For when what the device holds and what the cache believes it holds have
+        come apart completely and there is no reasoning about which cells: a
+        reopened port, or a board that was blacked out from under the render
+        loop for a sleep. The next frame costs a full ~200 messages and then the
+        de-dup is back to suppressing nearly all of them.
+        """
+        with self._lock:
+            self._last.clear()
+
     def clear_all(self, force: bool = False) -> None:
         for slot in range(config.SLOT_COUNT):
             self.clear(slot, force=force)
@@ -245,18 +303,93 @@ class Twister:
 
     def listen(self, callback: Callable[[object], None]) -> None:
         """Start a thread pumping incoming messages into ``callback``."""
+        self._callback = callback
         if self._in is None:
             log.info("no MIDI input port; encoder presses disabled")
             return
+        self._pump()
+
+    def _pump(self) -> None:
+        """One thread per input port, and it ends with that port.
+
+        The identity check is what makes :meth:`reopen` safe: closing a port
+        that a thread is iterating does not reliably raise, so the old pump can
+        outlive its port and go on delivering to a callback that has already
+        been given a newer one. A pump that finds it is no longer holding *the*
+        input port stands down instead.
+        """
+        inport = self._in
+        if inport is None:
+            return
 
         def pump() -> None:
-            for msg in self._in:
-                try:
-                    callback(msg)
-                except Exception:
-                    log.exception("input callback failed")
+            try:
+                for msg in inport:
+                    if inport is not self._in:
+                        return
+                    try:
+                        self._callback(msg)
+                    except Exception:
+                        log.exception("input callback failed")
+            except Exception:
+                log.debug("MIDI input pump ended", exc_info=True)
 
         threading.Thread(target=pump, name="mft-input", daemon=True).start()
+
+    # -- the port -----------------------------------------------------------
+
+    def failing(self) -> bool:
+        """True once a send has failed and none has succeeded since."""
+        return self._failures > 0
+
+    def reopen(self, match: str = config.PORT_MATCH) -> bool:
+        """Swap in a fresh pair of ports, in place. True if there is one.
+
+        In place rather than by handing back a new object, because the daemon is
+        not the only thing holding this: the clock thread and the input pump
+        both close over `self`, and a device swapped out from under them leaves
+        two threads driving a port nobody is reading.
+
+        A sleep can leave the endpoint invalid without closing it -- every send
+        raises, the port still exists, and mido has nothing to say about it. So
+        the trigger for this is :meth:`failing`, which is about writes rather
+        than about anything the OS reports, and the same path serves a cable
+        pulled out and pushed back in.
+        """
+        if self._mido is None:  # never had hardware; nothing to get back
+            return False
+        with self._lock:
+            self.stop_clock()
+            for port in (self._out, self._in):
+                if port is not None:
+                    try:
+                        port.close()
+                    except Exception:
+                        pass
+            self._out = self._in = None
+            out_name, in_name = find_ports(match)
+            if out_name is None:
+                return False
+            try:
+                self._out = self._mido.open_output(out_name)
+            except Exception as exc:
+                log.warning("could not reopen MIDI output %r: %s", out_name, exc)
+                return False
+            if in_name:
+                try:
+                    self._in = self._mido.open_input(in_name)
+                except Exception as exc:
+                    log.warning("could not reopen MIDI input %r: %s", in_name, exc)
+            # The device came back dark and remembering nothing, so neither may
+            # the cache: every cell has to be restated by the next frame.
+            self._last.clear()
+            self._failures = 0
+        if self._callback is not None:
+            self._pump()
+        if self._clock_bpm:
+            self.start_clock(self._clock_bpm)
+        log.info("reopened %s%s", out_name, f" / {in_name}" if self._in else "")
+        return True
 
     def close(self, dark: bool = True) -> None:
         """Hang up. ``dark`` is the daemon's exit: leave nothing glowing.

@@ -29,6 +29,7 @@ from . import (
     context as context_mod,
     discover as discover_mod,
     focus as focus_mod,
+    power as power_mod,
     render as render_mod,
     tab as tab_mod,
     twister as twister_mod,
@@ -213,6 +214,13 @@ class Visualizer:
         #: only starts the animation if the board is still genuinely empty; see
         #: :meth:`_check_waiting`.
         self._waiting_due: float | None = None
+        #: Which bank is on the front panel, and when it last moved. Starts at 0
+        #: as an assumption rather than a reading: nothing on this hardware
+        #: reports the current bank, and asking would mean sending a bank select
+        #: to find out -- which is the very thing that needs a reason. Wrong at
+        #: worst until the first side button or the first followed alert.
+        self._bank = 0
+        self._bank_moved_at = 0.0
         self._lock = threading.Lock()
         #: The session a focus attempt is currently running for, so a second
         #: press on the same knob doesn't stack another AppleScript behind it.
@@ -229,6 +237,19 @@ class Visualizer:
         #: When the tab strip was last considered. Nothing there animates, so it
         #: is decoupled from the frame rate entirely; see :meth:`paint_tabs`.
         self._last_tab_paint = float("-inf")
+        #: Set while the machine is asleep, so no frame relights a board that
+        #: was just blacked out for it. See :meth:`on_system_sleep`.
+        self._suspended = threading.Event()
+        #: Serialises a frame against the blackout, which is the one write that
+        #: has to be the last thing on the wire. Uncontended at 30Hz.
+        self._paint_lock = threading.Lock()
+        #: Sleep and wake, both detectors; see :mod:`mft.power`.
+        self._power = power_mod.PowerWatcher(self.on_system_sleep, self.on_system_wake)
+        self._wake_clock = power_mod.WakeClock()
+        #: Debounces the two detectors reporting one wake.
+        self._last_system_wake = float("-inf")
+        #: When a dead MIDI port was last retried; see :meth:`_check_port`.
+        self._last_port_retry = float("-inf")
 
     # -- overlays -----------------------------------------------------------
 
@@ -477,6 +498,14 @@ class Visualizer:
             # Why the desk is dark, which is otherwise indistinguishable from a
             # daemon that died with the lights off.
             "sleep": round(self._sleep.gain(now), 2),
+            # The other two ways to be dark and healthy: the machine is asleep,
+            # or the port stopped taking writes and is waiting to be reopened.
+            "suspended": self._suspended.is_set(),
+            "port_failing": self.device.failing(),
+            # Which sixteen of the sixty-four encoders are actually on the front
+            # panel. The other reason a board looks empty: everything is on a bank
+            # you are not looking at. Compare against each session's own `bank`.
+            "bank": self._bank + 1,
             "sessions": [
                 {
                     "session_id": s.session_id,
@@ -527,8 +556,24 @@ class Visualizer:
         self._wake.set()
         if msg.channel == config.CH_SWITCH:
             self._on_switch(msg.control, msg.value)
+        elif msg.channel == config.CH_SYSTEM:
+            self._on_system(msg.control, msg.value)
         # A turn is otherwise deliberately ignored: the board is a display, not
         # a control surface -- see :meth:`Twister.forget_rings`.
+
+    def _on_system(self, control: int, value: int) -> None:
+        """A side button: the human just chose a bank.
+
+        Recorded rather than acted on. It is also the one input that tells us
+        something we otherwise have to assume -- see `self._bank` -- and it starts
+        the cooldown, because a view you picked by hand should outlive the next
+        notification. `on_midi` has already touched sleep for it.
+        """
+        if value < 64 or control not in config.BANK_SELECT_CC:
+            return
+        self._bank = config.BANK_SELECT_CC.index(control)
+        self._bank_moved_at = time.monotonic()
+        log.debug("bank %d selected by hand", self._bank + 1)
 
     def _press_target(self, slot: int) -> Optional[Session]:
         """The session a press on this encoder is aimed at, if any.
@@ -703,6 +748,33 @@ class Visualizer:
         elif self._live_session():
             waiting.dismiss(now)
 
+    def _follow_alerts(self, now: float) -> None:
+        """Pull the front panel onto the bank where a human is blocking.
+
+        The policy is `board.bank_to_show`; everything here is the part that must
+        not be pure. Three brakes on it, and they are the whole reason this is
+        safe to have on by default:
+
+        * a cooldown, so two prompts on two banks cannot bounce the view between
+          them, and so a bank you picked by hand stays picked;
+        * never during a peek, which is a modal view of one session's history and
+          would be silently replaced by another bank's encoders;
+        * never while the boot word or the waiting animation still owns the
+          board, which are the two moments the daemon is talking about itself
+          rather than reporting -- and a bank select mid-word truncates the word.
+        """
+        if not config.FOLLOW_ALERTS or self._peeks or self._waiting is not None:
+            return
+        if now - self._bank_moved_at < config.FOLLOW_ALERT_COOLDOWN_SECONDS:
+            return
+        want = board_mod.bank_to_show(self.table.all(), self._bank)
+        if want is None:
+            return
+        log.info("bank %d has something blocking; following it", want + 1)
+        self.device.bank(want)
+        self._bank = want
+        self._bank_moved_at = now
+
     def paint(
         self, now: float, overlays: list[board_mod.Overlay] | None = None
     ) -> bool:
@@ -723,6 +795,11 @@ class Visualizer:
         anything that fails here fails 30 times a second. A dropped frame counts
         as movement: whatever went wrong, this is not the moment to go quiet.
         """
+        # A sleeping machine gets no frames at all. Checked before the compose
+        # rather than before the write, because the point of a dark board is
+        # that nothing is deciding what to put on it either.
+        if self._suspended.is_set():
+            return False
         try:
             if now - self._last_ring_refresh >= config.RING_REFRESH_SECONDS:
                 # Periodically, not every frame: a knob turned by hand lights
@@ -736,8 +813,14 @@ class Visualizer:
                 self._live_overlays(now) if overlays is None else overlays,
                 sleep=self._sleep.gain(now),
             )
-            for slot, cell in enumerate(cells):
-                self.device.write(slot, cell)
+            # Under the lock, and re-checked inside it: a sleep notification
+            # that arrived while this frame was composing must not have its
+            # blackout overwritten by the frame that was already in flight.
+            with self._paint_lock:
+                if self._suspended.is_set():
+                    return False
+                for slot, cell in enumerate(cells):
+                    self.device.write(slot, cell)
             changed = cells != self._last_cells
             self._last_cells = cells
             return changed
@@ -746,6 +829,91 @@ class Visualizer:
                 self._last_paint_error = now
                 log.exception("frame dropped")
             return True
+
+    # -- sleep and wake -----------------------------------------------------
+
+    def on_system_sleep(self) -> None:
+        """Darken the board, with the machine waiting on us to finish.
+
+        Runs on the notification thread (:mod:`mft.power`) and does exactly the
+        one thing that cannot be done after the fact. The flag goes up *before*
+        the blackout and under the same lock a frame holds, or the render loop
+        gets one more frame in afterwards and the last word on the board is a
+        lit one -- which is the entire bug this exists to prevent, and it would
+        show up only as "sometimes it stays on overnight".
+
+        Not conditional on there being anything worth showing: an empty board
+        still breathes (`config.AMBIENT`), and a desk lamp is exactly what this
+        must not be at 3am.
+        """
+        if not config.SLEEP_BLACKOUT:
+            return
+        with self._paint_lock:
+            self._suspended.set()
+            try:
+                self.device.blackout()
+            except Exception:
+                log.exception("could not darken the board for sleep")
+        log.info("system sleeping; board dark")
+
+    def on_system_wake(self, source: str = "notification") -> None:
+        """Put the board back, and re-check the table it is painting.
+
+        Idempotent and debounced, because both detectors fire for a healthy
+        wake by design. The order matters: the cache goes first, since a repaint
+        that the de-dup suppresses is exactly as dark as no repaint at all.
+
+        What this deliberately does *not* do is touch the sleep timer. Opening
+        the lid looks identical to a Power Nap from here, and a board that
+        relights itself to full brightness for a backup at 3am is worse than one
+        that comes back at the dim level it went down at -- which, since the
+        clock it runs on froze with the machine, is exactly where you left it.
+        The first hook event or encoder press brings it up, as it always does.
+        """
+        now = time.monotonic()
+        with self._lock:
+            if now - self._last_system_wake < config.WAKE_DEBOUNCE_SECONDS:
+                return
+            self._last_system_wake = now
+        log.info("system awake (%s); repainting", source)
+        self._suspended.clear()
+        self.device.forget_all()
+        self._last_cells = None
+        if config.WAKE_REDISCOVER:
+            self.adopt_running_sessions(awaken=False)
+        self._wake.set()
+
+    def _check_wake_clock(self) -> None:
+        """The fallback detector, polled once a frame.
+
+        Cheap enough to sit in the loop -- two counter reads and a subtract --
+        and it is the only thing that notices a wake if the IOKit registration
+        never attached. It cannot report a sleep, so a machine relying on this
+        alone dims late rather than early: the board stays lit through the
+        suspend and comes back correct.
+        """
+        slept = self._wake_clock.poll(config.WAKE_MIN_SLEEP_SECONDS)
+        if slept:
+            log.info("clock says the machine slept for %.0fs", slept)
+            self.on_system_wake(source=f"{slept:.0f}s clock gap")
+
+    def _check_port(self, now: float) -> None:
+        """Reopen a MIDI port that has stopped accepting writes.
+
+        A sleep can leave the USB endpoint invalid without closing it: every
+        send raises and the de-dup cache -- which believes the device already
+        holds what it was last sent -- would go on suppressing the writes that
+        would put it back even once the hardware recovered. So this is driven by
+        failed writes rather than by a wake, which also makes it the answer to a
+        cable pulled out and pushed back in an hour later.
+        """
+        if not self.device.failing() or self._suspended.is_set():
+            return
+        if now - self._last_port_retry < config.PORT_RETRY_SECONDS:
+            return
+        self._last_port_retry = now
+        if self.device.reopen():
+            self._last_cells = None
 
     def animate(self, overlay: board_mod.Overlay) -> None:
         """Run one overlay to completion, blocking. Used for boot and shutdown,
@@ -756,15 +924,23 @@ class Visualizer:
             if self._stop.wait(period):
                 return
 
-    def adopt_running_sessions(self) -> None:
+    def adopt_running_sessions(self, awaken: bool = True) -> None:
         """Put the sessions that predate us on the board.
 
         Wrapped whole: nothing about a display is worth failing to start over,
         and the board fills itself in from hook events either way -- this only
         decides whether it does so now or on each session's next turn.
+
+        Also runs on wake, where nearly everything it finds is already on the
+        board -- `discover.adopt` hands back the sessions it *recognised* as
+        much as the ones it added, so only the difference is news, and only the
+        difference is worth logging or waking the board for. `awaken` is what
+        the wake path turns off: see :meth:`on_system_wake` for why a machine
+        powering on is not evidence that anyone is at the desk.
         """
         if not config.DISCOVER_ON_START:
             return
+        known = {s.session_id for s in self.table.all()}
         try:
             adopted = discover_mod.adopt(self.table, discover_mod.discover())
         except Exception:
@@ -778,22 +954,30 @@ class Visualizer:
         # the moment one tab can end up described twice.
         self.table.reconcile(now)
         self.table.compact()
+        adopted = [s for s in adopted if s.session_id not in known]
         if adopted:
-            # These sessions have been running without us and none of them has
-            # sent us an event yet. A daemon started onto a live board starts
-            # awake, and its first half hour is measured from now.
-            self._sleep.touch(now)
             log.info(
                 "adopted %d running session%s: %s",
                 len(adopted),
                 "" if len(adopted) == 1 else "s",
                 ", ".join(s.label for s in adopted),
             )
+        if adopted and awaken:
+            # These sessions have been running without us and none of them has
+            # sent us an event yet. A daemon started onto a live board starts
+            # awake, and its first half hour is measured from now.
+            self._sleep.touch(now)
 
     def run(self) -> None:
         self.device.clear_all()
         self.device.listen(self.on_midi)
         self.device.start_clock()
+        # Before anything that blocks: the boot word takes a couple of seconds
+        # and a lid closed during it would otherwise leave that word lit on the
+        # desk until morning. Failing to attach costs the sleep half only -- the
+        # clock fallback in the loop still catches the wake.
+        if not self._power.start():
+            log.info("no sleep notifications; wake will be noticed from the clock")
         # Before the boot word rather than after it: the waiting animation that
         # follows is for an empty board, and an encoder that lights up halfway
         # through it reads as a session that just started.
@@ -824,7 +1008,15 @@ class Visualizer:
             # up to `idle` seconds -- exactly the case this is here to serve.
             self._wake.clear()
             now = time.monotonic()
+            # First in the frame, both of them: a wake that has not been noticed
+            # yet makes every decision below it a decision about a board nobody
+            # is writing to, and a dead port makes it one nobody is reading.
+            self._check_wake_clock()
+            self._check_port(now)
             self._check_waiting(now)
+            # Before the paint, so a followed bank and the frame that justifies
+            # it land together rather than a frame apart.
+            self._follow_alerts(now)
             still = 0 if self.paint(now) else still + 1
             # Before the reap, so an ended session's tab is handed back while
             # the record that knows which tty it was on still exists.
@@ -842,6 +1034,10 @@ class Visualizer:
             # with any of them on it never gets here; what does is a board of
             # idle, ended and stalled sessions, or no sessions at all.
             self._wake.wait(idle if still >= config.IDLE_FRAMES else active)
+        # Let go of the run loop before the shutdown animation: a sleep handler
+        # that fires while that is painting would black out a board the exit is
+        # about to paint anyway, and then hold the machine while it did it.
+        self._power.stop()
 
     def shutdown_animation(self) -> None:
         """A spiral in from the top-left corner, a held beat, then all sixteen

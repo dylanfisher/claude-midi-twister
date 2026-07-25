@@ -10,8 +10,14 @@ trusting a table, sweep them and write down what you see.
     python -m mft.calibrate ring      # channel 6 ring animation/brightness
     python -m mft.calibrate ramp      # ring positions 0..127
     python -m mft.calibrate dark      # which channel-3 value is actually *off*
+    python -m mft.calibrate banks     # which channel-4 CCs switch bank
 
 Paste the values you like into mft/config.py.
+
+`banks` is the one sweep that varies the CC *number* instead of the value, and
+the one whose answer you read on the front panel rather than in the lights: a
+bank select is one message per bank, all at the same value, and what it changes
+is which sixteen encoders are in front of you.
 
 Every hue sweep here lights the RGB at *full* brightness and leaves the ring
 dark. Both halves matter. Channel 3 carries brightness, and after a `clear_all`
@@ -27,7 +33,7 @@ import argparse
 import logging
 import time
 
-from . import config
+from . import board, config
 from .twister import open_twister
 
 
@@ -107,7 +113,7 @@ def _white(device) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "mode", choices=["colors", "white", "anim", "ring", "ramp", "dark"]
+        "mode", choices=["colors", "white", "anim", "ring", "ramp", "dark", "banks"]
     )
     parser.add_argument("--color", default="green", help="base colour for anim sweeps")
     args = parser.parse_args()
@@ -153,6 +159,41 @@ def main() -> int:
                 "swells back up over 16 beats."
             )
             _pages(device, config.CH_SWITCH_ANIM, 0, 127, "dark")
+
+        elif args.mode == "banks":
+            # The one sweep whose answer you read on the *front panel* rather
+            # than in the lights: a bank select changes which sixteen encoders
+            # are there. So each candidate paints its own bank a distinct hue
+            # first -- if the board switches, the colour tells you which bank it
+            # switched to, and if nothing happens the CC is wrong.
+            hues = ("red", "green", "cyan", "violet")
+            for bank in range(config.BANKS):
+                for slot in board.bank_slots(bank):
+                    device.color(slot, hues[bank % len(hues)])
+                    device.ring(slot, 32 * (bank + 1))
+            print(
+                "each bank is painted a different colour: bank 1 red, 2 green,\n"
+                "3 cyan, 4 violet. below, one candidate CC at a time on channel\n"
+                f"4 (currently BANK_SELECT_CC={config.BANK_SELECT_CC}).\n\n"
+                "watch for the board CHANGING COLOUR -- that is the bank moving,\n"
+                "and the colour says which bank it moved to. note the four CCs\n"
+                "that work and the order they came in. if nothing ever changes,\n"
+                "set MFT_FOLLOW_ALERTS=0 and leave the banks alone on this unit.\n\n"
+                "unlike the other sweeps this one varies the CC *number*, not the\n"
+                "value: a bank select is one message per bank, all at the same\n"
+                "value, so there is nothing to ramp."
+            )
+            try:
+                for control in range(16):
+                    input(f"\nenter to send cc{control} = {config.BANK_SELECT_VALUE} > ")
+                    device.cc(
+                        config.CH_SYSTEM,
+                        control,
+                        config.BANK_SELECT_VALUE,
+                        force=True,
+                    )
+            except (EOFError, KeyboardInterrupt):
+                print()
 
         elif args.mode == "ramp":
             for slot in range(config.ENCODERS_PER_BANK):
