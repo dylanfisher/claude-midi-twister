@@ -2,18 +2,19 @@
 
 Your running Claude Code sessions, one per encoder, on a DJTT Midi Fighter Twister.
 Each session claims an encoder: the RGB under the knob says what state it's in,
-the LED ring says how full its context window is, and **pressing the encoder
-brings that session's terminal tab to the front**.
+the LED ring says how long the turn has been running (or, once it's resting, how
+full its context window is), and **pressing the encoder brings that session's
+terminal tab to the front**.
 
 ```
 ┌────┬────┬────┬────┐   ● red gate      wants permission — a human is blocking
 │ ●  │ ○  │ ◐  │    │   ● yellow flash  a plan is written and wants a yes
 ├────┼────┼────┼────┤   ● red solid     errored (rate limit, overload, billing)
 │ ◑  │    │ ●  │    │   ● amber breath  idle-waiting on you
-├────┼────┼────┼────┤   ● orange fill   working — the ring is its context window
+├────┼────┼────┼────┤   ● orange fill   working — the ring is the turn's length
 │    │    │    │    │   ● cyan sweep    thinking
 ├────┼────┼────┼────┤   ● green solid   finished, then fading out
-│    │    │ ◦  │ ◦  │   ● dim green     idle — the ring is still its context
+│    │    │ ◦  │ ◦  │   ● dim green     idle — the ring is its context window
 └────┴────┴────┴────┘   ● magenta       running unsupervised
   press → focus that tab       ◦ violet dim   subagents, stacked from the corner
   hold  → peek at its history
@@ -305,20 +306,57 @@ invisible until you turn your head. So motion is a budget.
 - **Everything that blinks, blinks together.** The daemon sends MIDI clock, so
   gates stay in phase instead of drifting apart and reading as broken hardware.
   `MFT_CLOCK_BPM=0` turns it off.
-- **The ring is a fuel gauge.** It fills as that agent's context window fills, so
-  "this one is about to compact" is legible from across the room. Read out of
-  `transcript_path`, since no hook payload carries token counts. Activity is
-  carried by *brightness* instead: every tool call kicks it back to full and it
-  decays between them, so shimmer rate is tool-call frequency.
-  `MFT_CONTEXT_RING=0` falls back to a rotating tool-call arc everywhere.
+- **A working ring is a stopwatch.** It fills with how long the current turn has
+  been running, which is the one thing about a live agent nothing else on the
+  board says: hue is what it's doing, brightness is how recently it called a tool
+  and sags when it stops, and neither of them is *this one has been grinding for
+  twenty minutes*. Log-scaled, because turn lengths are — the first quarter of
+  the ring covers the first half-minute, so an ordinary turn is visibly moving,
+  and a long one still has somewhere to go. It saturates at fifteen minutes
+  rather than wrapping: a wrapped ring is indistinguishable from a turn that just
+  started, and there's nothing you do differently at forty minutes than at
+  twenty. `MFT_TURN_RING=0` puts the old rotating tool-call arc back, which this
+  replaced — the arc is a fine thing to watch and a redundant one to spend the
+  ring on, since its spin rate is tool-call frequency and so is the shimmer.
 
-  It shows in the resting states too, not just while an agent is running: how
-  full the window is outlives the turn that filled it, and a session idling at
-  95% is the one to deal with before it compacts on you. It used to look exactly
-  like a fresh one — both were the same dim green pip. Not in the states where
-  the ring is already saying something louder: `thinking` and `streaming` sweep,
-  and a blocking state pins the ring at full, where it means *you* rather than
-  tokens. `MFT_CONTEXT_RING_IDLE=0` goes back to the pip.
+- **A resting ring is a fuel gauge.** It fills as that agent's context window
+  fills, so "this one is about to compact" is legible from across the room. Read
+  out of `transcript_path`, since no hook payload carries token counts.
+
+  Resting and not working, because that's when the number is worth something:
+  "how full is the window" is what you ask deciding whether to carry on here or
+  start fresh, and that's a decision you make between turns, standing in front of
+  the board. During a turn it barely moves and you can't act on it either way.
+  Not in the states where the ring is already saying something louder, either:
+  `thinking` and `streaming` sweep, and a blocking state pins the ring at full,
+  where it means *you* rather than tokens. `MFT_CONTEXT_RING_IDLE=0` goes back to
+  a bare pip; `MFT_CONTEXT_RING=0` removes the gauge entirely.
+
+  **The gauge dims as it ages**, over the same three minutes the `done` flash
+  recedes across, down to a floor it holds forever. A reading has a shelf life:
+  ten seconds after a turn ends it's what the session *is*, ten minutes after
+  it's what the session was when you last had a reason to care. Dimmer and never
+  dark — an unlit gauge and a session with no reading at all would be the same
+  encoder, and those are very different things.
+
+  This is the one place on the board where the ring and the RGB are lit
+  *differently*, and it's only possible because they're separate channels (6
+  against 3). A finished session you never come and look at ramps its hue back up
+  on attention debt; its gauge doesn't come with it, because the reading didn't
+  get more urgent, only older. Everything else — every gesture, overlay and
+  blocking state — is one encoder at one brightness, which is the `Cell` default.
+
+- **Which context window, though.** The transcript names the model on every
+  assistant message and that name doesn't say which *window* it is: the 1M
+  variant is spelled `opus[1m]` in `settings.json` and spelled exactly like the
+  200k one everywhere else. So the family comes off the transcript, where it's
+  authoritative and follows a mid-session `/model`, and the window marker comes
+  off the settings files, where it's the only place written down — and only when
+  the two agree about which model this is, since a settings file naming
+  `sonnet[1m]` says nothing about the opus in the transcript in front of us.
+  Getting this wrong isn't a near miss: a 1M session at 11% full renders at 55%,
+  a gauge lying in the direction that makes you close a session you didn't need
+  to. `MFT_CONTEXT_SETTINGS_MODEL=0` trusts the transcript alone.
 - **Green is one continuous ramp, not three states.** A finished turn is solid
   bright green, fades over 90s, rests dim green. Orange means the agent has the
   floor; green means you do.
@@ -666,8 +704,10 @@ likely want at runtime:
 | Variable | Does |
 |---|---|
 | `MFT_SLEEP`, `MFT_SLEEP_SECONDS` | board sleep, and when the first stage lands |
-| `MFT_CONTEXT_RING` | ring is a context gauge (`0` = tool-call arc everywhere) |
+| `MFT_TURN_RING`, `MFT_TURN_RING_SECONDS` | a working ring is the turn's length (`0` = the old tool-call arc), and what fills it |
+| `MFT_CONTEXT_RING` | a resting ring is a context gauge (`0` = a bare pip) |
 | `MFT_CONTEXT_RING_IDLE` | `0` keeps the gauge off the resting states |
+| `MFT_CONTEXT_SETTINGS_MODEL` | `0` reads the context window off the transcript alone, never `settings.json` |
 | `MFT_FOLLOW_ALERTS` | `0` stops the board following a block onto its bank |
 | `MFT_SUBAGENT_STACK` | the violet pile in the corner |
 | `MFT_TAB_TITLE`, `MFT_TAB_TITLE_MAX` | the glyph in the terminal tab strip |

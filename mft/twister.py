@@ -198,7 +198,7 @@ class Twister:
             else:
                 self.rgb_brightness(slot, cell.brightness)
         self.ring(slot, cell.ring)
-        self.ring_brightness(slot, cell.brightness)
+        self.ring_brightness(slot, cell.ring_light)
 
     # -- clock --------------------------------------------------------------
 

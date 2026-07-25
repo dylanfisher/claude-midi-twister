@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
+import shutil
 import sys
 import tempfile
 import time
@@ -929,12 +931,13 @@ class Rendering(unittest.TestCase):
         self.assertEqual(cell.ring, 0)
 
     def test_the_arc_advances_with_tool_calls_not_with_time(self):
-        self.session.state = "working"
-        self.session.last_tool_at = 0.0
-        still = {render(self.session, t / 10).ring for t in range(20)}
-        self.assertEqual(len(still), 1, "a session doing nothing should not spin")
-        self.session.arc += 1
-        self.assertNotIn(render(self.session, 0.0).ring, still)
+        with mock.patch.object(config, "TURN_RING", False):
+            self.session.state = "working"
+            self.session.last_tool_at = 0.0
+            still = {render(self.session, t / 10).ring for t in range(20)}
+            self.assertEqual(len(still), 1, "a session doing nothing should not spin")
+            self.session.arc += 1
+            self.assertNotIn(render(self.session, 0.0).ring, still)
 
     def test_a_stalled_session_dims_out(self):
         self.session.state = "working"
@@ -963,28 +966,67 @@ class Rendering(unittest.TestCase):
         self.session.attended()
         self.assertEqual(attention_debt(self.session, 1_000), 0.0)
 
-    def test_a_working_ring_is_a_context_gauge(self):
+    def test_a_working_ring_is_a_stopwatch(self):
+        """The one thing about a running agent nothing else on the board says.
+        Colour is what it is doing and brightness is how recently it called a
+        tool; neither of them is "this one has been going for twenty minutes"."""
         self.session.state = "working"
+        self.session.turn_started_at = 0.0
+        rings = [render(self.session, t).ring for t in (0.0, 30.0, 120.0, 600.0)]
+        self.assertEqual(rings, sorted(rings), "a longer turn is a fuller ring")
+        self.assertEqual(len(set(rings)), len(rings), "and a distinguishable one")
+        self.assertGreaterEqual(rings[0], config.CONTEXT_RING_FLOOR)
+
+    def test_a_long_turn_saturates_rather_than_wrapping(self):
+        """A wrapped ring would be indistinguishable from a turn that just
+        started, which is the one reading that must never be wrong."""
+        self.session.state = "working"
+        self.session.turn_started_at = 0.0
+        full = config.TURN_RING_FULL_SECONDS
+        self.assertEqual(render(self.session, full).ring, 127)
+        self.assertEqual(render(self.session, full * 10).ring, 127)
+
+    def test_the_stopwatch_spends_its_first_quarter_on_the_first_half_minute(self):
+        """Turn lengths are log-distributed and the ring has to show both ends.
+        Linear put every ordinary turn in the bottom eighth."""
+        self.session.state = "working"
+        self.session.turn_started_at = 0.0
+        self.assertGreater(render(self.session, 30.0).ring, 127 * 0.2)
+        self.assertLess(render(self.session, 30.0).ring, 127 * 0.5)
+
+    def test_a_turn_adopted_mid_flight_still_runs_its_stopwatch(self):
+        """`mft.discover` hands over sessions that predate the daemon, and they
+        arrive with no prompt of their own to have started at."""
+        self.session.state = "working"
+        self.session.turn_started_at = None
+        self.session.state_since = 0.0
+        self.assertGreater(render(self.session, 600.0).ring, render(self.session, 1.0).ring)
+
+    def test_the_gauge_is_not_on_a_working_ring(self):
+        """It moves by nothing you can act on during a turn, and the ring has
+        something better to say. It comes back the moment the turn ends."""
+        self.session.state = "working"
+        self.session.turn_started_at = 0.0
         self.session.context_limit = 200_000
-        self.session.context_tokens = 100_000
-        half = render(self.session, 0.0).ring
         self.session.context_tokens = 190_000
-        nearly_full = render(self.session, 0.0).ring
-        self.assertAlmostEqual(half, 63, delta=1)
-        self.assertGreater(nearly_full, half)
-        self.assertLessEqual(nearly_full, 127)
+        busy = render(self.session, 5.0).ring
+        self.session.state = "done"
+        self.session.state_since = 5.0
+        self.assertGreater(render(self.session, 5.0).ring, busy)
 
     def test_a_full_context_does_not_overflow_the_ring(self):
-        self.session.state = "working"
+        self.session.state = "idle"
         self.session.context_limit = 200_000
         self.session.context_tokens = 999_000
         self.assertEqual(render(self.session, 0.0).ring, 127)
 
-    def test_working_falls_back_to_the_arc_without_a_reading(self):
-        self.session.state = "working"
-        self.session.arc = 4
-        self.assertIsNone(self.session.context_fraction)
-        self.assertEqual(render(self.session, 0.0).ring, int(127 * 4 / config.ARC_SEGMENTS))
+    def test_working_falls_back_to_the_arc_when_the_stopwatch_is_off(self):
+        with mock.patch.object(config, "TURN_RING", False):
+            self.session.state = "working"
+            self.session.arc = 4
+            self.assertEqual(
+                render(self.session, 0.0).ring, int(127 * 4 / config.ARC_SEGMENTS)
+            )
 
     def test_an_idle_session_still_shows_its_gauge(self):
         # How full the window is outlives the turn that filled it. A session
@@ -1021,6 +1063,66 @@ class Rendering(unittest.TestCase):
         # The unwinding ring starts above the gauge and decays through it, so
         # there is no visible handover -- just a fade that stops mattering.
         self.assertEqual(render(self.session, 0.0).ring, 127)
+
+    def test_a_resting_gauge_dims_as_it_ages(self):
+        """The reading stays on the ring; it stops competing for your eye with
+        the sessions that finished a minute ago."""
+        self.session.state = "done"
+        self.session.state_since = 0.0
+        self.session.context_limit = 200_000
+        self.session.context_tokens = 190_000
+        fresh = render(self.session, 1.0)
+        stale = render(self.session, config.DONE_FADE_SECONDS + 1)
+        self.assertGreater(fresh.ring_light, stale.ring_light)
+        self.assertAlmostEqual(stale.ring_light, config.GAUGE_STALE_LEVEL, places=5)
+        # Dimmer, never dark: an unlit gauge and a session with no reading at all
+        # would be the same encoder, and they mean very different things.
+        self.assertGreater(stale.ring_light, 0.0)
+        # The reading itself does not move -- only what it is lit at. (Early on,
+        # `ring` is still the `done` flash unwinding down through the gauge, so
+        # this is asked either side of where that lands.)
+        later = render(self.session, config.DONE_FADE_SECONDS * 4)
+        self.assertEqual(stale.ring, later.ring)
+        self.assertGreaterEqual(stale.ring_light, later.ring_light)
+
+    def test_a_neglected_done_session_nags_without_its_gauge_coming_back(self):
+        """Ring brightness is channel 6 and the RGB's is channel 3, which is what
+        makes this possible. The reading did not get more urgent, only older."""
+        self.session.state = "done"
+        self.session.state_since = 0.0
+        self.session.attention_since = 0.0
+        self.session.context_limit = 200_000
+        self.session.context_tokens = 190_000
+        nagging = render(self.session, config.ATTENTION_RAMP_SECONDS)
+        quiet = render(self.session, 1.0)
+        self.assertGreater(nagging.brightness, config.IDLE_BRIGHTNESS)
+        self.assertLess(nagging.ring_light, quiet.ring_light)
+
+    def test_an_idle_gauge_fades_on_the_same_clock(self):
+        self.session.state = "idle"
+        self.session.state_since = 0.0
+        self.session.context_limit = 200_000
+        self.session.context_tokens = 190_000
+        fresh = render(self.session, 1.0)
+        stale = render(self.session, config.DONE_FADE_SECONDS + 1)
+        self.assertAlmostEqual(fresh.ring_light, config.IDLE_BRIGHTNESS, places=2)
+        self.assertLess(stale.ring_light, fresh.ring_light)
+
+    def test_a_cell_without_its_own_ring_level_is_lit_as_one_thing(self):
+        """The default, and what every gesture, overlay and blocking state
+        wants: one encoder, one brightness."""
+        self.assertEqual(Cell(brightness=0.6).ring_light, 0.6)
+        self.assertEqual(Cell(brightness=0.6, ring_level=0.1).ring_light, 0.1)
+        self.assertEqual(Cell(brightness=0.6, ring_level=4.0).ring_light, 1.0)
+        self.assertEqual(Cell(brightness=0.6, ring_level=-2.0).ring_light, 0.0)
+
+    def test_a_blocking_ring_is_lit_with_its_encoder(self):
+        """The ring means "you" in these states, not "tokens", so it has no
+        business dimming on a clock of its own."""
+        for state in ("permission", "plan", "waiting", "error"):
+            self.session.state = state
+            cell = render(self.session, 12.5)
+            self.assertIsNone(cell.ring_level, state)
 
     def test_neglect_speeds_the_gate_up_rather_than_brightening_it(self):
         # The brightness below is discarded by the wire on any animated cell
@@ -1133,6 +1235,62 @@ class ContextReading(unittest.TestCase):
         self.assertEqual(
             context.limit_for_model("something-new"), config.CONTEXT_LIMIT_DEFAULT
         )
+
+    def settings(self, model: str, name: str = "settings.json") -> str:
+        """A project directory whose `.claude/<name>` selects `model`."""
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        claude = root / ".claude"
+        claude.mkdir()
+        (claude / name).write_text(json.dumps({"model": model}))
+        context._settings_cache.clear()
+        self.addCleanup(context._settings_cache.clear)
+        return str(root)
+
+    def test_the_window_marker_comes_from_settings_when_the_transcript_lacks_it(self):
+        # The whole reason this exists: Claude Code writes `claude-opus-5` into
+        # the transcript whether or not you are on the 1M variant, and `opus[1m]`
+        # is only ever written down in settings.json. Without this a session at
+        # 11% full renders at 55%.
+        cwd = self.settings("opus[1m]")
+        self.assertEqual(context.limit_for_model("claude-opus-5", cwd), 1_000_000)
+
+    def test_a_settings_model_of_another_family_is_not_believed(self):
+        # `/model` mid-session: the transcript watched it happen and settings.json
+        # did not, so the family always comes off the message in front of us.
+        cwd = self.settings("sonnet[1m]")
+        self.assertEqual(context.limit_for_model("claude-opus-5", cwd), 200_000)
+
+    def test_settings_never_shrink_a_window_the_transcript_spelled_out(self):
+        cwd = self.settings("opus")
+        self.assertEqual(context.limit_for_model("claude-opus-5[1m]", cwd), 1_000_000)
+
+    def test_a_project_settings_file_outranks_the_user_one(self):
+        cwd = self.settings("opus[1m]", "settings.local.json")
+        with mock.patch.object(config, "CONTEXT_SETTINGS_USER", "/nonexistent.json"):
+            self.assertEqual(context.limit_for_model("claude-opus-5", cwd), 1_000_000)
+
+    def test_settings_are_found_from_a_subdirectory(self):
+        root = Path(self.settings("opus[1m]"))
+        deep = root / "a" / "b" / "c"
+        deep.mkdir(parents=True)
+        self.assertEqual(context.limit_for_model("claude-opus-5", str(deep)), 1_000_000)
+
+    def test_unreadable_settings_are_not_an_error(self):
+        root = Path(self.settings("opus[1m]"))
+        (root / ".claude" / "settings.json").write_text("{ not json at all")
+        with mock.patch.object(config, "CONTEXT_SETTINGS_USER", "/nonexistent.json"):
+            self.assertEqual(context.limit_for_model("claude-opus-5", str(root)), 200_000)
+            self.assertEqual(context.configured_model(str(root)), "")
+
+    def test_a_rewritten_settings_file_is_read_again(self):
+        root = Path(self.settings("opus[1m]"))
+        self.assertEqual(context.limit_for_model("claude-opus-5", str(root)), 1_000_000)
+        target = root / ".claude" / "settings.json"
+        target.write_text(json.dumps({"model": "opus"}))
+        os.utime(target, (0, 0))  # `/model` writes this file; the mtime is the cue
+        with mock.patch.object(config, "CONTEXT_SETTINGS_USER", "/nonexistent.json"):
+            self.assertEqual(context.limit_for_model("claude-opus-5", str(root)), 200_000)
 
     def test_the_daemon_records_what_it_reads(self):
         from mft.daemon import Visualizer

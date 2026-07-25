@@ -404,10 +404,17 @@ UNSUPERVISED_COLOR = "magenta"
 ARC_SEGMENTS = 16
 
 # --- Context window ---------------------------------------------------------
-# A working agent's ring is a fuel gauge: it fills as the context window fills,
+# A *resting* agent's ring is a fuel gauge: it fills as the context window fills,
 # so "this one is about to compact" is visible from across the room. No hook
 # payload carries token counts, so :mod:`mft.context` reads them out of the
 # transcript the payload points at.
+#
+# Resting, and not while it works, because that is when the number is worth
+# something. "How full is the window" is the question you ask deciding whether to
+# carry on in this session or start a fresh one -- which is a thing you decide
+# between turns, standing in front of the board. During a turn it barely moves
+# and you can do nothing about it either way, so the ring spends the turn on
+# :data:`TURN_RING` instead and comes back to the gauge when the turn ends.
 
 CONTEXT_RING = _flag("MFT_CONTEXT_RING", True)
 #: Re-read a session's transcript at most this often. Events arrive far faster
@@ -424,12 +431,46 @@ CONTEXT_LIMIT_DEFAULT = int(os.environ.get("MFT_CONTEXT_LIMIT", "200000"))
 #: Substring -> window size, first match wins. Deliberately matched on
 #: substrings so a new dated model id doesn't need a release here.
 CONTEXT_LIMITS = (
-    ("[1m]", 1_000_000),
-    ("-1m", 1_000_000),
     ("haiku", 200_000),
     ("sonnet", 200_000),
     ("opus", 200_000),
 )
+
+#: The long-window variants, matched before the families above. Kept in their own
+#: table because they are the *only* thing :mod:`mft.context` goes looking in the
+#: settings files for -- a family it can read off the transcript, a window marker
+#: it very often cannot.
+CONTEXT_WINDOW_MARKERS = (
+    ("[1m]", 1_000_000),
+    ("-1m", 1_000_000),
+)
+
+#: Believe the settings files about which window a model has when the transcript
+#: doesn't say.
+#:
+#: The transcript records the model of every assistant message, which is the
+#: right source -- it follows a mid-session `/model` -- but it records it as
+#: `claude-opus-5`, with no marker, whether or not you are on the 1M variant.
+#: `~/.claude/settings.json` is where `opus[1m]` actually lives. So the marker is
+#: taken from there, and only ever *from* there: the family still comes off the
+#: transcript, and a settings model of a different family is ignored rather than
+#: believed over the message in front of us. Without this a 1M session reads as
+#: five times as full as it is, which is worse than no gauge -- it is a gauge
+#: that lies in the alarming direction.
+CONTEXT_SETTINGS_MODEL = _flag("MFT_CONTEXT_SETTINGS_MODEL", True)
+
+#: Where to look, nearest first: Claude Code's own precedence, minus the ones
+#: this can't see (an enterprise policy file, a `--model` on the command line).
+#: A session's `cwd` and its parents supply the project half.
+CONTEXT_SETTINGS_FILES = (
+    ".claude/settings.local.json",
+    ".claude/settings.json",
+)
+CONTEXT_SETTINGS_USER = os.path.expanduser("~/.claude/settings.json")
+#: How far up from a session's `cwd` to look for a project settings file. Bounded
+#: so a session run from a deep subdirectory costs a handful of stats, not a walk
+#: to the root.
+CONTEXT_SETTINGS_DEPTH = 8
 
 #: Below this the ring would be a stub too short to read as a gauge, so an
 #: agent with a nearly empty context still shows a legible pip.
@@ -447,6 +488,52 @@ CONTEXT_RING_FLOOR = 4
 #: sweep, and motion outranks a level; the blocking states pin the ring at full,
 #: where it means "you" rather than "tokens".
 CONTEXT_RING_IDLE = _flag("MFT_CONTEXT_RING_IDLE", True)
+
+#: A resting gauge fades to this over :data:`DONE_FADE_SECONDS`, so a reading
+#: carries its own age.
+#:
+#: The number stays on the ring -- you can still read it by going and looking --
+#: but it stops competing for your eye with a session that finished a minute ago.
+#: Deliberately not zero: an unlit gauge and a session with no reading at all
+#: would be the same encoder, and those are very different things (invariant 6).
+#:
+#: This is the ring's *own* level, which is what makes it possible at all: the
+#: ring's brightness is channel 6 and the RGB's is channel 3, so the gauge can go
+#: quiet while the hue behind it does the opposite. A `done` session that you
+#: never come and look at ramps back up on attention debt; its gauge does not
+#: come with it, because the reading did not get any more urgent, only older.
+GAUGE_STALE_LEVEL = 0.08
+
+# --- Turn elapsed -----------------------------------------------------------
+# What the ring says while an agent is actually running.
+
+#: How long this turn has been going, as a ring that fills.
+#:
+#: This is the one thing about a running agent you cannot see from anywhere else.
+#: Colour says what it is doing, brightness says how recently it called a tool
+#: and sags when it stops -- but nothing said *how long*, and "which of these six
+#: has been grinding for twenty minutes" is the question you are actually asking
+#: when you look at a board full of orange.
+#:
+#: `MFT_TURN_RING=0` puts the tool-call arc back (:func:`mft.render._arc_ring`),
+#: which is what this replaced. The arc is a fine thing to watch and a redundant
+#: one to spend the ring on: its spin rate is tool-call frequency, and tool-call
+#: frequency is already the brightness shimmer.
+TURN_RING = _flag("MFT_TURN_RING", True)
+
+#: A full ring. Past it the ring simply stays full, which reads correctly: the
+#: difference between twenty minutes and forty is not one you act on differently.
+TURN_RING_FULL_SECONDS = float(os.environ.get("MFT_TURN_RING_SECONDS", 900.0))
+
+#: The knee of the log curve, in seconds -- roughly, how long a turn runs before
+#: the ring is visibly off its floor.
+#:
+#: Linear was unreadable: nearly every turn lives in the first two minutes, which
+#: on a linear ring to fifteen is the bottom eighth and indistinguishable from
+#: the floor. Log spends the first quarter of the ring on the first half-minute
+#: and the last quarter on the last ten, so short turns are legible and long ones
+#: still have somewhere to go.
+TURN_RING_KNEE_SECONDS = 20.0
 
 # --- Terminal tab -----------------------------------------------------------
 # The same state, in the one other place you are already looking: the tab strip.

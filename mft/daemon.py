@@ -314,7 +314,7 @@ class Visualizer:
         session.context_tokens = tokens
         if model:
             session.model = model
-        session.context_limit = context_mod.limit_for_model(session.model)
+        session.context_limit = context_mod.limit_for_model(session.model, session.cwd)
 
     # -- terminal tab -------------------------------------------------------
 

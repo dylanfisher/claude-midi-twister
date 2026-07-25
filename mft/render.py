@@ -39,12 +39,21 @@ class Cell:
     clamps too (:meth:`mft.twister.Twister.cc`), but by then the cell has
     already been compared against, blended into and handed over from -- and a
     ring of -158 is not a thing to reason about.
+
+    ``ring_level`` is the exception, and it is opt-in: ``None`` means "whatever
+    the cell is lit at", which is what every gesture, overlay and blocking state
+    wants -- one encoder, one brightness. A state sets it only when the ring is
+    saying something the hue is not, which on this board is the context gauge and
+    nothing else. It is free to be a separate number because it is a separate
+    channel (6, against the RGB's 3); it is *worth* being one only where the two
+    have genuinely diverged.
     """
 
     color: str | int | None = None
     rgb_anim: int = config.ANIM_NONE
     ring: int = 0
     brightness: float = 0.0
+    ring_level: float | None = None
 
     def __post_init__(self) -> None:
         ring = max(0, min(127, int(self.ring)))
@@ -53,6 +62,15 @@ class Cell:
             object.__setattr__(self, "ring", ring)
         if brightness != self.brightness:
             object.__setattr__(self, "brightness", brightness)
+        if self.ring_level is not None:
+            level = max(0.0, min(1.0, float(self.ring_level)))
+            if level != self.ring_level:
+                object.__setattr__(self, "ring_level", level)
+
+    @property
+    def ring_light(self) -> float:
+        """What the ring is actually lit at."""
+        return self.brightness if self.ring_level is None else self.ring_level
 
 
 def _sweep(now: float, rate: float) -> int:
@@ -123,19 +141,40 @@ def _arc_ring(session: Session) -> int:
     return int(fraction * 127)
 
 
+def _turn_ring(session: Session, now: float) -> int:
+    """A stopwatch: the ring fills with how long this turn has been running.
+
+    Log-scaled, because turn lengths are. Nearly every turn finishes inside two
+    minutes and the ones you care about run to twenty, and no linear ring shows
+    you both -- on a linear scale to fifteen minutes the entire common case is
+    the bottom eighth. The knee spends the first quarter of the ring on the first
+    half-minute, so a turn is legibly *moving* from the moment it starts.
+
+    Saturates rather than wrapping. A wrap would be ambiguous with a fresh turn,
+    which is the one reading that must never be wrong, and there is nothing you
+    do differently at forty minutes than at twenty.
+    """
+    started = session.turn_started_at
+    if started is None:
+        # Adopted mid-turn by `mft.discover`, or working without a prompt of its
+        # own: we know when we started *believing* it was working, and that is
+        # the same number for every purpose except the first few seconds.
+        started = session.state_since
+    elapsed = max(0.0, now - started)
+    knee = config.TURN_RING_KNEE_SECONDS
+    span = math.log1p(config.TURN_RING_FULL_SECONDS / knee)
+    fraction = min(1.0, math.log1p(elapsed / knee) / span) if span > 0 else 0.0
+    return max(config.CONTEXT_RING_FLOOR, int(127 * fraction))
+
+
 def _gauge_ring(session: Session, fallback: int) -> int:
     """A fuel gauge: the ring fills as the agent's context window fills.
 
-    Activity is already carried by brightness -- every tool call kicks it back
-    to full -- so the ring is free to show the one thing about a long-running
-    agent you otherwise cannot see until it compacts on you.
-
-    ``fallback`` is what the ring says when there is no reading (a fresh session,
-    or a transcript we couldn't read), and it differs by state rather than being
-    one constant: a running agent shows the rotating tool-call arc, so it never
-    sits there looking empty when it isn't, while a resting one shows its pip. An
-    arc is a spinner, and a spinner on a session that stopped working means
-    nothing -- it would be frozen at whatever segment the last call left it on.
+    ``fallback`` is what the ring says when there is no reading -- a fresh
+    session, a session just cleared, or a transcript we couldn't read -- which is
+    the resting pip. Deliberately not the tool-call arc: an arc is a spinner, and
+    a spinner on a session that stopped working is frozen at whatever segment the
+    last call left it on, which says nothing at all.
     """
     fraction = session.context_fraction if config.CONTEXT_RING else None
     if fraction is None:
@@ -149,6 +188,21 @@ def _resting_gauge(session: Session) -> int:
     if not config.CONTEXT_RING_IDLE:
         return PIP
     return _gauge_ring(session, PIP)
+
+
+def _gauge_level(session: Session, now: float, base: float) -> float:
+    """The gauge's own brightness: ``base`` when the session just stopped, fading
+    to :data:`config.GAUGE_STALE_LEVEL` over the same window the `done` flash
+    recedes across.
+
+    A reading ages. Ten seconds after a turn ends it is what the session is; ten
+    minutes after, it is what the session was when you last had a reason to care.
+    The fade is that difference, and it is on the ring's own channel so that a
+    neglected `done` encoder can ramp its hue back up to nag you without dragging
+    a stale number up with it -- the reading did not get more urgent, only older.
+    """
+    age = max(0.0, now - session.state_since)
+    return _lerp(base, config.GAUGE_STALE_LEVEL, age / config.DONE_FADE_SECONDS)
 
 
 def _working_brightness(session: Session, now: float) -> float:
@@ -176,6 +230,7 @@ def render(session: Session, now: float) -> Cell:
     anim = config.STATE_ANIM.get(state, config.ANIM_NONE)
     ring = 0
     brightness = config.ACTIVE_BRIGHTNESS
+    ring_level: float | None = None
 
     if state == "ended":
         return Cell(None, config.ANIM_NONE, 0, 0.0)
@@ -187,9 +242,13 @@ def render(session: Session, now: float) -> Cell:
         # life in, so it is where the number is worth the most.
         ring = _resting_gauge(session)
         brightness = config.IDLE_BRIGHTNESS
+        ring_level = _gauge_level(session, now, brightness)
 
     elif state == "working":
-        ring = _gauge_ring(session, _arc_ring(session))
+        # The stopwatch, not the gauge. See :data:`config.TURN_RING`: the window
+        # barely moves during a turn and you can do nothing about it if it does,
+        # where "how long has this been going" is the whole reason you looked.
+        ring = _turn_ring(session, now) if config.TURN_RING else _arc_ring(session)
         brightness = _working_brightness(session, now)
 
     elif state in SWEEP_RATE:
@@ -237,6 +296,10 @@ def render(session: Session, now: float) -> Cell:
         # once it drops below the level underneath it.
         ring = max(_resting_gauge(session), int(127 * fade))
         brightness = _lerp(config.IDLE_BRIGHTNESS, config.ACTIVE_BRIGHTNESS, fade)
+        # Taken before the debt ramp below, on purpose: the gauge follows the
+        # flash down and then stays down, while the hue is free to come back up
+        # and ask for you.
+        ring_level = _gauge_level(session, now, brightness)
         debt = attention_debt(session, now)
         brightness = max(
             brightness, _lerp(config.IDLE_BRIGHTNESS, config.DONE_DEBT_CEILING, debt)
@@ -247,4 +310,4 @@ def render(session: Session, now: float) -> Cell:
         # wonder which agent is running with permissions turned off.
         color = config.UNSUPERVISED_COLOR
 
-    return Cell(color, anim, ring, brightness)
+    return Cell(color, anim, ring, brightness, ring_level)

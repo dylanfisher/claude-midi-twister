@@ -15,6 +15,16 @@ Two things this deliberately does not do. It never reads the whole file --
 transcripts run to megabytes and this happens on the HTTP thread -- and it skips
 sidechain entries, which are subagent messages living in the parent's transcript
 and carrying their own much smaller contexts.
+
+The window that total is measured against is the awkward half. The transcript
+names the model on every assistant message -- ``claude-opus-5`` -- and that name
+does not say which *window* it is: the 1M variant is spelled ``opus[1m]`` in
+``settings.json`` and spelled exactly like the 200k one everywhere else. So the
+family comes off the transcript, where it is authoritative and follows a
+mid-session ``/model``, and the window marker comes off the settings files, which
+are the only place it is written down. Getting this wrong is not a near miss: a
+1M session at 11% full renders at 55%, which is a gauge lying in the direction
+that makes you close a session you did not need to.
 """
 
 from __future__ import annotations
@@ -29,9 +39,101 @@ from . import config
 log = logging.getLogger("mft.context")
 
 
-def limit_for_model(model: str) -> int:
-    """Context window for a model id, by substring match."""
+def _marked_window(name: str) -> Optional[int]:
+    """The window a model id spells out, or ``None`` if it doesn't spell one."""
+    for token, limit in config.CONTEXT_WINDOW_MARKERS:
+        if token in name:
+            return limit
+    return None
+
+
+def _family(name: str) -> str:
+    """Which model family a name belongs to, or ``""``."""
+    for token, _ in config.CONTEXT_LIMITS:
+        if token in name:
+            return token
+    return ""
+
+
+#: path -> (mtime, model). A settings file is read once and then only again when
+#: it changes: this is reached from the HTTP thread once per session per poll,
+#: and `/model` writes the file, so the stat is both the cheap part and the
+#: correct invalidation.
+_settings_cache: dict[str, tuple[float, str]] = {}
+
+
+def _settings_model(path: str) -> str:
+    """The ``model`` a settings file names, or ``""`` -- never an exception.
+
+    A settings file that is missing, unreadable or malformed is not an error
+    here. It is one of several places a model might be named and the caller has
+    a perfectly good answer without it.
+    """
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        _settings_cache.pop(path, None)
+        return ""
+    cached = _settings_cache.get(path)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        with open(path, "rb") as handle:
+            data = json.loads(handle.read().decode("utf-8", errors="replace"))
+        model = str(data.get("model") or "") if isinstance(data, dict) else ""
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        log.debug("unreadable settings at %s: %s", path, exc)
+        model = ""
+    _settings_cache[path] = (mtime, model)
+    return model
+
+
+def configured_model(cwd: str = "") -> str:
+    """The model the settings files select, nearest first, or ``""``.
+
+    Claude Code's own precedence, minus the two layers this cannot see: an
+    enterprise policy file, and a `--model` passed on the command line. Both of
+    those out-rank everything here, so a machine using them gets the transcript's
+    answer and no marker -- which is the old behaviour, not a wrong one.
+    """
+    if not config.CONTEXT_SETTINGS_MODEL:
+        return ""
+    roots: list[str] = []
+    directory = os.path.abspath(cwd) if cwd else ""
+    while directory and len(roots) < config.CONTEXT_SETTINGS_DEPTH:
+        roots.append(directory)
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            break
+        directory = parent
+    for root in roots:
+        for relative in config.CONTEXT_SETTINGS_FILES:
+            model = _settings_model(os.path.join(root, relative))
+            if model:
+                return model
+    return _settings_model(config.CONTEXT_SETTINGS_USER)
+
+
+def limit_for_model(model: str, cwd: str = "") -> int:
+    """Context window for a model id, by substring match.
+
+    ``cwd`` is the session's, and only widens the search for a window marker --
+    see the module docstring. The family always comes from ``model``.
+    """
     name = (model or "").lower()
+    marked = _marked_window(name)
+    if marked is not None:
+        return marked
+
+    configured = configured_model(cwd).lower()
+    marked = _marked_window(configured)
+    # Only when the two agree about *which model this is*. A settings file
+    # naming `sonnet[1m]` says nothing about the opus in the transcript in front
+    # of us -- that is a session someone switched with `/model`, and the
+    # transcript is the one that watched it happen.
+    if marked is not None and _family(configured) and _family(configured) == _family(name):
+        return marked
+
     for token, limit in config.CONTEXT_LIMITS:
         if token in name:
             return limit

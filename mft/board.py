@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import time
+from dataclasses import replace
 from functools import lru_cache
 from itertools import islice
 from typing import Iterable, Optional, Sequence
@@ -766,9 +767,7 @@ def arbitrate_motion(board: list[Cell], sessions: Sequence[Session]) -> None:
     animated.sort(key=rank)
     for session in animated[1:]:
         cell = board[session.slot]
-        board[session.slot] = Cell(
-            cell.color, config.SLOW_ANIM, cell.ring, cell.brightness
-        )
+        board[session.slot] = replace(cell, rgb_anim=config.SLOW_ANIM)
 
 
 def subagent_owners(
@@ -919,7 +918,13 @@ def dim(board: list[Cell], gain: float, spared: frozenset[int] = frozenset()) ->
         if level <= config.SLEEP_DARK_LEVEL:
             board[slot] = BLANK
             continue
-        board[slot] = Cell(cell.color, config.ANIM_NONE, int(cell.ring * gain), level)
+        # The ring's own level goes down with everything else when it has one --
+        # a gauge that stayed lit on a sleeping board would be the one thing
+        # still shining in a dark room, which is exactly what sleeping is for.
+        ring_level = None if cell.ring_level is None else cell.ring_level * gain
+        board[slot] = Cell(
+            cell.color, config.ANIM_NONE, int(cell.ring * gain), level, ring_level
+        )
 
 
 def ambient(board: list[Cell], now: float) -> None:
