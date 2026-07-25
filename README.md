@@ -103,8 +103,8 @@ machinery is available directly:
 ```
 
 On the way out, the board fills from the top-left corner in a spiral to the
-centre, then all sixteen encoders run the whole colour wheel together and fade
-to black. That's not decoration either: seeing it is how you know the daemon
+centre, holds a beat, then all sixteen encoders dim together to black on the
+one violet — the colour does nothing on the way out, the lamp just goes down. That's not decoration either: seeing it is how you know the daemon
 exited cleanly rather than died. It takes under four seconds — something is
 waiting on it.
 

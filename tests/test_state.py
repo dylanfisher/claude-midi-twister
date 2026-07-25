@@ -788,21 +788,28 @@ class Overlays(unittest.TestCase):
         filled = board.compose([], overlay.spiral, [overlay])
         self.assertTrue(all(c.brightness > 0.95 for c in filled[:16]))
 
-    def test_shutdown_cycles_the_wheel_in_unison_then_goes_dark(self):
+    def test_shutdown_dims_in_unison_on_one_hue_then_goes_dark(self):
         overlay = board.ShutdownOverlay(0.0)
-        seen = set()
+        seen, levels = set(), []
         t = overlay.spiral
-        while t < overlay.spiral + overlay.cycle:
+        while t < overlay.duration - 0.01:
             cells = board.compose([], t, [overlay])[: config.ENCODERS_PER_BANK]
             # Every encoder wears the same hue at the same brightness: sixteen
-            # knobs as one object is the whole point of the cycle.
+            # knobs as one object is the whole point of the exit.
             self.assertEqual(len({c.color for c in cells}), 1, t)
             self.assertEqual(len({round(c.brightness, 6) for c in cells}), 1, t)
             seen.add(cells[0].color)
+            levels.append(cells[0].brightness)
             t += 0.05
-        # A full trip round the wheel, not a wobble in one corner of it.
-        self.assertLess(min(seen), 8)
-        self.assertGreater(max(seen), 119)
+        # The colour does nothing on the way out -- only the lamp goes down.
+        self.assertEqual(seen, {overlay.hue, None}, seen)
+        self.assertAlmostEqual(levels[0], 1.0, places=2)
+        # Held whole, then monotonically dimmer: no swell, no flicker back up.
+        held = board.compose([], overlay.spiral + overlay.hold * 0.5, [overlay])
+        self.assertAlmostEqual(held[0].brightness, 1.0, places=2)
+        for here, then in zip(levels, levels[1:]):
+            self.assertLessEqual(then, here + 1e-9)
+        self.assertEqual(levels[-1], 0.0)
 
         # It ends genuinely off, not merely dim: an encoder still holding a hue
         # at the hardware's floor brightness is an encoder still lit.

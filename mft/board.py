@@ -296,13 +296,15 @@ class ShutdownOverlay(Overlay):
 
     * the **spiral** walks :func:`spiral_path` from the corner inwards, every
       encoder it passes fading up in the device's own violet;
-    * the **cycle** then runs the full hue wheel with all sixteen encoders on
-      *one* hue. Unison is the load-bearing part -- every other animation on
-      this board is per-encoder, so sixteen knobs changing colour as a single
-      object is a thing that can only mean the end;
-    * the **fade** takes the whole board out uniformly, and all the way *off*
-      rather than down to the hardware's minimum brightness, which is still a
-      lit encoder wearing a colour.
+    * the **hold** leaves the completed board whole and still for a beat, so it
+      reads as somewhere the gesture arrived rather than a frame on the way
+      down;
+    * the **fade** dims the whole board out uniformly -- one hue throughout, no
+      hue travel: the colour is not doing anything on the way out, the lamp is
+      simply going down. All sixteen go together, which is the load-bearing
+      part, since every other animation here is per-encoder. And it goes all the
+      way *off* rather than down to the hardware's minimum brightness, which is
+      still a lit encoder wearing a colour.
 
     Unwinding the spiral backwards would be a fourth gesture arguing with the
     first; letting go everywhere at once is what a clean exit is. Seeing this at
@@ -315,22 +317,22 @@ class ShutdownOverlay(Overlay):
         bank: int = 0,
         spiral: float = config.SHUTDOWN_SPIRAL_SECONDS,
         rise: float = config.SHUTDOWN_RISE_SECONDS,
-        cycle: float = config.SHUTDOWN_CYCLE_SECONDS,
+        hold: float = config.SHUTDOWN_HOLD_SECONDS,
         fade: float = config.SHUTDOWN_FADE_SECONDS,
     ) -> None:
         self.started_at = started_at
         self.bank = bank
         self.spiral = max(0.01, spiral)
         #: Clamped below the travel time: a rise longer than the journey would
-        #: mean the centre never reaches full before the cycle starts.
+        #: mean the centre never reaches full before the hold starts.
         self.rise = max(0.01, min(rise, self.spiral * 0.5))
-        self.cycle = max(0.0, cycle)
+        self.hold = max(0.0, hold)
         self.fade = max(0.01, fade)
-        self.base_hue = config.COLORS.get(config.SHUTDOWN_COLOR, config.SHUTDOWN_COLOR)
+        self.hue = int(config.COLORS.get(config.SHUTDOWN_COLOR, config.SHUTDOWN_COLOR))
 
     @property
     def duration(self) -> float:
-        return self.spiral + self.cycle + self.fade
+        return self.spiral + self.hold + self.fade
 
     def done(self, now: float) -> bool:
         return now - self.started_at >= self.duration
@@ -345,19 +347,6 @@ class ShutdownOverlay(Overlay):
             for step, slot in enumerate(path)
         ]
 
-    def _hue(self, t: float) -> int:
-        """One hue for the whole board, off the clock alone.
-
-        Position never enters into it, which is what keeps the sixteen encoders
-        reading as one object: during the spiral they are all the boot violet,
-        and during the cycle they all travel the wheel together and arrive back
-        where they started.
-        """
-        if t <= self.spiral or not self.cycle:
-            return int(self.base_hue)
-        turn = min(1.0, (t - self.spiral) / self.cycle)
-        return int((self.base_hue + turn * 128) % 128)
-
     def apply(self, board: list[Cell], now: float, claimed=frozenset()) -> None:
         t = now - self.started_at
         if t < 0 or t >= self.duration:
@@ -365,9 +354,9 @@ class ShutdownOverlay(Overlay):
         # One envelope over the whole board, applied after the per-encoder rise:
         # this is the "uniformly out" part, and it has to be indifferent to
         # where in the spiral a given encoder was lit.
-        gone = (t - self.spiral - self.cycle) / self.fade
+        gone = (t - self.spiral - self.hold) / self.fade
         gain = 1.0 - _smoothstep(gone) if gone > 0 else 1.0
-        hue = self._hue(t)
+        hue = self.hue
 
         for slot, arrival in self._arrivals():
             if not 0 <= slot < len(board):

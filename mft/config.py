@@ -471,30 +471,32 @@ SPAWN_SETTLE = 0.55
 
 #: Shutdown is a colour wipe, not a word. One head leaves the top-left corner
 #: and spirals inward to the centre, filling the board in the device's own
-#: violet; the full board then cycles the entire hue wheel *in unison* and fades
-#: to genuine darkness. It says "closed deliberately" without spending the four
-#: seconds a legible word costs -- the daemon should not hold the MIDI port on
-#: the way out (`--stop` gives it five before complaining).
+#: violet; the full board holds a beat, then dims in unison to genuine darkness.
+#: It says "closed deliberately" without spending the four seconds a legible
+#: word costs -- the daemon should not hold the MIDI port on the way out
+#: (`--stop` gives it five before complaining).
 #: Time for the head to walk all 16 encoders, corner to centre.
 SHUTDOWN_SPIRAL_SECONDS = 1.6
 #: How long one encoder takes to reach full once the head arrives. Overlaps the
 #: travel, so the spiral reads as a moving edge rather than as pixels switching
 #: on one at a time.
 SHUTDOWN_RISE_SECONDS = 0.3
-#: One full trip round the wheel with every encoder on the same hue. Unison is
-#: the point: sixteen encoders changing colour as one object is a thing the
-#: board does at no other moment, so it can only mean the end.
-SHUTDOWN_CYCLE_SECONDS = 1.2
-#: Uniform fade to black -- and to actually *off*, not to the hardware's minimum
-#: brightness, which is still a lit encoder wearing a colour.
-SHUTDOWN_FADE_SECONDS = 0.9
+#: The completed board, whole and still, before it starts letting go. Long
+#: enough to read as a state the board arrived at rather than a frame it passed
+#: through on the way down.
+SHUTDOWN_HOLD_SECONDS = 0.9
+#: Uniform dim to black -- one hue throughout, no hue travel: the colour is not
+#: doing anything on the way out, the lamp is simply going down. And all the way
+#: *off*, not to the hardware's minimum brightness, which is still a lit encoder
+#: wearing a colour.
+SHUTDOWN_FADE_SECONDS = 1.4
 #: Below this the encoder is switched off (:data:`DARK_VALUE`) rather than
 #: dimmed further -- an encoder at the bottom of the fade is still an encoder
 #: wearing a hue, and the board has to end with nothing on it at all.
 SHUTDOWN_DARK_LEVEL = 0.02
-#: Where the spiral starts on the wheel before the cycle carries it round. The
-#: boot word is white and has no hue to inherit, so the device's own violet is
-#: named here -- it is also where the idle field's hue band ends up.
+#: The one hue the whole gesture wears, start to finish. The boot word is white
+#: and has no hue to inherit, so the device's own violet is named here -- it is
+#: also where the idle field's hue band ends up.
 SHUTDOWN_COLOR = "violet"
 
 #: Banner colour for transient words pushed onto the board later (RATE on a

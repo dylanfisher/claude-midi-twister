@@ -530,8 +530,8 @@ class Visualizer:
             self._stop.wait(period)
 
     def shutdown_animation(self) -> None:
-        """A spiral in from the top-left corner, one shared trip round the hue
-        wheel, then dark.
+        """A spiral in from the top-left corner, a held beat, then all sixteen
+        dimming together to dark.
 
         The point is not decoration: seeing it means the daemon exited on
         purpose rather than dying -- and unlike boot, something is waiting on it
