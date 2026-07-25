@@ -232,8 +232,48 @@ def named_interpreter(python: Path) -> Path:
         print(f"couldn't write {copy}: {exc}")
         return python
 
-    # The copy carries the original's ad-hoc signature, which covers contents
-    # rather than filename -- but verify rather than assume.
+    # Re-sign, because the copy arrives *broken* and nothing says so. The
+    # interpreter we copied lives inside a bundle of its own --
+    # `Python.framework/.../Python.app/Contents/MacOS/Python` -- and its ad-hoc
+    # signature seals that bundle's Info.plist along with the binary. Copying
+    # the executable out leaves the plist behind, so the signature no longer
+    # verifies: `codesign --verify` says "invalid Info.plist (plist or
+    # signature have been modified)".
+    #
+    # That is not cosmetic. TCC will not raise an Automation prompt for a
+    # client whose signature fails to validate -- it refuses with -1743 and no
+    # dialog, which is indistinguishable from a denial you never made and
+    # cannot grant, because there is nothing in Privacy & Security to toggle.
+    # A press could raise the app and never the tab, forever. Signing the
+    # *app* doesn't help: the daemon spawns `osascript`, so the client TCC
+    # asks about is this interpreter, and the grant is recorded against its
+    # path -- see :func:`sign` for what the bundle's signature is really for.
+    #
+    # Ad-hoc again is enough: it makes the copy a standalone valid binary
+    # rather than a fragment of a bundle it is no longer in.
+    signed = subprocess.run(
+        ["codesign", "--force", "--sign", "-", str(copy)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if signed.returncode != 0:
+        print(f"couldn't re-sign {copy}: {signed.stderr.strip()}")
+        print("the daemon will run, but macOS will never ask to let it raise tabs")
+
+    # Verify rather than assume -- twice, because the two failures look nothing
+    # alike. A bad signature runs perfectly and only costs you Automation; a
+    # bad copy doesn't start at all.
+    verify = subprocess.run(
+        ["codesign", "--verify", "--strict", str(copy)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if verify.returncode != 0:
+        print(f"{copy} won't verify: {verify.stderr.strip()}")
+        print("Automation prompts will be skipped; a press can only raise the app")
+
     check = subprocess.run(
         [str(copy), "-c", "import mido"], capture_output=True, text=True, check=False
     )
@@ -319,6 +359,17 @@ def sign(app: Path) -> bool:
     and it costs one thing worth knowing: the requirement is the code hash, so
     every rebuild is a different app as far as TCC is concerned and you get
     asked once more. Rebuilds are rare; being asked is the whole point.
+
+    One correction to the paragraph above, learned the hard way: the *focus*
+    grant is not stored against this bundle. The daemon reaches terminals by
+    spawning `osascript`, so the client TCC weighs is the process that spawned
+    it -- the interpreter in the venv -- and the row lands under that binary's
+    path, not under `com.dylanfisher.claude-twister`. What the bundle supplies
+    is the context the prompt is asked in: the usage description it reads out,
+    and the name it is asked under. Both halves have to hold, and the
+    interpreter's is the half that silently doesn't -- see
+    :func:`named_interpreter`, which is where a press that can never raise a
+    tab actually comes from.
     """
     if not shutil.which("codesign"):
         print("codesign missing; the app will work but can't be granted Automation")
