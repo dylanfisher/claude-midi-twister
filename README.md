@@ -80,8 +80,18 @@ Twister found, check it's plugged in*. Logs go to
 Rebuild it after moving the repo — it bakes in absolute paths. If Spotlight
 can't find it, use `--dest /Applications`, which is always indexed.
 
+Building also leaves a copy of the venv's interpreter at
+`.venv/bin/claude-twister`, and the app runs the daemon through that. macOS
+names a process after the executable file it ran, so this is the difference
+between finding *claude-twister* in Activity Monitor and hunting through six
+processes called *Python*. Nothing else changes: it's the same interpreter,
+sitting in the same `bin/`, so it finds the same venv. Symlinking doesn't work
+— the kernel resolves through it and reports `Python` anyway — and neither does
+rewriting `argv[0]`, which only touches the command line. Rebuild it after a
+Python minor upgrade, alongside the venv itself.
+
 To start at login instead, drop a launchd plist in `~/Library/LaunchAgents`
-pointing at `.venv/bin/python -m mft.daemon`.
+pointing at `.venv/bin/claude-twister -m mft.daemon`.
 
 ## How it works
 

@@ -29,6 +29,11 @@ REPO = Path(__file__).resolve().parents[1]
 BUNDLE_ID = "com.dylanfisher.claude-twister"
 APP_NAME = "Claude Twister"
 
+#: What the daemon calls itself in Activity Monitor and `ps`. Keep it under 16
+#: characters: the kernel's copy of the name (`p_comm`) is truncated there, so
+#: "claude-midi-twister" would show up as "claude-midi-twis".
+PROC_NAME = "claude-twister"
+
 
 # --- icon -------------------------------------------------------------------
 # One encoder, lit. Distance fields with smooth edges, so it's antialiased
@@ -161,6 +166,81 @@ def build_icns(png: bytes, out: Path) -> bool:
     return True
 
 
+# --- a name worth reading ---------------------------------------------------
+# Left alone, the daemon appears in Activity Monitor as "Python", indis-
+# tinguishable from every other script you have running. macOS names a process
+# after the executable *file* it exec'd, so the only way to change it is to
+# give the interpreter another name on disk.
+#
+# Symlinks don't do it -- tried both a link to `bin/python3.14` and one
+# straight at the framework binary, and the kernel resolves through either and
+# reports "Python" anyway. Neither does rewriting argv[0] (`exec -a`,
+# setproctitle): that changes the Command column, not the name. What works is a
+# plain copy of the interpreter under the name we want, parked in the venv's
+# bin/ so that sys.prefix still finds the venv beside it.
+#
+# The copy is pinned to the interpreter it was made from, which matters only
+# across a Python minor upgrade -- the same moment the venv itself has to be
+# rebuilt, so it costs no failure mode that wasn't already there.
+
+
+def _real_executable(python: Path) -> Path | None:
+    """Ask an interpreter which file the kernel actually exec'd.
+
+    Not the same question as `sys.executable`, and not answerable by resolving
+    symlinks: Homebrew's `bin/python3.14` is a stub that re-execs the binary
+    inside `Python.app`, and that re-exec is what names the process. Only the
+    process itself can say where it ended up.
+    """
+    probe = (
+        "import ctypes;"
+        "b=ctypes.create_string_buffer(4096);"
+        "n=ctypes.c_uint32(4096);"
+        "ctypes.CDLL(None)._NSGetExecutablePath(b, ctypes.byref(n));"
+        "print(b.value.decode())"
+    )
+    result = subprocess.run(
+        [str(python), "-c", probe], capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        return None
+    path = Path(result.stdout.strip())
+    return path if path.is_file() else None
+
+
+def named_interpreter(python: Path) -> Path:
+    """Return an interpreter named PROC_NAME, or `python` if that fell over.
+
+    Falling back is deliberate: an app that starts under a dull name beats one
+    that doesn't start.
+    """
+    real = _real_executable(python)
+    if real is None:
+        print(f"couldn't locate the real interpreter behind {python}")
+        return python
+
+    copy = python.parent / PROC_NAME
+    try:
+        shutil.copy2(real, copy)
+        copy.chmod(0o755)
+    except OSError as exc:
+        print(f"couldn't write {copy}: {exc}")
+        return python
+
+    # The copy carries the original's ad-hoc signature, which covers contents
+    # rather than filename -- but verify rather than assume.
+    check = subprocess.run(
+        [str(copy), "-c", "import mido"], capture_output=True, text=True, check=False
+    )
+    if check.returncode != 0:
+        print(f"{copy} doesn't run; keeping {python.name}")
+        copy.unlink(missing_ok=True)
+        return python
+
+    print(f"interpreter copy: {copy}")
+    return copy
+
+
 # --- the executable ---------------------------------------------------------
 
 LAUNCHER = """#!/bin/bash
@@ -170,6 +250,9 @@ LAUNCHER = """#!/bin/bash
 # Liveness comes from the daemon's own pid file rather than `pgrep -f`, which
 # matches any process that merely mentions the daemon on its command line --
 # including the shell you typed it into.
+#
+# PYTHON is a copy of the venv's interpreter renamed so Activity Monitor has
+# something to call it; see named_interpreter() in app/make_app.py.
 PYTHON={python}
 REPO={repo}
 LOG="$HOME/Library/Logs/claude-twister.log"
@@ -180,7 +263,7 @@ notify() {{
 }}
 
 if [ ! -x "$PYTHON" ]; then
-    notify "Python missing at $PYTHON — rebuild the venv"
+    notify "Python missing at $PYTHON — rebuild the venv, then app/make_app.py"
     exit 1
 fi
 
@@ -245,7 +328,7 @@ def build(dest_dir: Path, python: Path) -> Path:
     launcher = macos / "claude-twister"
     launcher.write_text(
         LAUNCHER.format(
-            python=f'"{python}"', repo=f'"{REPO}"', name=APP_NAME
+            python=f'"{named_interpreter(python)}"', repo=f'"{REPO}"', name=APP_NAME
         )
     )
     launcher.chmod(0o755)

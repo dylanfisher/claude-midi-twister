@@ -25,10 +25,12 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 curl -s localhost:7654/status | python3 -m json.tool
 .venv/bin/python install_hooks.py --print|--check|--uninstall
 .venv/bin/python app/make_app.py                   # -> ~/Applications/Claude Twister.app
+                                                   #    + .venv/bin/claude-twister
 ```
 
 Always use `.venv/bin/python`, never bare `python3` — the venv holds the MIDI
-deps. There is no linter, formatter, or type checker configured; match the
+deps. `.venv/bin/claude-twister` is that same interpreter under a name Activity
+Monitor can show; the app bundle runs the daemon through it, and so can you. There is no linter, formatter, or type checker configured; match the
 surrounding code by hand.
 
 ### Developing without a Twister
