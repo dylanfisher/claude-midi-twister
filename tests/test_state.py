@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mft import board, config, context, twister  # noqa: E402
-from mft.render import attention_debt, render  # noqa: E402
+from mft.render import Cell, attention_debt, render  # noqa: E402
 from mft.state import SessionTable, apply_event, classify_notification  # noqa: E402
 
 
@@ -454,6 +454,25 @@ class Rendering(unittest.TestCase):
             self.assertTrue(0 <= cell.ring <= 127, state)
             self.assertTrue(0.0 <= cell.brightness <= 1.0, state)
 
+    def test_every_state_has_a_rank(self):
+        """One vocabulary, not three. A state with a colour but no rank sorts
+        silently last and quietly loses every motion arbitration it enters."""
+        self.assertEqual(set(config.STATE_COLORS), set(config.STATE_PRIORITY))
+        for state in config.STATE_ANIM:
+            self.assertIn(state, config.STATE_PRIORITY)
+
+    def test_a_cell_cannot_be_built_out_of_range(self):
+        """The clamp lives on the Cell rather than on each of the dozen eased
+        ramps that build one, so an overlay asked for a frame outside its own
+        window is a cell at the end of its ramp and never a ring of -158."""
+        self.assertEqual(Cell(ring=200, brightness=4.0).ring, 127)
+        self.assertEqual(Cell(ring=200, brightness=4.0).brightness, 1.0)
+        self.assertEqual(Cell(ring=-158, brightness=-0.3).ring, 0)
+        self.assertEqual(Cell(ring=-158, brightness=-0.3).brightness, 0.0)
+        # ...and leaves a legal one exactly as it was asked for.
+        legal = Cell("red", config.ANIM_NONE, 64, 0.5)
+        self.assertEqual((legal.ring, legal.brightness), (64, 0.5))
+
     def test_ended_encoder_goes_dark(self):
         self.session.state = "ended"
         cell = render(self.session, 0.0)
@@ -730,6 +749,56 @@ class _RecordingTwister(twister.NullTwister):
 
 
 class Overlays(unittest.TestCase):
+    def _every_overlay(self, session, t0):
+        """One of each, including the two that are driven by a second event
+        arriving later -- which is what puts a frame *before* the ramp they
+        then compute from."""
+        lamp = board.LampTestOverlay(t0)
+        lamp.dismiss(t0 + 0.5)
+        compaction = board.CompactOverlay(session, t0)
+        compaction.finish(t0 + 1.0)
+        return [
+            board.TextOverlay(config.BOOT_WORD, t0),
+            board.TextOverlay("RATE", t0, color=config.BANNER_COLOR),
+            lamp,
+            board.ShutdownOverlay(t0),
+            board.SpawnOverlay(session, t0),
+            board.ClearOverlay(session, t0),
+            compaction,
+            board.PeekOverlay(session, t0),
+        ]
+
+    def test_no_overlay_ever_paints_outside_the_hardware(self):
+        """Every one of these is an eased ramp of an elapsed time, and several
+        get their start or end from an event that arrives mid-flight. Asked for
+        a frame outside its own window, an overlay should land on the end of its
+        ramp -- not compute a negative fill and hand it to the wire."""
+        table = SessionTable()
+        session = table.ensure("s", "/tmp/p")
+        session.tool_history.extend(["Read", "Bash", "Grep"])
+        set_subagents(session, 2)
+        overlays = self._every_overlay(session, 10.0)
+        for state in config.STATE_PRIORITY:
+            session.state = state
+            for step in range(-50, 250):  # deliberately starts before t0
+                for cell in board.compose(table.all(), 10.0 + step * 0.02, overlays):
+                    self.assertTrue(0 <= cell.ring <= 127, (state, cell))
+                    self.assertTrue(0.0 <= cell.brightness <= 1.0, (state, cell))
+
+    def test_overlays_do_not_run_off_a_short_board(self):
+        """Overlays index by slot, and a board is not always 64 long."""
+        table = SessionTable()
+        session = table.ensure("s", "/tmp/p")
+        session.tool_history.append("Read")
+        overlays = self._every_overlay(session, 0.0)
+        for step in range(200):
+            board.compose(
+                table.all(),
+                step * 0.02,
+                overlays,
+                slot_count=config.ENCODERS_PER_BANK,
+            )
+
     def test_boot_animation_spells_something_then_ends(self):
         overlay = board.TextOverlay("CLAUDE", 0.0)
         mid = board.compose([], overlay.duration / 2, [overlay])

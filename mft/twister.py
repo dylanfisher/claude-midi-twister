@@ -16,18 +16,10 @@ from . import config
 
 log = logging.getLogger("mft.twister")
 
-Slot = int  # 0 .. config.SLOT_COUNT-1, spanning all four banks
-
-
-def slot_to_cc(slot: Slot) -> int:
-    """Bank N occupies CC N*16 .. N*16+15 on every channel."""
-    if not 0 <= slot < config.SLOT_COUNT:
-        raise ValueError(f"slot {slot} out of range")
-    return slot
-
-
-def slot_bank(slot: Slot) -> int:
-    return slot // config.ENCODERS_PER_BANK
+#: 0 .. config.SLOT_COUNT-1, spanning all four banks. It is also the CC number
+#: on every channel: bank N occupies CC N*16 .. N*16+15, so slot and control are
+#: the same integer and there is no mapping to get wrong.
+Slot = int
 
 
 def _ramp(fraction: float, low: int, high: int) -> int:
@@ -55,16 +47,22 @@ class Twister:
     def __init__(self, outport, inport=None):
         self._out = outport
         self._in = inport
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._last: dict[tuple[int, int], int] = {}
-        self._mido = __import__("mido")
         self._clock_stop = threading.Event()
+        # Imported here rather than at module scope so that importing this
+        # module -- which the daemon does before it knows whether there is any
+        # hardware -- does not require mido to be installed.
+        self._mido = None if outport is None else __import__("mido")
 
     # -- low level ----------------------------------------------------------
 
     def _send(self, msg) -> None:
-        """Serialised on ``_lock`` so the clock thread and the render loop can
-        never interleave halfway through each other's messages."""
+        """Put one message on the wire.
+
+        Serialised on ``_lock`` so the clock thread and the render loop can
+        never interleave halfway through each other's messages.
+        """
         with self._lock:
             try:
                 self._out.send(msg)
@@ -72,23 +70,30 @@ class Twister:
                 log.warning("MIDI send failed: %s", exc)
 
     def cc(self, channel: int, control: int, value: int, force: bool = False) -> None:
+        """One control change, dropped if the device already has that value.
+
+        The de-dup is what makes a 30Hz loop over 64 encoders affordable: a
+        steady board is 256 dict lookups a frame and no bytes at all. Held under
+        one lock with the send, so the cached value and the wire cannot disagree
+        about what the device was last told.
+        """
         value = max(0, min(127, int(value)))
         key = (channel, control)
         with self._lock:
             if not force and self._last.get(key) == value:
                 return
             self._last[key] = value
-        self._send(
-            self._mido.Message(
-                "control_change", channel=channel, control=control, value=value
+            self._send(
+                self._mido.Message(
+                    "control_change", channel=channel, control=control, value=value
+                )
             )
-        )
 
     # -- per-encoder features ----------------------------------------------
 
     def ring(self, slot: Slot, value: int, force: bool = False) -> None:
         """LED ring position, 0-127."""
-        self.cc(config.CH_ENCODER, slot_to_cc(slot), value, force=force)
+        self.cc(config.CH_ENCODER, slot, value, force=force)
 
     def color(self, slot: Slot, color: str | int | None) -> None:
         """Switch RGB hue. Accepts a name from ``config.COLORS``, a raw
@@ -99,11 +104,11 @@ class Twister:
             value = config.COLORS[color]
         else:
             value = color
-        self.cc(config.CH_SWITCH, slot_to_cc(slot), value)
+        self.cc(config.CH_SWITCH, slot, value)
 
     def rgb_anim(self, slot: Slot, value: int) -> None:
         """RGB gate/pulse animation (0 = none)."""
-        self.cc(config.CH_SWITCH_ANIM, slot_to_cc(slot), value)
+        self.cc(config.CH_SWITCH_ANIM, slot, value)
 
     def rgb_off(self, slot: Slot, force: bool = False) -> None:
         """Switch the RGB off.
@@ -124,24 +129,19 @@ class Twister:
         this hardware, which is why a state change that only alters the hue does
         not also reset the encoder to full.
         """
-        self.cc(config.CH_SWITCH_ANIM, slot_to_cc(slot), config.DARK_VALUE, force=force)
-        self.cc(config.CH_SWITCH, slot_to_cc(slot), config.DARK_COLOR, force=force)
+        self.cc(config.CH_SWITCH_ANIM, slot, config.DARK_VALUE, force=force)
+        self.cc(config.CH_SWITCH, slot, config.DARK_COLOR, force=force)
 
     def ring_off(self, slot: Slot, force: bool = False) -> None:
         """Same story one channel over: zero brightness, not "no animation" --
         but the ring's own floor, which is not the RGB's."""
-        self.cc(
-            config.CH_RING_ANIM, slot_to_cc(slot), config.RING_DARK_VALUE, force=force
-        )
+        self.cc(config.CH_RING_ANIM, slot, config.RING_DARK_VALUE, force=force)
 
     def rgb_brightness(self, slot: Slot, fraction: float) -> None:
-        self.cc(config.CH_SWITCH_ANIM, slot_to_cc(slot), _rgb_brightness_value(fraction))
-
-    def ring_anim(self, slot: Slot, value: int) -> None:
-        self.cc(config.CH_RING_ANIM, slot_to_cc(slot), value)
+        self.cc(config.CH_SWITCH_ANIM, slot, _rgb_brightness_value(fraction))
 
     def ring_brightness(self, slot: Slot, fraction: float) -> None:
-        self.cc(config.CH_RING_ANIM, slot_to_cc(slot), _brightness_value(fraction))
+        self.cc(config.CH_RING_ANIM, slot, _brightness_value(fraction))
 
     def write(self, slot: Slot, cell) -> None:
         """Push one composed :class:`mft.render.Cell` to the hardware.
@@ -262,16 +262,19 @@ class Twister:
 
 
 class NullTwister(Twister):
-    """Stand-in when no device is plugged in, so the daemon still runs."""
+    """Stand-in when no device is plugged in, so the daemon still runs.
 
-    def __init__(self) -> None:  # noqa: D107 - deliberately skips Twister.__init__
-        self._out = None
-        self._in = None
-        self._lock = threading.Lock()
-        self._last = {}
-        self._clock_stop = threading.Event()
+    A real :class:`Twister` with no ports, rather than a parallel
+    implementation: everything above the wire -- de-dup, clamping, the
+    channel layout, :meth:`~Twister.write` -- is the code the daemon actually
+    ships, so ``--no-device`` exercises it instead of a lookalike.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(None, None)
 
     def cc(self, channel: int, control: int, value: int, force: bool = False) -> None:
+        value = max(0, min(127, int(value)))
         key = (channel, control)
         with self._lock:
             if not force and self._last.get(key) == value:

@@ -351,19 +351,6 @@ ADAPTERS: list[Adapter] = [
     Adapter("ancestor", "gui", lambda c: bool(c.get("pid")), _ancestor_focus),
 ]
 
-#: Anything in here gives at least one adapter something to work with.
-FOCUSABLE_KEYS = (
-    "TMUX_PANE",
-    "WEZTERM_PANE",
-    "KITTY_WINDOW_ID",
-    "ITERM_SESSION_ID",
-    "tty",
-    "__CFBundleIdentifier",
-    "TERM_PROGRAM",
-    "pid",
-)
-
-
 #: Keys that name one *tab* rather than an application. Apple Terminal's tty
 #: belongs with them, but only once something confirms it really is Terminal.
 _TAB_KEYS = ("TMUX_PANE", "WEZTERM_PANE", "KITTY_WINDOW_ID", "ITERM_SESSION_ID")
@@ -380,15 +367,6 @@ def precise(ctx: Optional[Ctx]) -> bool:
     if any(ctx.get(key) for key in _TAB_KEYS):
         return True
     return bool(_norm_tty(ctx.get("tty", ""))) and _is_apple_terminal(ctx)
-
-
-def usable(ctx: Optional[Ctx]) -> bool:
-    """Is there anything in this context worth trying?
-
-    The daemon asks before pressing, so that a session whose terminal was never
-    captured can go and look one up instead of failing silently.
-    """
-    return bool(ctx) and any(ctx.get(key) for key in FOCUSABLE_KEYS)
 
 
 def focus(ctx: Ctx) -> bool:

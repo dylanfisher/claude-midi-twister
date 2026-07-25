@@ -9,6 +9,7 @@ state; the daemon does the I/O.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -16,30 +17,20 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from . import config
+from .context import fraction as context_fraction
 
 log = logging.getLogger("mft.state")
 
-# Ordered by how loudly they should shout for attention. Also the tiebreak when
-# several encoders want the board's one fast animation.
-STATE_PRIORITY = [
-    "permission",
-    "plan",
-    "error",
-    "waiting",
-    "streaming",
-    "working",
-    "thinking",
-    "done",
-    "idle",
-    "ended",
-]
+#: Rank per state, precomputed from the one ordered vocabulary in
+#: :data:`mft.config.STATE_PRIORITY`. A state nobody ranked sorts last rather
+#: than raising, so an unrecognised state costs its encoder the fast animation
+#: and nothing else.
+_RANK = {state: index for index, state in enumerate(config.STATE_PRIORITY)}
+_UNRANKED = len(config.STATE_PRIORITY)
 
 
 def priority(state: str) -> int:
-    try:
-        return STATE_PRIORITY.index(state)
-    except ValueError:
-        return len(STATE_PRIORITY)
+    return _RANK.get(state, _UNRANKED)
 
 
 @dataclass
@@ -116,9 +107,7 @@ class Session:
     @property
     def context_fraction(self) -> Optional[float]:
         """How full this agent's context window is, or ``None`` if unknown."""
-        from .context import fraction
-
-        return fraction(self.context_tokens, self.context_limit)
+        return context_fraction(self.context_tokens, self.context_limit)
 
     @property
     def subagents(self) -> int:
@@ -140,12 +129,20 @@ class Session:
     def unsupervised(self) -> bool:
         return self.permission_mode == "bypassPermissions"
 
+    def snoozed_at(self, now: float) -> bool:
+        """Is this session snoozed as of ``now``?
+
+        Takes the clock rather than reading it, so that everything rendered from
+        one frame's timestamp agrees with itself -- :mod:`mft.render` promises to
+        be a pure function of (session, clock), and a boolean that quietly
+        consulted the wall clock is exactly how that promise stops being true.
+        """
+        return self.snoozed_until is not None and now < self.snoozed_until
+
     @property
     def snoozed(self) -> bool:
-        return (
-            self.snoozed_until is not None
-            and time.monotonic() < self.snoozed_until
-        )
+        """As of right now. For callers outside a frame, like ``/status``."""
+        return self.snoozed_at(time.monotonic())
 
     @property
     def short_id(self) -> str:
@@ -153,8 +150,6 @@ class Session:
 
     @property
     def label(self) -> str:
-        import os
-
         return f"{os.path.basename(self.cwd) or '~'}#{self.short_id}"
 
 
@@ -360,14 +355,19 @@ class SessionTable:
         with self._lock:
             return list(self._sessions.values())
 
+    def _release(self, session: Session) -> None:
+        """Drop one session. Leaves the board un-compacted; the caller squeezes
+        it back up once it has finished removing things."""
+        self._sessions.pop(session.session_id, None)
+        if self._slots.get(session.slot) == session.session_id:
+            del self._slots[session.slot]
+        if self._keys.get(session.key) == session.slot:
+            del self._keys[session.key]
+        log.info("released encoder %d (%s)", session.slot + 1, session.short_id)
+
     def release(self, session: Session) -> None:
         with self._lock:
-            self._sessions.pop(session.session_id, None)
-            if self._slots.get(session.slot) == session.session_id:
-                del self._slots[session.slot]
-            if self._keys.get(session.key) == session.slot:
-                del self._keys[session.key]
-            log.info("released encoder %d (%s)", session.slot + 1, session.short_id)
+            self._release(session)
             self._compact()
 
     def reap(self) -> list[Session]:
@@ -383,8 +383,13 @@ class SessionTable:
                     and now - session.ended_at > config.SLOT_LINGER_SECONDS
                 )
                 if stale or lingered:
-                    self.release(session)
+                    self._release(session)
                     freed.append(session)
+            # Once, after the whole sweep: compacting per-session would renumber
+            # the survivors again for every reap in the same pass, and each pass
+            # logs every move it makes.
+            if freed:
+                self._compact()
         return freed
 
 

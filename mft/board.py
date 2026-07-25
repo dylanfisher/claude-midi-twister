@@ -19,15 +19,21 @@ from __future__ import annotations
 
 import math
 import time
+from functools import lru_cache
+from itertools import islice
 from typing import Iterable, Optional, Sequence
 
 from . import config, font
 from .render import Cell, render
 from .state import Session, priority
 
+#: A dark encoder. Shared rather than rebuilt: :class:`~mft.render.Cell` is
+#: frozen, so one instance can back every unlit slot on every frame.
+BLANK = Cell()
+
 
 def blank_board(slot_count: int = config.SLOT_COUNT) -> list[Cell]:
-    return [Cell() for _ in range(slot_count)]
+    return [BLANK] * slot_count
 
 
 def bank_of(slot: int) -> int:
@@ -39,7 +45,8 @@ def bank_slots(bank: int) -> range:
     return range(start, start + config.ENCODERS_PER_BANK)
 
 
-def spawn_order(bank: int) -> list[int]:
+@lru_cache(maxsize=None)
+def spawn_order(bank: int) -> tuple[int, ...]:
     """Where subagents land, in the order they take it.
 
     Sessions are handed encoders from the top-left forwards, so subagents fill
@@ -47,15 +54,40 @@ def spawn_order(bank: int) -> list[int]:
     other and the far corner is always the newest thing on the board. Reading
     the pile from the corner inwards is reading it newest-first.
     """
-    return list(reversed(bank_slots(bank)))
+    return tuple(reversed(bank_slots(bank)))
 
 
 # --- overlays ---------------------------------------------------------------
 
 
+def _clamp01(t: float) -> float:
+    return max(0.0, min(1.0, t))
+
+
 def _smoothstep(t: float) -> float:
-    t = max(0.0, min(1.0, t))
+    t = _clamp01(t)
     return t * t * (3 - 2 * t)
+
+
+def _handover(under: Cell, ring: float, settle: float, color: str | int | None) -> Cell:
+    """The tail an encoder-sized gesture ends on: not a cut, a crossfade.
+
+    Brightness and ring travel from wherever the gesture had them to whatever
+    the steady state underneath is showing, so the encoder is seen *becoming*
+    its own state rather than the gesture switching off and a colour appearing
+    separately. The hue crosses at the halfway point rather than being
+    interpolated -- there is no meaningful blend between two points on a hue
+    wheel -- so the last thing you see is the session's own colour arriving.
+
+    Shared by the spawn strike and the ``/clear`` wipe, which are the same
+    gesture in different vocabularies and were the same eight lines twice.
+    """
+    return Cell(
+        under.color if settle > 0.5 and under.color is not None else color,
+        config.ANIM_NONE,
+        int(ring + (under.ring - ring) * settle),
+        1.0 + (under.brightness - 1.0) * settle,
+    )
 
 
 class Overlay:
@@ -198,13 +230,18 @@ class LampTestOverlay(Overlay):
         dimming from the first second."""
         if self.dismissed_at is not None:
             gone = (now - self.dismissed_at) / config.LAMP_TEST_DISMISS_SECONDS
-            return self._dismiss_gain * max(0.0, 1.0 - gone)
-        u = max(0.0, min(1.0, (now - self.started_at) / self.duration))
+            # Clamped at both ends. Only the lower one ever fires in the daemon,
+            # where the dismissal and the frames after it come off the same
+            # monotonic clock -- but a gain above 1.0 is an overbright cell
+            # (ring > 127) rather than a slightly wrong one, and nothing
+            # downstream re-clamps it.
+            return self._dismiss_gain * _clamp01(1.0 - gone)
+        u = _clamp01((now - self.started_at) / self.duration)
         return (1 + math.cos(math.pi * u)) / 2
 
     def _sweep_fill(self, offset: int, t: float) -> float:
         local = (t / self.sweep) * (config.ENCODERS_PER_BANK + 6) - offset
-        return max(0.0, min(1.0, local / 6.0))
+        return _clamp01(local / 6.0)
 
     @staticmethod
     def _field(x: float, y: float, t: float) -> float:
@@ -257,7 +294,8 @@ class LampTestOverlay(Overlay):
             board[slot] = Cell(None, config.ANIM_NONE, int(127 * level), level)
 
 
-def spiral_path(bank: int = 0) -> list[int]:
+@lru_cache(maxsize=None)
+def spiral_path(bank: int = 0) -> tuple[int, ...]:
     """The 16 slots of a bank as one inward spiral from the top-left corner.
 
     A path rather than a scan, because the whole point of the shutdown wipe is
@@ -286,7 +324,7 @@ def spiral_path(bank: int = 0) -> list[int]:
             for row in range(bottom, top - 1, -1):
                 path.append(base + row * cols + left)
             left += 1
-    return path
+    return tuple(path)
 
 
 class ShutdownOverlay(Overlay):
@@ -329,6 +367,16 @@ class ShutdownOverlay(Overlay):
         self.hold = max(0.0, hold)
         self.fade = max(0.01, fade)
         self.hue = int(config.COLORS.get(config.SHUTDOWN_COLOR, config.SHUTDOWN_COLOR))
+        #: (slot, arrival time) along the spiral, everything full by the end of
+        #: the travel: the last encoder starts rising a rise-length before it.
+        #: Fixed the moment the overlay exists, so it is built once rather than
+        #: on each of the ~100 frames the gesture lasts.
+        path = spiral_path(self.bank)
+        travel = max(0.01, self.spiral - self.rise)
+        self._arrivals = tuple(
+            (slot, step / max(1, len(path) - 1) * travel)
+            for step, slot in enumerate(path)
+        )
 
     @property
     def duration(self) -> float:
@@ -336,16 +384,6 @@ class ShutdownOverlay(Overlay):
 
     def done(self, now: float) -> bool:
         return now - self.started_at >= self.duration
-
-    def _arrivals(self) -> list[tuple[int, float]]:
-        """(slot, arrival time) along the spiral, everything full by the end of
-        the travel: the last encoder starts rising a rise-length before it."""
-        path = spiral_path(self.bank)
-        travel = max(0.01, self.spiral - self.rise)
-        return [
-            (slot, step / max(1, len(path) - 1) * travel)
-            for step, slot in enumerate(path)
-        ]
 
     def apply(self, board: list[Cell], now: float, claimed=frozenset()) -> None:
         t = now - self.started_at
@@ -358,14 +396,14 @@ class ShutdownOverlay(Overlay):
         gain = 1.0 - _smoothstep(gone) if gone > 0 else 1.0
         hue = self.hue
 
-        for slot, arrival in self._arrivals():
+        for slot, arrival in self._arrivals:
             if not 0 <= slot < len(board):
                 continue
             level = _smoothstep((t - arrival) / self.rise) * gain
             # Colour-free below the floor, not merely dim: an encoder still
             # holding a hue at brightness zero is an encoder still lit.
             if level <= config.SHUTDOWN_DARK_LEVEL:
-                board[slot] = Cell()
+                board[slot] = BLANK
                 continue
             board[slot] = Cell(hue, config.ANIM_NONE, int(127 * level), level)
 
@@ -417,19 +455,8 @@ class SpawnOverlay(Overlay):
         # session's own position rather than falling onto it.
         phase = min(1.0, u / config.SPAWN_SETTLE) * config.SPAWN_FLASHES
         fill = 1.0 if (phase % 1.0) < 0.5 and phase < config.SPAWN_FLASHES else 0.0
-        color: str | int | None = config.SPAWN_COLOR
-
-        # The tail is a handover, not a cut: brightness, hue and ring all arrive
-        # at whatever is underneath, so the encoder is seen becoming its steady
-        # state rather than the red simply switching off and green appearing.
         settle = _smoothstep(max(0.0, u - config.SPAWN_SETTLE) / (1 - config.SPAWN_SETTLE))
-        brightness = 1.0 + (under.brightness - 1.0) * settle
-        ring = 127 * fill + (under.ring - 127 * fill) * settle
-        if settle > 0.5 and under.color is not None:
-            # Hand the hue over before the brightness has finished falling, so
-            # the last thing you see is the session's own colour arriving.
-            color = under.color
-        board[slot] = Cell(color, config.ANIM_NONE, int(ring), brightness)
+        board[slot] = _handover(under, 127 * fill, settle, config.SPAWN_COLOR)
 
 
 class ClearOverlay(Overlay):
@@ -470,14 +497,10 @@ class ClearOverlay(Overlay):
         under = board[slot]
 
         fill = 1.0 - _smoothstep(min(1.0, u / config.CLEAR_SETTLE))
-        # Same handover as the spawn strike: brightness, ring and hue all arrive
-        # at whatever is underneath, so the encoder is seen becoming its new
-        # steady state rather than the wipe cutting out and green appearing.
+        # Same handover as the spawn strike, into white rather than red: the
+        # wipe is over and the encoder arrives at whatever it now is.
         settle = _smoothstep(max(0.0, u - config.CLEAR_SETTLE) / (1 - config.CLEAR_SETTLE))
-        ring = 127 * fill + (under.ring - 127 * fill) * settle
-        brightness = 1.0 + (under.brightness - 1.0) * settle
-        color = under.color if settle > 0.5 else None
-        board[slot] = Cell(color, config.ANIM_NONE, int(ring), brightness)
+        board[slot] = _handover(under, 127 * fill, settle, None)
 
 
 class CompactOverlay(Overlay):
@@ -508,12 +531,17 @@ class CompactOverlay(Overlay):
         return now - self.started_at > config.COMPACT_TIMEOUT_SECONDS
 
     def apply(self, board: list[Cell], now: float, claimed=frozenset()) -> None:
+        if not 0 <= self.session.slot < len(board):
+            return
+        # Clamped at both ends: a frame from before the drain started, or from
+        # before PostCompact landed, is a fraction outside 0..1 rather than an
+        # error, and it should read as the end of the ramp it is past.
         if self.finished_at is None:
-            drain = min(1.0, (now - self.started_at) / config.COMPACT_DRAIN_SECONDS)
+            drain = _clamp01((now - self.started_at) / config.COMPACT_DRAIN_SECONDS)
             fill = 1.0 - drain
             color = config.STATE_COLORS["working"] if fill > 0.05 else "purple"
         else:
-            fill = min(1.0, (now - self.finished_at) / config.COMPACT_REFILL_SECONDS)
+            fill = _clamp01((now - self.finished_at) / config.COMPACT_REFILL_SECONDS)
             color = "purple" if fill < 0.05 else config.STATE_COLORS["working"]
         board[self.session.slot] = Cell(
             color, config.ANIM_NONE, int(127 * fill), 0.35 + 0.5 * fill
@@ -552,15 +580,17 @@ class PeekOverlay(Overlay):
         if now < self.started_at:
             return
         held = self.session.slot
+        if not 0 <= held < len(board):
+            return
         history = list(self.session.tool_history)
-        others = [s for s in bank_slots(bank_of(held)) if s != held]
+        others = [s for s in bank_slots(bank_of(held)) if s != held and s < len(board)]
         # Newest lands on the slot nearest the held knob, so the history reads
         # outward from the thing you are holding.
         recent = history[-len(others) :]
         padding = [None] * (len(others) - len(recent))
         for slot, tool in zip(others, padding + recent):
             if tool is None:
-                board[slot] = Cell()
+                board[slot] = BLANK
                 continue
             color = config.TOOL_COLORS.get(tool, config.TOOL_COLOR_DEFAULT)
             board[slot] = Cell(color, config.ANIM_NONE, 127, 0.7)
@@ -570,7 +600,9 @@ class PeekOverlay(Overlay):
 # --- composition ------------------------------------------------------------
 
 
-def arbitrate_motion(board: list[Cell], sessions: Sequence[Session]) -> None:
+def arbitrate_motion(
+    board: list[Cell], sessions: Sequence[Session], now: float
+) -> None:
     """Leave the fast animation on exactly one encoder.
 
     Several sessions blocking at once would otherwise fill the board with
@@ -578,7 +610,11 @@ def arbitrate_motion(board: list[Cell], sessions: Sequence[Session]) -> None:
     nothing stands out. The winner is the highest-priority attention state,
     oldest first; everyone else drops to a slow pulse.
     """
-    animated = [s for s in sessions if board[s.slot].rgb_anim and not s.snoozed]
+    animated = [
+        s
+        for s in sessions
+        if 0 <= s.slot < len(board) and board[s.slot].rgb_anim and not s.snoozed_at(now)
+    ]
     if len(animated) <= 1:
         return
     def rank(session: Session) -> tuple[int, float]:
@@ -594,7 +630,7 @@ def arbitrate_motion(board: list[Cell], sessions: Sequence[Session]) -> None:
 
 
 def stack_subagents(
-    board: list[Cell], sessions: Sequence[Session], claimed: set[int]
+    board: list[Cell], sessions: Sequence[Session], claimed: set[int], now: float
 ) -> None:
     """Pile in-flight subagents into the bottom-right of their parent's bank.
 
@@ -608,10 +644,15 @@ def stack_subagents(
     # Deterministic across frames: parents are served in encoder order, so a
     # subagent doesn't hop to a different knob because a dict reordered.
     for session in sorted(sessions, key=lambda s: s.slot):
-        if not session.subagents or session.snoozed:
+        count = session.subagents
+        if not count or session.snoozed_at(now):
             continue
-        free = (s for s in spawn_order(bank_of(session.slot)) if s not in claimed)
-        for slot in list(free)[: session.subagents]:
+        free = (
+            s
+            for s in spawn_order(bank_of(session.slot))
+            if s not in claimed and s < len(board)
+        )
+        for slot in islice(free, count):
             claimed.add(slot)
             board[slot] = Cell(
                 config.SUBAGENT_COLOR,
@@ -663,12 +704,13 @@ def compose(
             claimed.add(session.slot)
 
     if config.SUBAGENT_STACK:
-        stack_subagents(board, sessions, claimed)
-    arbitrate_motion(board, sessions)
+        stack_subagents(board, sessions, claimed, now)
+    arbitrate_motion(board, sessions, now)
 
     if config.AMBIENT and not claimed:
         ambient(board, now)
 
+    frozen = frozenset(claimed)
     for overlay in overlays:
-        overlay.apply(board, now, frozenset(claimed))
+        overlay.apply(board, now, frozen)
     return board

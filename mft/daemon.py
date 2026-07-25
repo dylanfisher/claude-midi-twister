@@ -47,6 +47,13 @@ log = logging.getLogger("mft.daemon")
 #: parent and are never allowed to create a session of their own.
 SUBAGENT_EVENTS = frozenset({"SubagentStart", "SubagentStop"})
 
+#: Events that can change *who belongs in the live block*, and so are the only
+#: ones worth squeezing the board back up to the top-left for. Everything else
+#: -- a tool call, a notification, a turn ending -- moves nobody's encoder, and
+#: compaction is a sort plus two dict rebuilds behind the table's lock, taken
+#: while the render loop wants that same lock.
+COMPACTING_EVENTS = frozenset({"SessionStart", "SessionEnd"})
+
 #: Events that may only ever *update* a session, never bring one into being.
 #:
 #: `SessionEnd` is one because a `/clear` retires a session id while its tab
@@ -56,6 +63,13 @@ SUBAGENT_EVENTS = frozenset({"SubagentStart", "SubagentStop"})
 #: already on the board. Nothing about an ending wants a slot allocated for it
 #: in the first place, whatever the order the pair arrives in.
 UPDATE_ONLY_EVENTS = frozenset({"SessionEnd"})
+
+#: A frame that fails fails every frame, so the traceback is rate-limited to
+#: roughly one a minute rather than 30 a second.
+PAINT_ERROR_LOG_SECONDS = 60.0
+
+#: How often the reaper sweeps for sessions that ended or went silent.
+REAP_INTERVAL_SECONDS = 5.0
 
 
 def warn_about_hook_drift() -> None:
@@ -163,6 +177,8 @@ class Visualizer:
         #: press on the same knob doesn't stack another AppleScript behind it.
         self._focus_lock = threading.Lock()
         self._focusing = ""
+        #: When the render loop last logged a dropped frame; see :meth:`paint`.
+        self._last_paint_error = float("-inf")
 
     # -- overlays -----------------------------------------------------------
 
@@ -276,8 +292,10 @@ class Visualizer:
             log.info("%s: %d subagent(s) in flight", session.short_id, session.subagents)
         # A session ending (or restarting) is the only thing that changes who
         # belongs in the live block, so this is where the board is squeezed back
-        # up to the top-left. It is a no-op the rest of the time.
-        self.table.compact()
+        # up to the top-left -- and only for those events, since for the rest it
+        # is a no-op that still does all the work. See COMPACTING_EVENTS.
+        if name in COMPACTING_EVENTS:
+            self.table.compact()
         self.refresh_context(session, time.monotonic())
         if effects:
             self._apply_effects(session, effects)
@@ -310,7 +328,7 @@ class Visualizer:
                     "alert": s.alert,
                     "unsupervised": s.unsupervised,
                     "snoozed_for": (
-                        round(s.snoozed_until - now, 1) if s.snoozed else 0
+                        round(s.snoozed_until - now, 1) if s.snoozed_at(now) else 0
                     ),
                     "attention_for": (
                         round(now - s.attention_since, 1) if s.attention_since else 0
@@ -334,13 +352,14 @@ class Visualizer:
 
     def _on_switch(self, slot: int, value: int) -> None:
         session = self.table.by_slot(slot)
+        now = time.monotonic()
         if value >= 64:  # press down
-            self._press_started[slot] = time.monotonic()
+            self._press_started[slot] = now
             if session is not None:
                 # Hold to peek. The overlay goes up now but only paints once the
                 # press has lasted HOLD_SECONDS, and it comes down on release --
                 # a spring-loaded modal view, not a mode you can get stuck in.
-                peek = board_mod.PeekOverlay(session, time.monotonic())
+                peek = board_mod.PeekOverlay(session, now)
                 self._peeks[slot] = peek
                 self.push_overlay(peek)
             return
@@ -351,7 +370,7 @@ class Visualizer:
             peek.release()
         if started is None:
             return
-        held = time.monotonic() - started
+        held = now - started
         if session is None:
             log.debug("press on unclaimed encoder %d", slot + 1)
             return
@@ -474,13 +493,26 @@ class Visualizer:
             lamp.dismiss(now)
 
     def paint(self, now: float, overlays: list[board_mod.Overlay] | None = None) -> None:
-        cells = board_mod.compose(
-            self.table.all(),
-            now,
-            self._live_overlays(now) if overlays is None else overlays,
-        )
-        for slot, cell in enumerate(cells):
-            self.device.write(slot, cell)
+        """Compose one frame and push it to the hardware.
+
+        Never raises. A display that dies on one bad frame takes the whole
+        daemon's board with it and leaves the last frame frozen on the desk,
+        which is worse than a wrong frame -- and every hook event is already
+        wrapped this way on the HTTP side. Logged at most once a minute, because
+        anything that fails here fails 30 times a second.
+        """
+        try:
+            cells = board_mod.compose(
+                self.table.all(),
+                now,
+                self._live_overlays(now) if overlays is None else overlays,
+            )
+            for slot, cell in enumerate(cells):
+                self.device.write(slot, cell)
+        except Exception:
+            if now - self._last_paint_error > PAINT_ERROR_LOG_SECONDS:
+                self._last_paint_error = now
+                log.exception("frame dropped")
 
     def animate(self, overlay: board_mod.Overlay) -> None:
         """Run one overlay to completion, blocking. Used for boot and shutdown,
@@ -542,7 +574,7 @@ class Visualizer:
             now = time.monotonic()
             self._check_lamp_test(now)
             self.paint(now)
-            if now - last_reap > 5.0:
+            if now - last_reap > REAP_INTERVAL_SECONDS:
                 self.table.reap()
                 last_reap = now
             self._stop.wait(period)

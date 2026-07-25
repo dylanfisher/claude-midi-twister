@@ -8,13 +8,13 @@ which is the whole job: CLAUDE on boot, RATE when a turn dies on a rate limit, a
 two-digit number when you want a count.
 
 Ring brightness gives real grayscale per pixel, so a glyph can be dimmed
-smoothly -- boot strikes each letter at full and decays it to black -- and
-:func:`crossfade` can blend two of them where that is wanted instead.
+smoothly: boot strikes each letter at full and decays it to black, and the
+darkness in between is what separates one letter from the next.
 """
 
 from __future__ import annotations
 
-from . import config
+from functools import lru_cache
 
 #: Rows top to bottom, columns left to right.
 GLYPHS: dict[str, tuple[str, str, str, str]] = {
@@ -57,22 +57,15 @@ GLYPHS: dict[str, tuple[str, str, str, str]] = {
     "9": (".##.", "#..#", ".###", "..#."),
 }
 
-#: Number of pixels in one glyph, i.e. one bank.
-PIXELS = config.GRID_ROWS * config.GRID_COLS
-
-
-def pixels(char: str) -> list[float]:
-    """One glyph as ``PIXELS`` intensities in slot order (row-major).
+@lru_cache(maxsize=None)
+def pixels(char: str) -> tuple[float, ...]:
+    """One glyph as one bank's worth of intensities, in slot order (row-major).
 
     Unknown characters render blank rather than raising, so a caller can pass
     arbitrary text through without sanitising it first.
+
+    Cached and immutable: there are 37 glyphs and the boot animation asks for
+    the same one on every frame it is on screen.
     """
     rows = GLYPHS.get(char.upper(), GLYPHS[" "])
-    return [1.0 if cell == "#" else 0.0 for row in rows for cell in row]
-
-
-def crossfade(a: str, b: str, t: float) -> list[float]:
-    """Blend glyph ``a`` into glyph ``b``; ``t`` runs 0.0 -> 1.0."""
-    t = max(0.0, min(1.0, t))
-    left, right = pixels(a), pixels(b)
-    return [l + (r - l) * t for l, r in zip(left, right)]
+    return tuple(1.0 if cell == "#" else 0.0 for row in rows for cell in row)

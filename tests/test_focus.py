@@ -93,9 +93,12 @@ class Chain(unittest.TestCase):
 
 
 class Detection(unittest.TestCase):
+    def _detected_by(self, ctx):
+        return [a.name for a in focus.ADAPTERS if a.detect(ctx)]
+
     def test_a_real_terminal_session_is_reachable_by_tab(self):
         self.assertTrue(focus.precise(TERMINAL))
-        self.assertTrue(focus.usable(TERMINAL))
+        self.assertTrue(self._detected_by(TERMINAL))
 
     def test_tab_level_env_beats_a_missing_tty(self):
         self.assertTrue(focus.precise({"ITERM_SESSION_ID": "w0t0p0:GUID"}))
@@ -117,11 +120,12 @@ class Detection(unittest.TestCase):
         """The desktop app has no tty and no terminal variables. It is not
         precise, but the ancestor adapter can still raise it."""
         self.assertFalse(focus.precise({"pid": "42"}))
-        self.assertTrue(focus.usable({"pid": "42"}))
+        self.assertEqual(self._detected_by({"pid": "42"}), ["ancestor"])
 
     def test_nothing_is_nothing(self):
-        self.assertFalse(focus.usable({}))
-        self.assertFalse(focus.usable(None))
+        self.assertEqual(self._detected_by({}), [])
+        self.assertFalse(focus.precise({}))
+        self.assertFalse(focus.precise(None))
 
     def test_ttys_are_normalised_to_what_applescript_says(self):
         self.assertEqual(focus._norm_tty("ttys004"), "/dev/ttys004")

@@ -25,12 +25,30 @@ SWEEP_RATE = {
 
 @dataclass(frozen=True)
 class Cell:
-    """One encoder. ``brightness`` drives both the RGB and the ring."""
+    """One encoder. ``brightness`` drives both the RGB and the ring.
+
+    Both levels are clamped on the way in, so a ``Cell`` is by construction a
+    state the hardware can actually be in. That is one clamp instead of one per
+    producer: every animation here is some eased ramp of an elapsed time, and an
+    overlay asked for a frame slightly outside its own window computes a
+    negative or over-unity level without doing anything else wrong. The wire
+    clamps too (:meth:`mft.twister.Twister.cc`), but by then the cell has
+    already been compared against, blended into and handed over from -- and a
+    ring of -158 is not a thing to reason about.
+    """
 
     color: str | int | None = None
     rgb_anim: int = config.ANIM_NONE
     ring: int = 0
     brightness: float = 0.0
+
+    def __post_init__(self) -> None:
+        ring = max(0, min(127, int(self.ring)))
+        brightness = max(0.0, min(1.0, float(self.brightness)))
+        if ring != self.ring:
+            object.__setattr__(self, "ring", ring)
+        if brightness != self.brightness:
+            object.__setattr__(self, "brightness", brightness)
 
 
 def _sweep(now: float, rate: float) -> int:
@@ -117,7 +135,7 @@ def render(session: Session, now: float) -> Cell:
     if state == "ended":
         return Cell(None, config.ANIM_NONE, 0, 0.0)
 
-    if session.snoozed:
+    if session.snoozed_at(now):
         # Muted on purpose: dim, still, and the arc counts the snooze down so
         # you can see how long you have left to not care.
         assert session.snoozed_until is not None

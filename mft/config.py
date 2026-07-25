@@ -200,6 +200,28 @@ CLOCK_BPM = float(os.environ.get("MFT_CLOCK_BPM", "120"))
 # invisible until you turn your head. So motion is a budget, and it is spent on
 # "a human is blocking progress" before anything else.
 
+#: Every state a session can be in, ordered by how loudly it should shout for
+#: attention. This is the vocabulary itself, not just a ranking: the per-state
+#: tables below are keyed on it, and it is the tiebreak when several encoders
+#: want the board's one fast animation (see ``mft.board.arbitrate_motion``).
+#:
+#: One list rather than several, because the states are deliberately *different*
+#: from each other -- four flavours of blinking red trains you to ignore blinking
+#: red -- and a second copy of the vocabulary is how one of them ends up with a
+#: colour and no rank, which sorts it silently last.
+STATE_PRIORITY = (
+    "permission",
+    "plan",
+    "error",
+    "waiting",
+    "streaming",
+    "working",
+    "thinking",
+    "done",
+    "idle",
+    "ended",
+)
+
 STATE_COLORS = {
     # Green is the "this session is yours again" hue, and it runs one continuous
     # ramp: solid bright at the end of a turn, fading down, resting dim. Idle and
@@ -217,12 +239,6 @@ STATE_COLORS = {
     "done": "green",
     "ended": None,
 }
-
-#: The attention states are deliberately *different* from each other, not four
-#: flavours of blinking red -- one blinking red for everything trains you to
-#: ignore blinking red. Priority order also decides who gets the fast animation
-#: when several want it at once (see ``mft.board.arbitrate_motion``).
-ATTENTION_STATES = ("permission", "plan", "error", "waiting", "done")
 
 #: States that animate, and how urgently. Only one encoder on the board is
 #: allowed the fast rate at a time; the rest are downgraded to SLOW_ANIM.
