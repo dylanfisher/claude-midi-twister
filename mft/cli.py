@@ -107,7 +107,9 @@ def print_discovered() -> int:
     found = discover_mod.discover()
     for entry in found:
         tab = entry.terminal.get("tty") or entry.terminal.get("pid") or "unknown tab"
-        print(f"{entry.session_id[:8]}  {tab}  {entry.cwd}")
+        # The state is a guess read off a transcript, so this is where you check
+        # it against what the session is actually doing.
+        print(f"{entry.session_id[:8]}  {entry.state or 'idle':8}  {tab}  {entry.cwd}")
     print(f"{len(found)} running session{'' if len(found) == 1 else 's'}")
     return 0
 

@@ -130,6 +130,9 @@ class Transcript:
     cwd: str
     modified_at: float
     permission_mode: str = ""
+    #: What the tail says the agent is doing, before the freshness gate in
+    #: :func:`discover` decides whether to believe it. See :func:`activity`.
+    state: str = ""
 
 
 @dataclass(frozen=True)
@@ -144,6 +147,9 @@ class Discovered:
     #: key, so press-to-focus can't jump to its tab.
     terminal: dict[str, str] = field(default_factory=dict)
     permission_mode: str = ""
+    #: The state to adopt into, or ``""`` for the resting default. Only ever one
+    #: of the busy states; see :func:`activity`.
+    state: str = ""
 
 
 # --- the process table ------------------------------------------------------
@@ -729,6 +735,85 @@ def _numbers(values: Iterable[Any]) -> list[int]:
 # --- transcripts ------------------------------------------------------------
 
 
+#: Entry types that are a turn happening. Everything else in a transcript --
+#: `ai-title`, `mode`, `permission-mode`, `last-prompt`, `attachment`, `summary`
+#: -- is metadata written alongside the conversation, and several of them are
+#: appended *after* the last message, which is why the scan below looks for a
+#: type rather than taking the final line.
+_CONVERSATION = ("user", "assistant")
+
+
+def activity(lines: list[str]) -> str:
+    """What the tail of a transcript says the agent is doing *now*, or ``""``.
+
+    The premise `adopt` was written without: a transcript is not only a record of
+    what a session did. Claude Code writes the assistant message carrying a
+    `tool_use` block as soon as it has it, which is *before* the tool runs, so a
+    session in the middle of a tool call has that call sitting unanswered at the
+    end of its file. The last conversational entry is therefore a live reading,
+    and it is the only one available for a session that started before we did.
+
+    Four shapes, and only the first three are worth anything:
+
+    *   An assistant message ending in a `tool_use` -- a call is out and nothing
+        has come back.
+    *   A user message carrying a `tool_result` -- the call came back and the
+        agent has the floor again.
+    *   A user message carrying prose -- a prompt was submitted and nothing has
+        answered it yet.
+    *   Anything else, which in practice means an assistant message that stopped
+        on `end_turn`: the turn is over, and there is nothing here the resting
+        default doesn't already say.
+
+    What this deliberately cannot do is find a **permission prompt**, which is
+    the session `mft.discover` most wants and the reason its module docstring
+    opens the way it does. An agent blocked on your approval and an agent
+    halfway through a slow `npm test` write byte-identical tails -- the request
+    is the tool call, and whether a human is being asked about it is not in the
+    file. Guessing would strobe an encoder red at a session nobody needs to look
+    at, which is the phantom invariant 6 is about, so both read as `working` and
+    the real answer arrives with the next hook.
+
+    `thinking` and `working` are both honest at the resolution the board renders
+    them: one is "no tool call is out", the other is "one is".
+    """
+    for line in reversed(lines):
+        # Cheap gate. Every conversational entry names its role, and the
+        # metadata records that trail the file do not.
+        if '"user"' not in line and '"assistant"' not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        kind = entry.get("type")
+        if kind not in _CONVERSATION or entry.get("isSidechain"):
+            continue
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            return ""
+        content = message.get("content")
+        blocks = (
+            {b.get("type") for b in content if isinstance(b, dict)}
+            if isinstance(content, list)
+            else set()
+        )
+        if kind == "assistant":
+            # `stop_reason` is the authority when it is there, but a streamed
+            # message can reach disk before it has one -- which is exactly the
+            # in-flight case this exists to catch -- so the block is enough.
+            if message.get("stop_reason") == "tool_use" or "tool_use" in blocks:
+                return "working"
+            return ""
+        if "tool_result" in blocks:
+            return "working"
+        # A plain user message: a prompt with no answer yet. `tool_result` is
+        # ruled out above, so this is a human turn and not the harness replying
+        # to a call.
+        return "thinking"
+    return ""
+
+
 def _read_transcript(path: str, modified_at: float) -> Optional[Transcript]:
     """What the tail of a transcript says about the session that owns it.
 
@@ -760,7 +845,8 @@ def _read_transcript(path: str, modified_at: float) -> Optional[Transcript]:
             break
     if not cwd:
         return None
-    return Transcript(session_id, path, cwd, modified_at, permission_mode)
+    state = activity(lines) if config.DISCOVER_STATES else ""
+    return Transcript(session_id, path, cwd, modified_at, permission_mode, state)
 
 
 def recent_transcripts(
@@ -815,6 +901,7 @@ def discover(
     transcript to spare process, which is the best available guess at "this
     process is the one appending to this file".
     """
+    now = now or time.time()
     procs = claude_processes() if processes is None else processes
     if procs is None:
         log.warning("could not read the process table; skipping discovery")
@@ -849,6 +936,7 @@ def discover(
                 transcript_path=transcript.path,
                 terminal=proc.terminal,
                 permission_mode=transcript.permission_mode,
+                state=_believable(transcript, now),
             )
         )
 
@@ -874,9 +962,34 @@ def discover(
             transcript_path=d.transcript_path,
             terminal={},
             permission_mode=d.permission_mode,
+            state=d.state,
         )
         for d in found
     ]
+
+
+def _believable(transcript: Transcript, now: float) -> str:
+    """The transcript's reading, unless the file is too cold to trust it.
+
+    A tail is a snapshot of an unfinished turn, and an unfinished turn looks the
+    same whether it is still being written or was abandoned at lunchtime -- the
+    process is alive either way, so :func:`orphans` has nothing to say about it
+    and the file's own mtime is the only thing left. Past
+    `DISCOVER_ACTIVE_SECONDS` the reading is dropped and adoption falls back to
+    the resting default, which is only the behaviour this whole path replaced.
+    """
+    if not transcript.state:
+        return ""
+    age = now - transcript.modified_at
+    if age > config.DISCOVER_ACTIVE_SECONDS:
+        log.debug(
+            "%s looks %s but has been quiet for %.0fs; adopting it at rest",
+            transcript.session_id[:8],
+            transcript.state,
+            age,
+        )
+        return ""
+    return transcript.state
 
 
 #: The keys that name an *application* rather than a tab. What is left of a
@@ -942,10 +1055,23 @@ def resolve_terminal(
 def adopt(table: SessionTable, found: list[Discovered]) -> list[Session]:
     """Put discovered sessions on the board.
 
-    They land as ``idle``: a transcript records what a session *did*, never what
-    it is doing now, and inventing an attention state from a file would strobe
-    an encoder red at you for a prompt that was answered before the daemon
-    started. The first real hook event finds the session by id and takes over.
+    They land as ``idle`` unless the transcript caught them mid-turn, in which
+    case they land in the busy state :func:`activity` read off it. The rule that
+    draws that line is which way a wrong guess fails. `working` and `thinking`
+    are quiet: an encoder that says busy about a session that isn't costs you a
+    glance. The *attention* states are not -- `permission` strobes red and
+    `done` opens an attention debt that gets more insistent the longer you
+    ignore it, so inventing either from a file would nag you about a prompt
+    answered before the daemon started. So a finished turn is adopted at rest
+    even though the transcript plainly says `end_turn`: the encoder waits for a
+    live event before it asks you for anything.
+
+    No ``turn_started_at`` is invented either. We know when we started believing
+    this session was working and not when its turn began, and
+    :func:`mft.render._turn_ring` already falls back to `state_since` for
+    exactly this case rather than being handed a number nobody measured.
+
+    The first real hook event finds the session by id and takes over.
     """
     adopted: list[Session] = []
     for entry in found:
@@ -962,5 +1088,11 @@ def adopt(table: SessionTable, found: list[Discovered]) -> list[Session]:
         session.terminal = session.terminal or dict(entry.terminal)
         session.transcript_path = session.transcript_path or entry.transcript_path
         session.permission_mode = session.permission_mode or entry.permission_mode
+        # The same guard as the terminal above, and for the same reason: a live
+        # record knows better than a file, and `ensure` can hand back one that
+        # was already on the board under another id. Only a session sitting at
+        # rest is told what its transcript thinks it is doing.
+        if entry.state and not known and session.state == "idle":
+            session.set_state(entry.state)
         adopted.append(session)
     return adopted

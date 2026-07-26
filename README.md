@@ -244,9 +244,33 @@ with the process table. Neither is trusted alone, and a process table that can't
 be read adopts nothing: a missing encoder is a session you find in a moment,
 while a phantom one is a knob that lies to you for an hour.
 
-Adopted sessions land as `idle` — a transcript records what a session *did*,
-never what it's doing now. Their context ring is real, read from that same
-transcript. The first genuine hook event takes over. When two tabs sit in the
+Adopted sessions land in the state their transcript caught them in. That file is
+not only a record of what a session did: Claude Code writes the assistant message
+carrying a tool call as soon as it has it, which is *before* the tool runs, so a
+session mid-turn has that call sitting unanswered at the end of its file. An
+unanswered call, or a returned one, is `working`; a prompt nothing has replied to
+is `thinking`.
+
+Two things it won't do. It won't invent an **attention** state — a finished turn
+is adopted at rest even though the transcript plainly says so, because `done`
+opens a debt that gets more insistent the longer you ignore it and `permission`
+strobes red, and neither should nag you about a turn that ended before the daemon
+booted. And it can't *find* a permission prompt anyway: an agent blocked on your
+approval and an agent halfway through a slow `npm test` write byte-identical
+tails, since the request is the tool call and whether a human is being asked
+about it is not in the file. Both read as `working`.
+
+Freshness is what separates a live turn from an abandoned one — the process is
+alive either way, so the sweep in [Sessions that outlive their
+process](#sessions-that-outlive-their-process) has nothing to say about it, and
+the file's own mtime is all that's left. Past `DISCOVER_ACTIVE_SECONDS` (three
+minutes) the reading is dropped and the session lands `idle`. On a real desk that
+gate does most of the work: of five transcripts sitting mid-turn here, one was a
+session genuinely thinking and four were prompts abandoned an hour ago.
+
+Their context ring is real, read from that same transcript. The first genuine
+hook event takes over, and overwrites whatever was guessed. When two tabs sit in
+the
 same working directory, both keep an encoder but give up their terminal
 identity, since guessing would hand the wrong knob to the next `/clear`. That
 give-up is also how a wrong guess gets *out* again — see [where a record naming

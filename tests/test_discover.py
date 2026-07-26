@@ -12,7 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mft import discover  # noqa: E402
+from mft import config, discover  # noqa: E402
 from mft.identity import is_hostless, terminal_keys  # noqa: E402
 from mft.state import Session, SessionTable  # noqa: E402
 
@@ -159,7 +159,147 @@ class Join(unittest.TestCase):
         self.assertEqual([d.terminal for d in found], [{}, {}])
 
 
+def conversation(*entries: dict) -> list[str]:
+    """Transcript lines, oldest first, the way `activity` gets handed them."""
+    return [json.dumps(entry) for entry in entries]
+
+
+def assistant(*blocks: str, stop: str = "tool_use") -> dict:
+    return {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "stop_reason": stop,
+            "content": [{"type": block} for block in blocks],
+        },
+    }
+
+
+def user_turn(*blocks: str) -> dict:
+    content = [{"type": block} for block in blocks] if blocks else "do the thing"
+    return {"type": "user", "message": {"role": "user", "content": content}}
+
+
+class Activity(unittest.TestCase):
+    """What the tail of a transcript says the agent is doing *now*. The premise
+    is that Claude Code flushes an assistant's `tool_use` before the tool it
+    describes returns, so an unanswered call at the end of a file is a live
+    reading -- see `discover.activity`."""
+
+    def test_an_unanswered_tool_call_is_working(self):
+        lines = conversation(user_turn(), assistant("tool_use"))
+        self.assertEqual(discover.activity(lines), "working")
+
+    def test_a_returned_tool_call_is_working(self):
+        lines = conversation(
+            user_turn(), assistant("tool_use"), user_turn("tool_result")
+        )
+        self.assertEqual(discover.activity(lines), "working")
+
+    def test_a_thinking_block_with_no_call_out_yet_is_working(self):
+        # Streamed to disk before it has a stop_reason: the block is the tell.
+        lines = conversation(user_turn(), assistant("thinking", "tool_use", stop=""))
+        self.assertEqual(discover.activity(lines), "working")
+
+    def test_an_unanswered_prompt_is_thinking(self):
+        self.assertEqual(discover.activity(conversation(user_turn())), "thinking")
+
+    def test_a_finished_turn_reads_as_nothing(self):
+        lines = conversation(
+            user_turn(), assistant("tool_use"), user_turn("tool_result"),
+            assistant("text", stop="end_turn"),
+        )
+        self.assertEqual(discover.activity(lines), "")
+
+    def test_trailing_metadata_is_not_the_last_entry(self):
+        # Claude Code appends these *after* the conversation, so taking the
+        # final line rather than the last conversational one reads nothing.
+        lines = conversation(
+            user_turn(), assistant("tool_use"), user_turn("tool_result"),
+            {"type": "attachment"}, {"type": "last-prompt"}, {"type": "ai-title"},
+            {"type": "mode"}, {"type": "permission-mode"},
+        )
+        self.assertEqual(discover.activity(lines), "working")
+
+    def test_a_subagents_messages_are_not_the_parents_state(self):
+        lines = conversation(
+            user_turn(), assistant("text", stop="end_turn"),
+            {"type": "assistant", "isSidechain": True,
+             "message": {"stop_reason": "tool_use",
+                         "content": [{"type": "tool_use"}]}},
+        )
+        self.assertEqual(discover.activity(lines), "")
+
+    def test_an_unreadable_tail_reads_as_nothing(self):
+        self.assertEqual(discover.activity([]), "")
+        self.assertEqual(discover.activity(['{"type": "user" broken']), "")
+        self.assertEqual(discover.activity(['{"type": "summary"}']), "")
+
+
+class Freshness(unittest.TestCase):
+    """A tail is a snapshot of an unfinished turn, and an unfinished turn looks
+    the same whether it is still moving or was abandoned. Only the mtime can
+    tell, because the process is alive either way."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _discovered(self, age: float):
+        path = self.root / "-tmp-a" / "sess-a.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "\n".join(
+                conversation(
+                    {"type": "user", "cwd": "/tmp/a",
+                     "message": {"role": "user", "content": "go"}},
+                    assistant("tool_use"),
+                )
+            )
+            + "\n"
+        )
+        import os
+
+        stamp = time.time() - age
+        os.utime(path, (stamp, stamp))
+        proc = discover.Proc(pid=7, tty="/dev/ttys001", cwd="/tmp/a")
+        return discover.discover(processes=[proc], projects_dir=str(self.root))
+
+    def test_a_live_turn_is_believed(self):
+        found = self._discovered(age=5)
+        self.assertEqual([d.state for d in found], ["working"])
+
+    def test_an_abandoned_turn_falls_back_to_rest(self):
+        found = self._discovered(age=config.DISCOVER_ACTIVE_SECONDS + 60)
+        self.assertEqual([d.state for d in found], [""])
+
+
 class Adoption(unittest.TestCase):
+    def test_a_session_caught_mid_turn_is_adopted_working(self):
+        table = SessionTable()
+        adopted = discover.adopt(
+            table,
+            [discover.Discovered("sess-a", "/tmp/a", "/tmp/a.jsonl", state="working")],
+        )
+        session = adopted[0]
+        self.assertEqual(session.state, "working")
+        # Busy, but never *asking*: no debt, no alert, and no invented turn
+        # clock -- `render._turn_ring` falls back to `state_since`.
+        self.assertIsNone(session.attention_since)
+        self.assertFalse(session.alert)
+        self.assertIsNone(session.turn_started_at)
+
+    def test_a_live_session_is_not_told_what_a_file_thinks(self):
+        table = SessionTable()
+        live = table.ensure("sess-a", "/tmp/a", {"tty": "/dev/ttys009"})
+        live.set_state("permission")
+        discover.adopt(
+            table,
+            [discover.Discovered("sess-a", "/tmp/a", "/a.jsonl", state="working")],
+        )
+        self.assertEqual(live.state, "permission")
+
     def test_adopted_sessions_are_idle_and_carry_their_transcript(self):
         table = SessionTable()
         entry = discover.Discovered(

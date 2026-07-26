@@ -676,6 +676,22 @@ DISCOVER_TAIL_BYTES = 64 * 1024
 #: what hangs with them, so they get a short leash.
 DISCOVER_TIMEOUT_SECONDS = 5.0
 
+#: Adopt a session in the state its transcript says it is in, rather than
+#: uniformly `idle`. Claude Code flushes the assistant's `tool_use` entry
+#: *before* the tool it describes returns, so the last entry of a transcript is
+#: a live reading of what that agent is doing right now and not a record of what
+#: it did. Turning this off costs nothing but the first few seconds of a
+#: restart: the next hook event overwrites whatever was guessed here.
+DISCOVER_STATES = _flag("MFT_DISCOVER_STATES", True)
+#: ...but only for a transcript touched this recently. A file left mid-turn is
+#: indistinguishable from one still being written to, so freshness is the only
+#: thing separating "thinking" from "you hit Ctrl-C an hour ago" -- and
+#: `orphans` cannot help, because the process is genuinely still alive either
+#: way. Generous, because one long tool call is ordinary: raising it adopts more
+#: sessions and risks a knob that says `working` about an abandoned turn,
+#: lowering it falls back to `idle` more often, which is only the old behaviour.
+DISCOVER_ACTIVE_SECONDS = float(os.environ.get("MFT_DISCOVER_ACTIVE", "180"))
+
 #: A tool call briefly kicks the encoder to full brightness; it decays back to
 #: ACTIVE_FLOOR over this long, so frequency reads as shimmer.
 TOOL_KICK_SECONDS = 1.2
