@@ -33,6 +33,7 @@ import time
 from typing import Optional
 
 from . import (
+    attention as attention_mod,
     banks as banks_mod,
     board as board_mod,
     config,
@@ -162,6 +163,15 @@ class Visualizer:
         #: When a dead MIDI port was last retried; see :meth:`_check_port`.
         self._last_port_retry = float("-inf")
         self._last_census = float("-inf")
+        #: Which tab is in front of you; see :mod:`mft.attention`.
+        self._attention = attention_mod.AttentionWatcher(wake=self._wake_loop)
+        #: The encoder that tab is on, recomposed every frame, and the session
+        #: id it belonged to when it arrived there. The id is what makes arrival
+        #: an *edge* -- a slot is not a stable handle for a session, and the
+        #: pulse must fire once when you switch to a tab rather than every frame
+        #: you spend in it.
+        self._focused_slot: Optional[int] = None
+        self._focused_id = ""
 
     def _wake_loop(self) -> None:
         """Bring the render loop back to full rate. Handed to collaborators that
@@ -309,6 +319,8 @@ class Visualizer:
             suspended=self._suspended.is_set(),
             port_failing=self.device.failing(),
             bank=self.banks.current,
+            focused=self._focused_slot,
+            focused_app=self._attention.app,
         )
 
     # -- encoder input ------------------------------------------------------
@@ -538,6 +550,7 @@ class Visualizer:
                 now,
                 self._live_overlays(now) if overlays is None else overlays,
                 sleep=self._sleep.gain(now),
+                focused=self._focused_slot,
             )
             # Under the lock, and re-checked inside it: a sleep notification
             # that arrived while this frame was composing must not have its
@@ -727,6 +740,42 @@ class Visualizer:
         if self.device.reopen():
             self._last_cells = None
 
+    def _check_attention(self, now: float) -> None:
+        """Find the encoder whose tab is in front of you, and mark the arrival.
+
+        The finding is :mod:`mft.attention`; what is left here is the part that
+        needs the board, and the part that is not pure. Arriving in a tab is the
+        clearest statement of presence this daemon ever gets -- clearer than a
+        hook, which only says an agent is busy, and clearer than a knob press,
+        which is the same statement made with your hand -- so it does what a
+        press does: forgives the debt, clears the alert, and resets the clock the
+        sleep is measured on.
+
+        Only on the edge. Sitting in a tab is not a standing amnesty: a prompt
+        that arrives while you are looking at it is one you are ignoring, and its
+        encoder is right to start asking.
+        """
+        if not config.ATTENTION_FOLLOW:
+            return
+        sessions = self.table.all()
+        try:
+            self._attention.poll(now, sessions)
+            session = self._attention.focused(sessions)
+        except Exception:
+            log.exception("could not tell which tab is in front")
+            return
+
+        self._focused_slot = None if session is None else session.slot
+        arrived = session.session_id if session is not None else ""
+        if arrived and arrived != self._focused_id:
+            log.debug("encoder %d is the tab in front (%s)", session.slot + 1, session.label)
+            if config.ATTENTION_ATTENDS:
+                session.attended()
+                self._sleep.touch(now)
+            if config.ATTENTION_PULSE:
+                self.push_overlay(overlays_mod.FocusOverlay(session, now))
+        self._focused_id = arrived
+
     # -- the roster ---------------------------------------------------------
 
     def adopt_running_sessions(self, awaken: bool = True) -> None:
@@ -808,6 +857,11 @@ class Visualizer:
             self._check_display(now)
             self._check_port(now)
             self._check_waiting(now)
+            # Before the bank follow and the paint: arriving in a tab forgives
+            # that session's alert, and a board that chased the bank of a prompt
+            # you are already reading would be moving the view to show you the
+            # thing in front of you.
+            self._check_attention(now)
             # Before the paint, so a followed bank and the frame that justifies
             # it land together rather than a frame apart. A peek is a modal view
             # of one session and the two self-portraits own the whole board, so

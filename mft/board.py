@@ -12,6 +12,8 @@ decides what a transient gesture looks like. Everything that is only decidable
   parallelism physically visible without disturbing anyone's slot.
 * **sleep** -- a standing dimming of everything at once, because the room is
   empty rather than because any one session got older.
+* **the focus marker** -- at most one encoder is the tab in front of you, which
+  makes "which one" a question about the whole board and not about any session.
 * **composition** -- :func:`compose`, which puts those in the one order that
   works and then lets the overlays paint on top.
 
@@ -455,12 +457,37 @@ def ambient(board: list[Cell], now: float) -> None:
         )
 
 
+def mark_focus(board: list[Cell], slot: int) -> None:
+    """Hold one encoder's ring at full: the tab you are looking at.
+
+    The ring and nothing else, which is the whole reason this is legible. Hue
+    says what a session is doing and the RGB channel's brightness is spent on
+    how much it wants you -- and is discarded outright while an animation is on
+    it -- so a marker there would be invisible on exactly the busy sessions
+    worth marking. The ring carries its own level on its own channel, so it
+    reads over a shimmer, a sweep or a strobe without arguing with any of them.
+
+    Ring *position* is left alone for the same reason: it is a gauge, a
+    stopwatch or an arc, and overwriting it would trade a fact for a pointer.
+
+    Nothing happens to a blank encoder. An ended session is not somewhere you
+    are, whatever the window server thinks the app in front is.
+    """
+    if not 0 <= slot < len(board):
+        return
+    cell = board[slot]
+    if cell is BLANK:
+        return
+    board[slot] = replace(cell, ring_level=config.ATTENTION_RING_LEVEL)
+
+
 def compose(
     sessions: Iterable[Session],
     now: Optional[float] = None,
     overlays: Iterable[Overlay] = (),
     slot_count: int = config.SLOT_COUNT,
     sleep: float = 1.0,
+    focused: Optional[int] = None,
 ) -> list[Cell]:
     """Steady state, then subagents, then arbitration, then overlays on top."""
     now = time.monotonic() if now is None else now
@@ -480,13 +507,23 @@ def compose(
     if config.AMBIENT and not claimed:
         ambient(board, now)
 
+    # After arbitration, before the dimming: the marker is not motion and has
+    # nothing to win from the budget, but it *is* a thing a sleeping board
+    # should keep -- a tab in front of you is the strongest evidence there is
+    # that somebody is here, so `dim` is told to spare it below.
+    if focused is not None:
+        mark_focus(board, focused)
+
     # Under the overlays, not among them. Every overlay is a gesture -- a spawn
     # strike, a banner, a `/clear` wipe, a press-and-hold peek -- and every one
     # of those is itself the activity that wakes the board, so dimming them
     # would be the sleep arguing with its own wake. It also means quitting a
     # dark daemon still plays the shutdown spiral at full brightness.
     if sleep < 1.0:
-        dim(board, sleep, frozenset(s.slot for s in sessions if s.alert))
+        spared = {s.slot for s in sessions if s.alert}
+        if focused is not None:
+            spared.add(focused)
+        dim(board, sleep, frozenset(spared))
 
     frozen = frozenset(claimed)
     for overlay in overlays:

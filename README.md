@@ -437,7 +437,9 @@ invisible until you turn your head. So motion is a budget.
 The most interesting thing the board encodes isn't agent state, it's *your
 neglect*. A session that finishes and goes unvisited ramps brightness over five
 minutes — more insistent the longer you ignore it — and goes quiet the moment you
-focus its tab. Same for one that's been idle-waiting a while. Finished work is
+focus its tab, whether you got there by pressing its encoder or by switching to
+the tab yourself ([the tab you're looking at](#the-other-direction-the-tab-youre-looking-at)).
+Same for one that's been idle-waiting a while. Finished work is
 capped well below a live block, so it can never outshout one.
 
 For the states that *animate*, that ramp goes on the rate instead: an ignored
@@ -764,6 +766,88 @@ table (`ps -E`), matched on working directory. Two Claudes in one directory are
 indistinguishable from out there, so they get their shared application and no
 tab, until one of them is pinned by a hook.
 
+## The other direction: the tab you're looking at
+
+Press-to-focus is the board pointing at a tab. `mft/attention.py` is the same
+arrow reversed — switch to a Claude tab yourself and its encoder **swells once
+and then holds its ring at full**, so the board stops being a list of agents and
+becomes a map with a *you are here* on it.
+
+The marker is on the **ring**, deliberately. Hue says what the session is doing,
+and RGB brightness is already spent on how badly it wants you — and is discarded
+outright while an animation is on it (see [attention debt](#attention-debt)), so
+a marker there would be invisible on exactly the busy sessions worth finding.
+The ring has its own channel and its own level, so it reads over a shimmer, a
+sweep or a strobe without arguing with any of them. Ring *position* is left
+alone too: it's a gauge, a stopwatch or an arc, and overwriting it would trade a
+fact for a pointer.
+
+Arriving in a tab also does what a press does — forgives the attention debt,
+clears the alert, resets the sleep clock. That's the line the debt section has
+always claimed ("goes quiet the moment you focus its tab") finally being
+literally true rather than a press standing in for it. Only on the *edge*,
+though: sitting in a tab is not a standing amnesty, and a prompt that arrives
+while you're looking at it is one you're ignoring.
+
+### How it knows, and what it costs
+
+There's no event to subscribe to, so it polls — in two layers, because the two
+questions cost wildly different amounts.
+
+| Question | How | Cost |
+|---|---|---|
+| which **app** is in front | `CGWindowListCopyWindowInfo` via `ctypes` | ~0.5ms, no permission, no subprocess |
+| which **tab** inside it | AppleScript for the selected tab's tty | ~80ms of subprocess, off the render thread |
+
+The saving grace is that the second question usually doesn't get asked. **If the
+app in front holds exactly one session on the board, the free answer is already
+the exact answer** — and one Claude per terminal is the ordinary desk. The
+AppleScript only runs to disambiguate two or more sessions in the *same*
+application, only while that application is frontmost, and never merely to
+*clear* the marker: switching to a browser is answered for free. Worst case —
+four Claudes in one Terminal window, with you sitting in it — is one 80ms query
+a second and it stops the moment you switch away.
+
+Only `kCGWindowName`, the window *title*, is redacted without Screen Recording
+permission. The owner's name and the window layer, which is all this needs, are
+not.
+
+| Terminal | Can tell its own tabs apart |
+|---|---|
+| Apple Terminal | yes — `tty of selected tab of front window` |
+| iTerm2 | yes — `tty of current session of current window` |
+| Ghostty, kitty, WezTerm, Alacritty | one session: yes, free. Two: no marker. |
+
+A terminal without a tab query isn't unsupported — it still gets the free
+single-session answer, which is the common case. Adding one is a `Terminal(...)`
+in `attention.TERMINALS`, the same shape as a focus adapter.
+
+### What it refuses to guess
+
+A missing marker is one you notice is missing; a wrong one moves your eye to a
+knob where no work is happening (invariant 6). So the answer is "nobody" for:
+two sessions in a terminal that can't be asked, a tty that names no session, two
+records holding the same token (the state `reconcile` exists to repair — marking
+one of them would be a coin toss), and a machine where the window server can't
+be reached at all.
+
+**tmux is the honest gap.** The tty Terminal reports is the *client's*, not the
+pane's, so a multiplexed tab resolves to nothing. Marking the wrong pane would
+be worse.
+
+`GET /status` carries `focused` (the encoder, 1-based) and `focused_app` (what
+the window server says is in front), which together are the whole diagnosis when
+the marker is on the wrong knob or on none.
+
+Three things were tried and dropped. Terminal focus reporting (`CSI ?1004h`) is
+the native answer and is unavailable twice over — the daemon writes *down* a
+session's tty but never reads it, and Apple Terminal doesn't implement the mode
+anyway. An `AXObserver` on the terminal's process is genuinely event-driven and
+wants an Accessibility grant, a dynamically allocated Objective-C class to carry
+the callback, and then hands back a window *title* — a string `tab.py` is itself
+writing into. A permission prompt and a feedback loop, to save a subprocess that
+mostly doesn't run.
+
 ## The same state, in the tab strip
 
 An encoder tells you a session wants you. It does not tell you *which window*,
@@ -837,6 +921,9 @@ likely want at runtime:
 | `MFT_CONTEXT_RING_IDLE` | `0` keeps the gauge off the resting states |
 | `MFT_CONTEXT_SETTINGS_MODEL` | `0` reads the context window off the transcript alone, never `settings.json` |
 | `MFT_FOLLOW_ALERTS` | `0` stops the board following a block onto its bank |
+| `MFT_ATTENTION_FOLLOW` | `0` stops the board marking the tab you're looking at |
+| `MFT_ATTENTION_PULSE` | `0` keeps the standing ring marker but drops the swell on arrival |
+| `MFT_ATTENTION_ATTENDS` | `0` leaves forgiving the debt to the encoder press alone |
 | `MFT_SUBAGENT_STACK` | the violet pile in the corner |
 | `MFT_SUBAGENT_SHIMMER` | `0` holds every dot at one level instead of brightening it on its own tool calls |
 | `MFT_TAB_TITLE`, `MFT_TAB_TITLE_MAX` | the glyph in the terminal tab strip |

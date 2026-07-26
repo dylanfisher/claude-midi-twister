@@ -617,3 +617,73 @@ class PeekOverlay(Overlay):
             board[slot] = Cell(color, config.ANIM_NONE, 127, 0.7)
         board[held] = Cell("purple", config.ANIM_NONE, 127, 1.0)
 
+
+class FocusOverlay(Overlay):
+    """You just switched to this session's tab: swell its encoder, once.
+
+    The counterpart to :class:`SpawnOverlay`, and deliberately the opposite
+    gesture. A spawn is news the board is telling *you*, so it strikes in a
+    colour of its own; this is the board acknowledging something you already
+    know, so it says nothing new -- it lifts the session's own hue and its own
+    ring to full and lets them fall back to whatever they were. You should be
+    able to watch it out of the corner of your eye and learn only *which of the
+    sixteen*, which is the entire question a marker answers.
+
+    It drops the animation for its half second, and that is not a cosmetic
+    choice: brightness does not reach the RGB while an animation is on it
+    (:meth:`mft.twister.Twister.write`), so a swell over a strobing permission
+    gate would otherwise be a swell you cannot see. The strobe comes back the
+    moment the overlay retires -- and if you are now looking at the tab it was
+    strobing about, half a second of calm is the truthful thing for it to do.
+
+    Pure paint like every overlay (invariant 5). The *state* half of arriving in
+    a tab -- forgiving the attention debt, waking the board -- happens in
+    :meth:`mft.daemon.Visualizer._check_attention`, where mutation belongs.
+    """
+
+    def __init__(
+        self,
+        session: Session,
+        started_at: float,
+        duration: float = config.ATTENTION_PULSE_SECONDS,
+    ) -> None:
+        #: The session, not its slot: an overlay outlives the frame it was made
+        #: in and the board compacts under sessions that end.
+        self.session = session
+        self.started_at = started_at
+        self.duration = max(0.01, duration)
+
+    def done(self, now: float) -> bool:
+        return now - self.started_at >= self.duration
+
+    def apply(self, board: list[Cell], now: float, claimed=frozenset()) -> None:
+        u = (now - self.started_at) / self.duration
+        if not 0.0 <= u < 1.0:
+            return
+        slot = self.session.slot
+        if not 0 <= slot < len(board):
+            return
+        under = board[slot]
+        if under is BLANK:
+            # An ended or sleeping encoder is not a thing to point at. Nothing
+            # to tear down either -- see the class docstring.
+            return
+
+        rise = config.ATTENTION_PULSE_RISE
+        if u < rise:
+            # Linear on the way up so the leading edge is a strike; eased on the
+            # way down so the encoder is seen settling back onto its own state
+            # rather than switching off.
+            level = clamp01(u / rise)
+        else:
+            level = 1.0 - smoothstep(clamp01((u - rise) / (1.0 - rise)))
+        # `max`, never a replacement: a session that is already brighter than the
+        # swell is one the pulse must not dim on its way through.
+        board[slot] = Cell(
+            under.color,
+            config.ANIM_NONE,
+            under.ring,
+            max(under.brightness, level),
+            max(under.ring_light, level),
+        )
+

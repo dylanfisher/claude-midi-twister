@@ -66,6 +66,8 @@ def payload(
     suspended: bool,
     port_failing: bool,
     bank: int,
+    focused: int | None = None,
+    focused_app: str = "",
 ) -> dict:
     """The whole answer. ``bank`` is zero-based in; one-based out, like slots."""
     return {
@@ -85,6 +87,14 @@ def payload(
         # panel. The other reason a board looks empty: everything is on a bank
         # you are not looking at. Compare against each session's own `bank`.
         "bank": bank + 1,
+        # Which encoder is marked as the tab in front of you, and what the
+        # window server says is in front at all. The two together are the whole
+        # diagnosis when the marker is on the wrong knob or on none: an app that
+        # is not in `mft.attention.TERMINALS`, a terminal hosting two sessions
+        # that cannot be told apart, or a tmux client whose tty is not its
+        # pane's. Null is the honest and common answer.
+        "focused": None if focused is None else focused + 1,
+        "focused_app": focused_app,
         "sessions": [
             session_payload(s, now) for s in sorted(sessions, key=lambda s: s.slot)
         ],

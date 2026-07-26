@@ -57,6 +57,7 @@ hooks/notify.sh, hooks/register_session.py
                                           │
    twister.py ◄───────────────────────────┘  what goes on the wire
    focus.py · tab.py · power.py · upkeep.py   what touches the outside
+   attention.py                               what the outside is doing
 ```
 
 Every module is one job, and the filename is the job. Start at `daemon.py` for
@@ -94,6 +95,12 @@ Every module is one job, and the filename is the job. Start at `daemon.py` for
 - `twister.py` — the MIDI port, one method per LED feature, writes de-duplicated.
 - `focus.py` — encoder press → raise a terminal tab. Adding a terminal is one
   adapter.
+- `attention.py` — the same arrow reversed: which tab is in front of *you*, so
+  the focused encoder can hold its ring at full. Two layers, and the split is
+  the whole design — the window server names the frontmost app for free
+  (`ctypes`, no permission), and an AppleScript names the tab inside it for
+  ~80ms, which is only ever spent when one terminal holds two sessions. Refuses
+  to guess far more readily than it answers; tmux is the documented gap.
 - `tab.py` — the board's second display: a state glyph prefixed to the tab's
   title, written as OSC down that session's tty. `TabStrip` decides when.
   Deliberately coarser than `render.py` (the three busy states share a glyph)

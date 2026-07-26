@@ -713,6 +713,57 @@ FOLLOW_STATES = ("permission", "plan", "waiting")
 #: bounce the board between their banks.
 FOLLOW_ALERT_COOLDOWN_SECONDS = 30.0
 
+# --- Attention: the tab you are looking at ----------------------------------
+# The inbound half of press-to-focus; see mft.attention for how it is detected
+# and what it deliberately refuses to guess.
+
+#: Mark the encoder whose terminal tab is in front of you. Off makes the board
+#: a list of agents again, which is what it was before and is a fair preference
+#: if you keep one session per desk and the marker is only ever telling you what
+#: you already knew.
+ATTENTION_FOLLOW = _flag("MFT_ATTENTION_FOLLOW", True)
+
+#: How often to ask the window server which application is in front. Free enough
+#: (about a millisecond, no permission, no subprocess) to be four times a second,
+#: which is the difference between the marker feeling attached to the alt-tab and
+#: feeling like it is catching up.
+ATTENTION_POLL_SECONDS = 0.25
+
+#: The floor on the *expensive* question -- which tab, via AppleScript, ~80ms of
+#: subprocess. Only ever reached when one terminal is holding two or more
+#: sessions, and skipped entirely on an app switch, which is answered at once.
+#: Raise it if you keep four Claudes in one Terminal window and can feel it.
+ATTENTION_ASK_SECONDS = 1.0
+
+#: How long to leave a terminal alone after its AppleScript comes back empty.
+#: A missing scripting dictionary or a refused Automation grant is not a
+#: condition that improves between one poll and the next, and this is what keeps
+#: that from being asked four times a second forever.
+ATTENTION_BACKOFF_SECONDS = 30.0
+
+#: Hold the focused encoder's ring at this level. On the *ring*, deliberately:
+#: channels 3 and 6 carry either an animation or a brightness and never both, so
+#: a marker on the RGB would silently vanish on exactly the sessions that are
+#: busy enough to be worth finding. The ring has its own channel and its own
+#: level, so this reads over the top of a shimmer, a strobe or a sweep.
+ATTENTION_RING_LEVEL = 1.0
+
+#: Swell the encoder when the tab arrives in front of you, rather than only
+#: lighting its ring. The marker says where you are; the pulse is what makes you
+#: look at it, and it is the whole answer to "which of these sixteen was that".
+ATTENTION_PULSE = _flag("MFT_ATTENTION_PULSE", True)
+ATTENTION_PULSE_SECONDS = 0.5
+#: Fraction of that spent rising. Short, so it reads as a strike rather than a
+#: breath -- breathing is a state on this board and this is an event.
+ATTENTION_PULSE_RISE = 0.2
+
+#: Treat arriving in a session's tab as someone being at the desk: it forgives
+#: the attention debt (which is what `Session.attended` has always claimed to
+#: mean) and resets the sleep timer. Off keeps both on the encoder press alone,
+#: which was the old behaviour -- and is the setting for a desk where a terminal
+#: is frequently in front of nobody.
+ATTENTION_ATTENDS = _flag("MFT_ATTENTION_ATTENDS", True)
+
 # --- Input ------------------------------------------------------------------
 
 #: A press held longer than this peeks at the session instead of focusing it.
