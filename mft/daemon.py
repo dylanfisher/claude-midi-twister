@@ -815,13 +815,17 @@ class Visualizer:
         # through it reads as a session that just started.
         self.adopt_running_sessions()
         if config.BOOT_ANIMATION:
-            # The exit gesture backwards, then the word: the board comes up
-            # whole, unwraps itself from the centre out along the same spiral
-            # the shutdown closes on, and hands a black board to the C of
-            # CLAUDE. Both block, and both are white on a dark board.
+            # The exit gesture backwards, and then the word if it is switched
+            # on: the board comes up whole, unwraps itself from the centre out
+            # along the same spiral the shutdown closes on, and hands a black
+            # board to the C of CLAUDE. Both block, and both are white on a dark
+            # board. With the word off the unwrap is the whole of boot.
             if config.BOOT_UNWRAP_ANIMATION:
                 self.animate(overlays_mod.UnwrapOverlay(time.monotonic()))
-            self.animate(overlays_mod.TextOverlay(config.BOOT_WORD, time.monotonic()))
+            if config.BOOT_WORD_ANIMATION:
+                self.animate(
+                    overlays_mod.TextOverlay(config.BOOT_WORD, time.monotonic())
+                )
             # The word blocks; the waiting animation does not -- and it does not
             # start here either. It is armed, and the render loop starts it a
             # couple of frames later if the board is still empty by then, then

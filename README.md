@@ -997,7 +997,8 @@ likely want at runtime:
 | `MFT_TAB_TITLE`, `MFT_TAB_TITLE_MAX` | the glyph in the terminal tab strip |
 | `MFT_CLOCK_BPM` | MIDI clock; `0` stops sending it |
 | `MFT_BOOT_ANIMATION`, `MFT_CLEAR_ANIMATION`, `MFT_SPAWN_ANIMATION`, `MFT_AMBIENT` | the decorative layers |
-| `MFT_BOOT_UNWRAP` | `0` drops the unwrap that precedes the boot word, leaving CLAUDE alone |
+| `MFT_BOOT_UNWRAP` | `0` drops the unwrap, leaving whatever follows it alone |
+| `MFT_BOOT_WORD` | `1` spells CLAUDE after the unwrap; off by default |
 | `MFT_WHITE`, `MFT_DARK_COLOR`, `MFT_DARK_VALUE`, `MFT_RING_DARK_VALUE` | per-unit colour calibration |
 | `MFT_HOST`, `MFT_PORT` | where the daemon listens |
 | `MFT_DISCOVER` | `0` is the same as `--no-discover` |

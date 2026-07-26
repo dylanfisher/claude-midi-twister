@@ -830,6 +830,16 @@ TOOL_COLOR_DEFAULT = "azure"
 # daemon leaving across the room.
 
 BOOT_WORD = "CLAUDE"
+#: Whether the word is spelled at all. Off by default: the unwrap before it
+#: already says a daemon just arrived, and it says so in a second and a half of
+#: shape rather than in six seconds of letters you have read every previous time
+#: you started this thing. The word is the slowest part of boot and the only
+#: part that is the same every run, which makes it the part you stop watching
+#: first. Turn it back on (`MFT_BOOT_WORD=1`) when you want the device to
+#: introduce itself -- a demo, a new desk, a photo. Nothing downstream depends
+#: on it: with this off the board goes unwrap -> black -> waiting gradients, and
+#: `WAITING_START_DELAY_SECONDS` still buys the same couple of frames.
+BOOT_WORD_ANIMATION = _flag("MFT_BOOT_WORD", False)
 #: Deliberately unhurried. The boot animation is the only time the device says
 #: anything in words, and a 0.3s-per-letter version reads as a flicker you catch
 #: the tail of rather than as CLAUDE: by the time you look up it is over. Each
