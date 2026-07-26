@@ -636,6 +636,26 @@ class FocusOverlay(Overlay):
     moment the overlay retires -- and if you are now looking at the tab it was
     strobing about, half a second of calm is the truthful thing for it to do.
 
+    **The gesture is on the RGB only.** The ring is left exactly where the cell
+    underneath had it, which for the focused encoder is
+    :data:`config.ATTENTION_RING_LEVEL` -- the marker, arriving and then simply
+    staying. That is the point of the pair: the swell is the event and the ring
+    is the state, and a marker that flinches every time it is set is a worse
+    marker.
+
+    Two ring gestures were tried here and both are gone. Swelling *up* is not
+    available: :func:`mft.board.mark_focus` has already pinned this encoder at
+    full, so a strike to full settling onto full is a four-frame ramp onto a
+    level it was already at -- which read, correctly, as "the ring doesn't
+    pulse". Dipping *down* is available, and legible, and wrong: the only
+    envelope a light already at maximum can run is out-and-back, which is a
+    different motion to the RGB's strike-and-settle no matter how carefully the
+    two are given the same duration. They stopped reading as one gesture.
+
+    (Both of those were designed against a channel that was doing nothing at
+    all -- see :data:`config.RING_ANIM_OFFSET`. The dip was judged for real once
+    the band was fixed, and lost on its merits.)
+
     Pure paint like every overlay (invariant 5). The *state* half of arriving in
     a tab -- forgiving the attention debt, waking the board -- happens in
     :meth:`mft.daemon.Visualizer._check_attention`, where mutation belongs.
@@ -693,6 +713,10 @@ class FocusOverlay(Overlay):
             config.ANIM_NONE,
             under.ring,
             lerp(swell, under.brightness, settle),
-            lerp(swell, under.ring_light, settle),
+            # Handed straight through, on purpose -- see the class docstring.
+            # Passed explicitly rather than left to default, because `None` here
+            # would mean "follow the brightness", and the brightness is the one
+            # thing on this cell that is mid-gesture.
+            under.ring_light,
         )
 

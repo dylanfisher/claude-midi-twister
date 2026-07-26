@@ -277,12 +277,41 @@ ANIM_PULSE = {
 #: a gate, and the difference between a strobe and a breathe is carrying meaning.
 ANIM_BANDS = (tuple(ANIM_GATE.values()), tuple(ANIM_PULSE.values()))
 
-#: Ring brightness ramp on channel 6: a linear fade from dimmest to full.
+#: How far above the RGB's tables channel 6's own tables sit.
 #:
-#: Not the same band as the RGB's. The two channels share a layout in spirit and
-#: not in numbers, which is exactly the trap below.
-BRIGHTNESS_MIN = 17
-BRIGHTNESS_MAX = 47
+#: The two channels share a layout in spirit and not in numbers, and this is how
+#: far apart they actually are. Channel 6 carries the *indicator* bands, and on
+#: this hardware they are the channel-3 bands shifted up by a whole block: 49-56
+#: gate, 57-64 pulse, 65-95 brightness. So a value that is a perfectly good RGB
+#: brightness is, on channel 6, somewhere in the animation tables or below them.
+#:
+#: This board sent 17-47 on channel 6 for its entire life before anyone checked,
+#: because "the ring's ramp is like the RGB's ramp, a value or two off" is such a
+#: reasonable thing to believe that it survived being written down twice. What it
+#: actually meant was that *every* ring brightness the daemon has ever sent
+#: landed below the indicator band and did nothing at all: the focus marker, the
+#: RING_CEILING that was added to make the marker legible, the focus pulse, the
+#: gauge's stale fade, the sleep dimming. All of them were arithmetic that
+#: reached the wire and stopped there, which is why the symptom was never "the
+#: ring is the wrong brightness" -- it was "the ring does not respond to
+#: brightness", and that reads as a design that does not work rather than a
+#: constant that is wrong.
+#:
+#: The lesson is in `mft.calibrate ring`, which sweeps 0-127 and would have shown
+#: this on day one. A band that is *documented* still has to be looked at.
+RING_ANIM_OFFSET = int(os.environ.get("MFT_RING_ANIM_OFFSET", 48))
+
+#: Ring brightness ramp on channel 6: a linear fade from off to full.
+#:
+#: Not the same band as the RGB's, and not off by one either -- off by 48. See
+#: :data:`RING_ANIM_OFFSET`. Verify per unit with ``python -m mft.calibrate
+#: ring``: the floor is the lowest value at which the ring goes *completely*
+#: dark with its position at full, and the ceiling is where it stops getting
+#: brighter. The top of a brightness ramp saturates perceptually a few values
+#: before it saturates numerically, so read the ceiling as "the last value that
+#: still changes something", not "the first one that looks bright".
+BRIGHTNESS_MIN = int(os.environ.get("MFT_RING_BRIGHTNESS_MIN", 65))
+BRIGHTNESS_MAX = int(os.environ.get("MFT_RING_BRIGHTNESS_MAX", 95))
 
 #: RGB brightness ramp on channel 3, and the one number on this device it is
 #: worth reading the manual twice for.
@@ -320,6 +349,10 @@ DARK_VALUE = int(os.environ.get("MFT_DARK_VALUE", RGB_BRIGHTNESS_MIN))
 #: :data:`DARK_VALUE` because the two being the same integer was the assumption
 #: that hid the pulse: one constant for two channels means the first one you get
 #: right makes the second one look right too.
+#:
+#: Naming them apart was necessary and nowhere near sufficient -- two separate
+#: constants both landed in the RGB's band anyway, for the whole span this board
+#: has existed. See :data:`RING_ANIM_OFFSET`.
 RING_DARK_VALUE = int(os.environ.get("MFT_RING_DARK_VALUE", BRIGHTNESS_MIN))
 
 #: The hue a dark encoder wears. Moot while :data:`DARK_VALUE` is a real off --

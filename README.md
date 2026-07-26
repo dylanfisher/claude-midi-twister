@@ -817,6 +817,23 @@ bright as the pulse is to go dark first. It falls back onto the session's own
 level rather than onto black, because the overlay retires into that cell one
 frame later.
 
+**The swell is the RGB's alone; the ring doesn't move.** That split is the point
+of the pair — the swell is the event, the ring is the state — and a marker that
+flinches every time it's set is a worse marker.
+
+It took two abandoned attempts to be sure of that. Swelling the ring *up* isn't
+available: the marker has already pinned the focused encoder at full, so a
+strike to full settling onto full is a four-frame ramp onto a level it was
+already at, which reads exactly as "the ring doesn't pulse". Dipping it *down*
+is available and legible — out over the knee, back over the tail — and still
+wrong, because out-and-back is a different motion to the RGB's
+strike-and-settle, and matching their durations doesn't make them one gesture.
+
+Both were designed against a channel that was doing nothing at all (see
+[calibrating](#calibrating), and `RING_ANIM_OFFSET` — channel 6's brightness
+band was 48 values away from where this board was writing). The dip was only
+judged for real once that was fixed, and lost on its merits.
+
 The marker is on the **ring**, deliberately. Hue says what the session is doing,
 and RGB brightness is already spent on how badly it wants you — and is discarded
 outright while an animation is on it (see [attention debt](#attention-debt)), so
@@ -1016,6 +1033,7 @@ likely want at runtime:
 | `MFT_BOOT_UNWRAP` | `0` drops the unwrap, leaving whatever follows it alone |
 | `MFT_BOOT_WORD` | `1` spells CLAUDE after the unwrap; off by default |
 | `MFT_WHITE`, `MFT_DARK_COLOR`, `MFT_DARK_VALUE`, `MFT_RING_DARK_VALUE` | per-unit colour calibration |
+| `MFT_RING_BRIGHTNESS_MIN`, `MFT_RING_BRIGHTNESS_MAX`, `MFT_RING_ANIM_OFFSET` | channel 6's brightness band, if your firmware moved it |
 | `MFT_HOST`, `MFT_PORT` | where the daemon listens |
 | `MFT_DISCOVER` | `0` is the same as `--no-discover` |
 
@@ -1057,10 +1075,100 @@ the colour says which one it moved to.
 **Off is a specific number and it is not the obvious one.** Channel 2 is hue all
 the way down (0 is bright blue, not dark), so the RGB is only switched off on
 channel 3 — where 0 means "no animation" and 17 is the *slowest pulse*, not a
-dim encoder. Off is **18** (`DARK_VALUE`). The ring's floor on channel 6 is
-**17** (`RING_DARK_VALUE`); the two ramps do not line up. Watch a candidate for a
-few seconds before calling it off: the pulse rates just below look dark at a
-glance and then swell back up.
+dim encoder. Off is **18** (`DARK_VALUE`). Watch a candidate for a few seconds
+before calling it off: the pulse rates just below look dark at a glance and then
+swell back up.
+
+**And channel 6's tables are not channel 3's.** They are channel 3's shifted up
+by a whole block (`RING_ANIM_OFFSET`, 48): 49–56 gate, 57–64 pulse, **65–95
+brightness**. So the ring's floor is 65 (`RING_DARK_VALUE`) and its ceiling 95,
+and an RGB brightness value sent on channel 6 lands *below* the indicator band
+and does nothing whatsoever.
+
+That last sentence is the most expensive one in this file. This board sent 17–47
+on channel 6 from the day it was written, on the entirely reasonable belief that
+the ring's ramp was the RGB's ramp give or take a value — a belief that survived
+being written down twice, in two separately-named constants, with a comment
+warning that the two do not line up. What it meant in practice was that every
+ring brightness the daemon ever computed reached the wire and stopped: the focus
+marker, the `RING_CEILING` added to make that marker legible, the focus pulse,
+the gauge's stale fade, the sleep dimming. None of them had ever done anything.
+
+The symptom is worth recognising, because it does not look like a wrong number.
+A wrong brightness looks like a wrong brightness. A value *below the band* looks
+like the feature doesn't work — like a design that failed rather than a constant
+that missed — and that sends you off rewriting animation curves, which is where
+this one was eventually found. **If a ring feature does nothing, sweep the whole
+of channel 6 before touching the code that paints it.** `mft.calibrate ring`
+covers 0–127 and would have shown this on day one.
+
+### The demo bench
+
+`demo/index.html` is `mft.calibrate`'s interactive counterpart: a single page
+that drives the device over Web MIDI, with no daemon, no Python and no port of
+its own. Open it, click something, look at the board.
+
+```sh
+open demo/index.html                       # Chrome; see below if it refuses
+```
+
+It auto-connects to the first output whose name matches *twister*, so if the
+board lights when you press a button you are done. If Chrome declines Web MIDI
+on a `file://` URL, serve it instead — `localhost` is unambiguously a secure
+context:
+
+```sh
+python3 -m http.server -d demo 8765        # then open http://localhost:8765/
+```
+
+Chrome only. Web MIDI is not in Safari, and Firefox needs it enabled by hand.
+The first load asks for MIDI permission; if you dismiss that, the slider icon in
+the address bar is where you take it back.
+
+**Run it with the daemon stopped** — `.venv/bin/python -m mft.daemon --stop`.
+Two CoreMIDI clients on one device is fine on macOS and the page will detect a
+live daemon and say so, but the daemon repaints at 30Hz and will eventually
+paint over whatever you sent. (It de-duplicates its writes, so a value on a
+channel it isn't currently changing does survive — which is what makes the page
+usable in a pinch while a daemon is up, and also what makes the results
+confusing if you forget.)
+
+What's on it, in the order the panels appear:
+
+1. **Connection** — port pick, and the MIDI clock. Start the clock before
+   judging any animation: the device takes its gate and pulse rates from
+   incoming clock, and without one every encoder free-runs off its own timer and
+   they drift apart, which reads as broken hardware. Also a blackout button,
+   because a bench that leaves the board lit is a bench you stop trusting.
+2. **Ring brightness, channel 6** — the single question that decides whether the
+   ring marker, the `RING_CEILING` and the focus pulse work at all. A ladder
+   (47 → 32 → 17), a blink, a one-value-at-a-time sweep of the whole ramp, and
+   an A/B that puts the marker level next to the ceiling level on two adjacent
+   encoders so you can answer "is that difference legible" rather than "is there
+   a difference". Ring position is forced to full throughout, so there is
+   something to dim.
+3. **Target encoder** — which of the 64 everything else talks to, plus the bank
+   select. Slot is also the CC number on every channel, and the pad shows both.
+4. **The four channels** — a slider each for ring position, hue, ch3 and ch6,
+   with the named colours from `config.COLORS` as buttons and the animation
+   tables as dropdowns with their raw values spelled out.
+5. **Gestures** — the real envelopes from `overlays.py` and `render.py`, ported
+   to JS and played at 30fps: the focus pulse (and a ×4-slow version, for when
+   half a second is too fast to tell what you're looking at), the spawn strike,
+   the done flash and fade, the working shimmer, the log-scaled turn stopwatch.
+   Each one prints the value stream it just sent, so what you saw and what went
+   on the wire are side by side.
+6. **The state vocabulary** — all ten session states painted across encoders
+   1–10 at once, which is the fastest way to see whether two of them have
+   drifted into looking like each other.
+7. **Sweeps** — the same seven sweeps `mft.calibrate` offers, sixteen values at
+   a time with next/prev paging.
+8. **Raw CC and monitor** — anything the panels above don't cover, and an
+   inbound log so you can watch presses and turns arrive.
+
+The value tables in the page are a **mirror** of `config.py`, not a second
+source of truth. A number that turns out to be wrong for your unit gets fixed in
+`config.py` (or an `MFT_*` env var) and then copied back into the page.
 
 ## Tests
 

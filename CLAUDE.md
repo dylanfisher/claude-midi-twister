@@ -21,6 +21,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m mft.daemon --status | --stop | --discover
 .venv/bin/python -m mft.simulate --sessions 6      # fake sessions, no Claude needed
 .venv/bin/python -m mft.calibrate colors|white|anim|ring|ramp|dark|banks
+open demo/index.html                               # Web MIDI bench, no daemon
+                                                   #   (stop the daemon first)
 
 curl -s localhost:7654/status | python3 -m json.tool
 .venv/bin/python install_hooks.py --print|--check|--uninstall
@@ -180,8 +182,15 @@ The MIDI channel layout is documented and stable; the value tables are not.
   is a brightness ramp — a lit encoder can animate or dim, not both.
 - **Off is 18** (`config.DARK_VALUE`) on channel 3, not 0 (which means "no
   animation") and not 17 (which is the *slowest pulse* — and since the daemon
-  supplies the MIDI clock, all sixteen breathe in unison). The ring's floor is
-  17 (`config.RING_DARK_VALUE`) — the two ramps do not line up.
+  supplies the MIDI clock, all sixteen breathe in unison).
+- **Channel 6's tables are channel 3's plus 48** (`config.RING_ANIM_OFFSET`):
+  49-56 gate, 57-64 pulse, 65-95 brightness, so the ring's floor is **65**
+  (`config.RING_DARK_VALUE`) and its ceiling 95. An RGB brightness sent on
+  channel 6 lands below the indicator band and does nothing — silently, which is
+  how it survived for the whole life of this board and made every ring
+  brightness feature (focus marker, `RING_CEILING`, focus pulse, gauge fade,
+  sleep dimming) inert. If a ring feature "doesn't work", suspect this first and
+  sweep the whole channel, not just 0-47.
 - Per-unit drift goes through `mft.calibrate` and then into `config.py` or an
   `MFT_*` env var. Don't hardcode a number a sweep found.
 - Encoders must be set to accept host LED control in the Midi Fighter Utility,

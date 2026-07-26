@@ -1,0 +1,770 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Twister bench</title>
+<!--
+  A hardware bench for the Midi Fighter Twister, over Web MIDI.
+
+  Why this exists: everything above the wire in this repo is pure and tested,
+  which means the questions the test suite cannot answer are exactly the ones
+  that cost the most time -- "does this value do what config.py says it does on
+  *my* unit", and "is the thing I cannot see a paint bug or a wire bug". The
+  Python side answers those by running the whole daemon and then reasoning
+  backwards from a board you are looking at. This answers them by sending one
+  value and asking you what happened.
+
+  It deliberately does not talk to the daemon. No HTTP, no /status, no hooks --
+  the daemon's own httpd sends no CORS headers and a page that needed one would
+  be a page that stops working the moment the thing you are debugging is broken.
+  Everything here is the browser and the device, and it works with the daemon
+  dead. See README, "The demo bench".
+
+  The value tables below are a *mirror* of mft/config.py, not the source. If you
+  find a number here that is wrong for your unit, the fix goes in config.py (or
+  an MFT_* env var) and then gets copied back to this file.
+-->
+<style>
+  :root {
+    --bg: #16181d; --panel: #1e2128; --line: #2e323c;
+    --ink: #d7dae1; --dim: #878e9c; --accent: #7fd1e8; --warn: #e8b57f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 1.5rem; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  h1 { font-size: 1.1rem; margin: 0 0 .25rem; letter-spacing: .04em; }
+  h2 { font-size: .85rem; margin: 0 0 .75rem; color: var(--accent);
+       text-transform: uppercase; letter-spacing: .1em; }
+  p.note { color: var(--dim); margin: .35rem 0; max-width: 62ch; }
+  a { color: var(--accent); }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  .cols { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }
+  section {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; padding: 1rem; margin-bottom: 1rem;
+  }
+  section.focus { border-color: var(--accent); }
+  button {
+    font: inherit; background: #2a2e37; color: var(--ink); cursor: pointer;
+    border: 1px solid var(--line); border-radius: 4px; padding: .3rem .6rem;
+    margin: 0 .3rem .3rem 0;
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  button.on { background: var(--accent); color: #16181d; border-color: var(--accent); }
+  select, input[type=number] {
+    font: inherit; background: #2a2e37; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 4px; padding: .25rem;
+  }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  label { display: block; margin: .5rem 0 .15rem; color: var(--dim); font-size: .82rem; }
+  .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+  .val { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: .4rem; margin: .5rem 0; }
+  .grid button { margin: 0; aspect-ratio: 1; display: flex; align-items: center;
+                 justify-content: center; flex-direction: column; font-size: .8rem; }
+  .grid button small { color: var(--dim); font-size: .65rem; }
+  pre.log {
+    background: #101216; border: 1px solid var(--line); border-radius: 4px;
+    padding: .5rem; height: 190px; overflow: auto; margin: .5rem 0 0;
+    font-size: .76rem; white-space: pre-wrap; color: var(--dim);
+  }
+  table { border-collapse: collapse; width: 100%; font-size: .78rem; }
+  th, td { text-align: right; padding: .12rem .4rem; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--dim); font-weight: normal; }
+  .banner {
+    border-left: 3px solid var(--warn); background: #23201b;
+    padding: .6rem .8rem; margin: 0 0 1rem; color: #e3cba6;
+  }
+  .banner.bad { border-color: #e87f7f; background: #241b1b; color: #e8b0b0; }
+  .status { color: var(--dim); }
+  .status b { color: var(--accent); font-weight: normal; }
+  kbd { background: #2a2e37; border: 1px solid var(--line); border-radius: 3px;
+        padding: 0 .3rem; font-size: .8rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Twister bench</h1>
+<p class="note">
+  Chrome only (Web MIDI). Sends straight to the device — no daemon involved, and
+  it works with the daemon dead. Every table here mirrors <code>mft/config.py</code>;
+  a number that's wrong for your unit gets fixed there, not here.
+</p>
+
+<div id="warn-daemon" class="banner" hidden>
+  A daemon appears to be running and repainting at 30Hz. It de-duplicates its
+  writes, so anything you send on a channel it isn't currently changing will
+  stick — but the moment that session changes state it will paint over you.
+  For clean results: <code>.venv/bin/python -m mft.daemon --stop</code>.
+</div>
+
+<section>
+  <h2>1 · Connection</h2>
+  <div class="row">
+    <label style="margin:0">out</label> <select id="out"></select>
+    <label style="margin:0">in</label> <select id="in"></select>
+    <button id="connect">connect</button>
+    <span id="conn" class="status">not connected</span>
+  </div>
+  <div class="row" style="margin-top:.6rem">
+    <button id="clock">start clock</button>
+    <label style="margin:0">bpm</label>
+    <input id="bpm" type="number" value="120" min="20" max="300" style="width:5rem">
+    <span class="status">
+      the device takes its animation rates from incoming MIDI clock — without
+      one, gates and pulses free-run and drift out of phase
+    </span>
+  </div>
+  <div class="row" style="margin-top:.6rem">
+    <button id="blackout">blackout all 64</button>
+    <button id="panic">stop everything</button>
+  </div>
+</section>
+
+<section class="focus">
+  <h2>2 · Ring brightness — channel 6</h2>
+  <p class="note">
+    The focus marker, the <code>RING_CEILING</code> and the focus pulse all
+    depend on this band. If this panel does nothing, none of the three have ever
+    worked and no amount of animation shape will fix them. Ring <em>position</em>
+    is forced to full here so there is something to dim.
+  </p>
+  <div class="row">
+    <button data-ladder="step">ladder: 95 → 80 → 65, 1.5s each</button>
+    <button data-ladder="blink">blink: 95 ↔ 65, 4×</button>
+    <button data-ladder="sweep">sweep 65 → 95, one value at a time</button>
+  </div>
+  <div class="row" style="margin-top:.4rem">
+    <button data-ladder="ab">A/B: enc 1 at 95 vs enc 2 at 80 (is the marker legible?)</button>
+  </div>
+  <label>manual: channel 6 = <span class="val" id="ch6-val">95</span></label>
+  <input type="range" id="ch6" min="0" max="127" value="95">
+  <p class="note" style="margin-top:.6rem">
+    Channel 6 carries the <em>indicator</em> tables, and they are channel 3's
+    shifted up by a whole block: 49–56 gate · 57–64 pulse ·
+    <b>65 = brightness 0%</b> · 95 = brightness 100%. An RGB brightness (18–47)
+    sent here lands <em>below</em> the indicator band and does nothing at all —
+    which is what this board did on every ring write for its entire life, and
+    the reason none of the ring features above ever worked. Verify the ceiling
+    by ear rather than by eye: read it as the last value that still changes
+    something, not the first that looks bright.
+  </p>
+</section>
+
+<div class="cols">
+  <section>
+    <h2>3 · Target encoder</h2>
+    <div class="row">
+      <label style="margin:0">bank</label>
+      <select id="bank"><option>1</option><option>2</option><option>3</option><option>4</option></select>
+      <button id="banksel">send bank select (ch4)</button>
+    </div>
+    <div class="grid" id="pad"></div>
+    <p class="note">
+      Slot is also the CC number on every channel: bank <i>N</i> is CC
+      <i>N</i>×16 … <i>N</i>×16+15, so slot and control are the same integer.
+      Selected: <span class="val" id="target">slot 0 (bank 1, enc 1)</span>
+    </p>
+  </section>
+
+  <section>
+    <h2>4 · The four channels</h2>
+    <label>ch1 · ring position = <span class="val" id="p1">0</span></label>
+    <input type="range" id="c1" min="0" max="127" value="0">
+    <label>ch2 · hue = <span class="val" id="p2">48</span></label>
+    <input type="range" id="c2" min="0" max="127" value="48">
+    <div class="row" id="hues"></div>
+    <label>ch3 · RGB anim / brightness = <span class="val" id="p3">47</span></label>
+    <input type="range" id="c3" min="0" max="127" value="47">
+    <select id="anim3"></select>
+    <label>ch6 · ring anim / brightness = <span class="val" id="p6">47</span></label>
+    <input type="range" id="c6" min="0" max="127" value="47">
+    <select id="anim6"></select>
+  </section>
+</div>
+
+<div class="cols">
+  <section>
+    <h2>5 · Gestures (as the daemon paints them)</h2>
+    <p class="note">
+      The real envelopes from <code>mft/overlays.py</code> and
+      <code>mft/render.py</code>, ported and run at 30 fps on the target
+      encoder. The value stream is printed so you can compare it against
+      what you're seeing.
+    </p>
+    <div class="row">
+      <button data-gesture="focus">focus pulse</button>
+      <button data-gesture="focus-slow">focus pulse ×4 slower</button>
+      <button data-gesture="spawn">spawn strike</button>
+      <button data-gesture="done">done flash + fade</button>
+      <button data-gesture="working">working shimmer</button>
+      <button data-gesture="turn">turn stopwatch (60s in 6s)</button>
+    </div>
+    <table id="trace"><thead><tr>
+      <th>t</th><th>ring pos</th><th>ring lvl</th><th>ch6</th><th>rgb lvl</th><th>ch3</th>
+    </tr></thead><tbody><tr><td colspan="6">—</td></tr></tbody></table>
+  </section>
+
+  <section>
+    <h2>6 · The state vocabulary</h2>
+    <p class="note">
+      Every session state painted onto its own encoder, hue + animation +
+      ring, exactly as <code>render.py</code> would. Start the clock first or
+      the animated ones won't be in phase.
+    </p>
+    <div class="row">
+      <button id="states">paint all ten states</button>
+      <button id="states-stop">stop</button>
+    </div>
+    <table id="states-key"><thead><tr>
+      <th>enc</th><th>state</th><th>hue</th><th>ch3</th><th>ring</th>
+    </tr></thead><tbody><tr><td colspan="5">—</td></tr></tbody></table>
+  </section>
+</div>
+
+<div class="cols">
+  <section>
+    <h2>7 · Sweeps <span class="status">(what mft.calibrate does)</span></h2>
+    <p class="note">
+      Sixteen values at a time across bank 1. Use these to find the numbers your
+      unit actually wants, then put them in <code>config.py</code> or an
+      <code>MFT_*</code> env var.
+    </p>
+    <div class="row">
+      <button data-sweep="colors">colors · ch2 hue wheel</button>
+      <button data-sweep="white">white · which hue isn't one</button>
+      <button data-sweep="anim">anim · ch3 band</button>
+      <button data-sweep="ring">ring · ch6 band</button>
+      <button data-sweep="ramp">ramp · ch1 positions</button>
+      <button data-sweep="dark">dark · which ch3 value is off</button>
+      <button data-sweep="banks">banks · which ch4 CC moves the panel</button>
+    </div>
+    <div class="row" style="margin-top:.5rem">
+      <button id="sweep-prev">◀ prev page</button>
+      <button id="sweep-next">next page ▶</button>
+      <span id="sweep-label" class="status">no sweep running</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>8 · Raw CC + monitor</h2>
+    <div class="row">
+      <label style="margin:0">ch</label>
+      <select id="rch">
+        <option value="0">1 · ring position</option>
+        <option value="1">2 · hue / press in</option>
+        <option value="2">3 · RGB anim+bright</option>
+        <option value="3">4 · banks, side buttons</option>
+        <option value="4">5 · shift</option>
+        <option value="5">6 · ring anim+bright</option>
+      </select>
+      <label style="margin:0">cc</label> <input id="rcc" type="number" value="0" min="0" max="127" style="width:4.5rem">
+      <label style="margin:0">val</label> <input id="rval" type="number" value="0" min="0" max="127" style="width:4.5rem">
+      <button id="rsend">send</button>
+    </div>
+    <p class="note">
+      Inbound below. A press is channel 2 (value ≥ 64 down, 0 up); a turn is
+      channel 1 and the daemon ignores it by design — invariant 1, the device is
+      a display, never a control surface.
+    </p>
+    <pre class="log" id="log"></pre>
+  </section>
+</div>
+
+<p class="note" style="margin-bottom:2rem">
+  Encoders must be set to accept host LED control in the Midi Fighter Utility.
+  Otherwise the device drives its own LEDs and ignores every byte on this page —
+  which looks exactly like a broken value table.
+</p>
+
+</div>
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// The tables. Mirror of mft/config.py; that file is the source of truth.
+// ---------------------------------------------------------------------------
+const CH = { ENCODER: 0, SWITCH: 1, SWITCH_ANIM: 2, SYSTEM: 3, SHIFT: 4, RING_ANIM: 5 };
+const SLOT_COUNT = 64, PER_BANK = 16;
+
+const COLORS = { white: 127, blue: 1, azure: 12, cyan: 25, spring: 37, green: 48,
+                 lime: 58, yellow: 62, amber: 68, orange: 72, red: 78,
+                 magenta: 98, purple: 110, violet: 118 };
+
+const ANIM_NONE = 0;
+const RATES = ["1/8", "1/4", "1/2", "1", "2", "4", "8", "16"];
+const ANIM_GATE = {}, ANIM_PULSE = {};
+RATES.forEach((r, i) => { ANIM_GATE[r] = 1 + i; ANIM_PULSE[r] = 9 + i; });
+
+// The two ramps do not line up, and they miss by a whole block. Channel 6
+// carries the *indicator* bands, which sit RING_ANIM_OFFSET above channel 3's:
+// 49-56 gate, 57-64 pulse, 65-95 brightness. Sending an RGB brightness on
+// channel 6 lands below the indicator band and does nothing, which is exactly
+// the bug this page was built to find.
+const RING_ANIM_OFFSET = 48;
+const RING_MIN = 65, RING_MAX = 95;
+const RGB_MIN = 18, RGB_MAX = 47;
+const DARK_VALUE = RGB_MIN, RING_DARK_VALUE = RING_MIN;
+// The hue an unlit encoder is left holding. Channel 2 has no dark end, so this
+// is only ever seen if something relights the LED without setting a hue first.
+const DARK_COLOR = COLORS.white;
+
+const BANK_SELECT_CC = [0, 1, 2, 3], BANK_SELECT_VALUE = 127;
+
+const STATE_COLORS = { idle: "green", thinking: "cyan", working: "orange",
+  streaming: "spring", permission: "red", plan: "yellow", waiting: "amber",
+  error: "red", done: "green", ended: null };
+const STATE_ANIM = { permission: ANIM_GATE["4"], plan: ANIM_GATE["2"],
+  waiting: ANIM_PULSE["1/2"], streaming: ANIM_PULSE["2"] };
+const STATE_ORDER = ["permission", "plan", "error", "waiting", "streaming",
+  "working", "thinking", "done", "idle", "ended"];
+
+const IDLE_BRIGHTNESS = 0.22, ACTIVE_BRIGHTNESS = 1.0;
+const RING_CEILING = 0.5, ATTENTION_RING_LEVEL = 1.0;
+const PULSE_SECONDS = 0.5, PULSE_RISE = 0.2;
+const SPAWN_SECONDS = 0.45, DONE_FADE_SECONDS = 12.0;
+const PIP = 2, FPS = 30;
+
+const clamp01 = t => Math.max(0, Math.min(1, t));
+const lerp = (lo, hi, t) => lo + (hi - lo) * clamp01(t);
+const smoothstep = t => { t = clamp01(t); return t * t * (3 - 2 * t); };
+const ringValue = f => RING_MIN + Math.round(clamp01(f) * (RING_MAX - RING_MIN));
+const rgbValue  = f => RGB_MIN  + Math.round(clamp01(f) * (RGB_MAX  - RGB_MIN));
+
+// ---------------------------------------------------------------------------
+// Wire
+// ---------------------------------------------------------------------------
+let midi = null, out = null, input = null, clockTimer = null, running = null;
+const $ = id => document.getElementById(id);
+const logEl = $("log");
+
+function say(line) {
+  const t = new Date().toLocaleTimeString("en-GB");
+  logEl.textContent = `${t}  ${line}\n` + logEl.textContent.slice(0, 12000);
+}
+
+function cc(channel, control, value) {
+  if (!out) return;
+  value = Math.max(0, Math.min(127, Math.round(value)));
+  out.send([0xB0 | channel, control & 127, value]);
+}
+
+function stopRunning() {
+  if (running) { clearInterval(running); running = null; }
+}
+
+// One encoder, one full cell -- the same order Twister.write uses: brightness
+// before hue on the RGB, so a hue never lands on an LED that is about to be lit.
+function writeCell(slot, { color, rgbAnim = 0, ring = 0, brightness = 0, ringLevel = null }) {
+  if (color === null) {
+    cc(CH.SWITCH_ANIM, slot, DARK_VALUE);
+    cc(CH.SWITCH, slot, DARK_COLOR);
+  } else {
+    cc(CH.SWITCH, slot, color);
+    cc(CH.SWITCH_ANIM, slot, rgbAnim ? rgbAnim : rgbValue(brightness));
+  }
+  cc(CH.ENCODER, slot, ring);
+  cc(CH.RING_ANIM, slot, ringValue(ringLevel === null ? brightness : ringLevel));
+}
+
+function clearSlot(slot) {
+  cc(CH.ENCODER, slot, 0);
+  cc(CH.SWITCH_ANIM, slot, DARK_VALUE);
+  cc(CH.SWITCH, slot, COLORS.blue);
+  cc(CH.RING_ANIM, slot, RING_DARK_VALUE);
+}
+
+// ---------------------------------------------------------------------------
+// Ports
+// ---------------------------------------------------------------------------
+async function boot() {
+  if (!navigator.requestMIDIAccess) {
+    document.body.insertAdjacentHTML("afterbegin",
+      '<div class="banner bad">This browser has no Web MIDI. Use Chrome.</div>');
+    return;
+  }
+  try {
+    midi = await navigator.requestMIDIAccess({ sysex: false });
+  } catch (err) {
+    document.body.insertAdjacentHTML("afterbegin",
+      `<div class="banner bad">MIDI access refused: ${err}. Check the site
+       permission in Chrome (the slider icon in the address bar).</div>`);
+    return;
+  }
+  midi.onstatechange = ports;
+  ports();
+  autoConnect();
+}
+
+function ports() {
+  const fill = (sel, iter) => {
+    const had = sel.value;
+    sel.innerHTML = "";
+    for (const p of iter) sel.add(new Option(p.name, p.id));
+    if (had) sel.value = had;
+  };
+  fill($("out"), midi.outputs.values());
+  fill($("in"), midi.inputs.values());
+}
+
+function autoConnect() {
+  for (const p of midi.outputs.values())
+    if (/twister/i.test(p.name)) { $("out").value = p.id; break; }
+  for (const p of midi.inputs.values())
+    if (/twister/i.test(p.name)) { $("in").value = p.id; break; }
+  if ($("out").value) connect();
+}
+
+function connect() {
+  out = midi.outputs.get($("out").value) || null;
+  if (input) input.onmidimessage = null;
+  input = midi.inputs.get($("in").value) || null;
+  if (input) input.onmidimessage = onMidi;
+  $("conn").innerHTML = out
+    ? `<b>${out.name}</b>${input ? " / in ok" : " / no input"}`
+    : "not connected";
+  if (out) say(`connected to ${out.name}`);
+}
+
+function onMidi(msg) {
+  const [status, a, b] = msg.data;
+  const type = status & 0xF0, ch = (status & 0x0F) + 1;
+  if (type !== 0xB0) return;
+  let what = `ch${ch} cc${a} = ${b}`;
+  if (ch === 2) what += b >= 64 ? "   ← press down" : "   ← release";
+  if (ch === 1) what += "   ← knob turn (the daemon ignores these)";
+  if (ch === 4) what += "   ← bank / side button";
+  say(what);
+}
+
+$("connect").onclick = connect;
+$("out").onchange = connect;
+$("in").onchange = connect;
+
+// ---------------------------------------------------------------------------
+// Clock. 24 pulses per quarter note; without it every animated encoder
+// free-runs off its own timer and they drift, which reads as broken hardware.
+// ---------------------------------------------------------------------------
+$("clock").onclick = () => {
+  if (clockTimer) {
+    clearInterval(clockTimer); clockTimer = null;
+    if (out) out.send([0xFC]);
+    $("clock").textContent = "start clock"; $("clock").classList.remove("on");
+    say("clock stopped");
+    return;
+  }
+  if (!out) return;
+  const bpm = Number($("bpm").value) || 120;
+  out.send([0xFA]);
+  clockTimer = setInterval(() => out.send([0xF8]), 60000 / (bpm * 24));
+  $("clock").textContent = "stop clock"; $("clock").classList.add("on");
+  say(`clock at ${bpm} bpm`);
+};
+
+$("blackout").onclick = () => {
+  stopRunning();
+  for (let s = 0; s < SLOT_COUNT; s++) clearSlot(s);
+  say("blackout: all 64 encoders dark");
+};
+$("panic").onclick = () => {
+  stopRunning();
+  if (clockTimer) $("clock").click();
+  say("stopped");
+};
+
+// ---------------------------------------------------------------------------
+// Target
+// ---------------------------------------------------------------------------
+let slot = 0;
+function drawPad() {
+  const bank = Number($("bank").value) - 1;
+  $("pad").innerHTML = "";
+  for (let i = 0; i < PER_BANK; i++) {
+    const s = bank * PER_BANK + i;
+    const b = document.createElement("button");
+    b.innerHTML = `${i + 1}<small>cc${s}</small>`;
+    if (s === slot) b.classList.add("on");
+    b.onclick = () => { slot = s; drawPad(); showTarget(); };
+    $("pad").appendChild(b);
+  }
+}
+function showTarget() {
+  $("target").textContent =
+    `slot ${slot} (bank ${Math.floor(slot / PER_BANK) + 1}, enc ${slot % PER_BANK + 1})`;
+}
+$("bank").onchange = drawPad;
+$("banksel").onclick = () => {
+  const bank = Number($("bank").value) - 1;
+  cc(CH.SYSTEM, BANK_SELECT_CC[bank], BANK_SELECT_VALUE);
+  say(`bank select: ch4 cc${BANK_SELECT_CC[bank]} = ${BANK_SELECT_VALUE}`);
+};
+drawPad(); showTarget();
+
+// ---------------------------------------------------------------------------
+// The four channels
+// ---------------------------------------------------------------------------
+const sliders = [["c1", "p1", CH.ENCODER], ["c2", "p2", CH.SWITCH],
+                 ["c3", "p3", CH.SWITCH_ANIM], ["c6", "p6", CH.RING_ANIM]];
+for (const [id, out_, channel] of sliders) {
+  $(id).oninput = () => { $(out_).textContent = $(id).value; cc(channel, slot, Number($(id).value)); };
+}
+
+for (const [name, value] of Object.entries(COLORS)) {
+  const b = document.createElement("button");
+  b.textContent = name;
+  b.onclick = () => { $("c2").value = value; $("p2").textContent = value; cc(CH.SWITCH, slot, value); };
+  $("hues").appendChild(b);
+}
+
+// `shift` is 0 for channel 3 and RING_ANIM_OFFSET for channel 6 -- the whole
+// difference between the two channels' tables.
+function animOptions(sel, floor, shift) {
+  sel.add(new Option("— animation —", ""));
+  sel.add(new Option("0 · none (device takes over)", 0));
+  for (const r of RATES)
+    sel.add(new Option(`gate ${r}  · ${ANIM_GATE[r] + shift}`, ANIM_GATE[r] + shift));
+  for (const r of RATES)
+    sel.add(new Option(`pulse ${r} · ${ANIM_PULSE[r] + shift}`, ANIM_PULSE[r] + shift));
+  sel.add(new Option(`${floor} · brightness 0% (off)`, floor));
+}
+animOptions($("anim3"), DARK_VALUE, 0);
+animOptions($("anim6"), RING_DARK_VALUE, RING_ANIM_OFFSET);
+$("anim3").onchange = () => { if ($("anim3").value === "") return;
+  $("c3").value = $("anim3").value; $("p3").textContent = $("anim3").value;
+  cc(CH.SWITCH_ANIM, slot, Number($("anim3").value)); };
+$("anim6").onchange = () => { if ($("anim6").value === "") return;
+  $("c6").value = $("anim6").value; $("p6").textContent = $("anim6").value;
+  cc(CH.RING_ANIM, slot, Number($("anim6").value)); };
+
+// ---------------------------------------------------------------------------
+// 2 · The channel 6 question
+// ---------------------------------------------------------------------------
+$("ch6").oninput = () => {
+  $("ch6-val").textContent = $("ch6").value;
+  cc(CH.ENCODER, slot, 127);
+  cc(CH.RING_ANIM, slot, Number($("ch6").value));
+};
+
+function steps(list, hold, done) {
+  stopRunning();
+  let i = 0;
+  const tick = () => {
+    if (i >= list.length) { stopRunning(); if (done) done(); return; }
+    list[i++]();
+  };
+  tick();
+  running = setInterval(tick, hold);
+}
+
+document.querySelectorAll("[data-ladder]").forEach(btn => btn.onclick = () => {
+  const kind = btn.dataset.ladder;
+  cc(CH.ENCODER, slot, 127);
+  cc(CH.SWITCH_ANIM, slot, DARK_VALUE);   // RGB out of the way; this is about the ring
+  if (kind === "step") {
+    const mid = ringValue(0.5);
+    say(`ladder on ch6: ${RING_MAX} (full) → ${mid} (half) → ${RING_MIN} (off)`);
+    steps([RING_MAX, mid, RING_MIN].map(
+      v => () => { cc(CH.RING_ANIM, slot, v); say(`  ch6 = ${v}`); }), 1500);
+  } else if (kind === "blink") {
+    say(`blink on ch6: ${RING_MAX} ↔ ${RING_MIN}`);
+    const seq = [];
+    for (let i = 0; i < 8; i++) {
+      const v = i % 2 ? RING_MIN : RING_MAX;
+      seq.push(() => cc(CH.RING_ANIM, slot, v));
+    }
+    steps(seq, 600);
+  } else if (kind === "sweep") {
+    say(`sweep ch6 ${RING_MIN} → ${RING_MAX}, one value at a time`);
+    const seq = [];
+    for (let v = RING_MIN; v <= RING_MAX; v++)
+      seq.push(() => { cc(CH.RING_ANIM, slot, v); $("ch6-val").textContent = v; });
+    steps(seq, 220);
+  } else if (kind === "ab") {
+    stopRunning();
+    const base = Math.floor(slot / PER_BANK) * PER_BANK;
+    for (let i = 0; i < PER_BANK; i++) clearSlot(base + i);
+    for (const [i, v] of [[0, ringValue(ATTENTION_RING_LEVEL)], [1, ringValue(RING_CEILING)]]) {
+      cc(CH.ENCODER, base + i, 127);
+      cc(CH.RING_ANIM, base + i, v);
+    }
+    say(`A/B: enc 1 = ${ringValue(ATTENTION_RING_LEVEL)} (marker), ` +
+        `enc 2 = ${ringValue(RING_CEILING)} (RING_CEILING). ` +
+        `Different? Then the marker is legible and the ramp works.`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 5 · Gestures, run at 30fps with the real envelopes
+// ---------------------------------------------------------------------------
+const traceBody = document.querySelector("#trace tbody");
+function trace(rows) {
+  traceBody.innerHTML = rows.map(r =>
+    `<tr><td>${r.t.toFixed(3)}</td><td>${r.ring}</td><td>${r.ringLevel.toFixed(3)}</td>` +
+    `<td>${ringValue(r.ringLevel)}</td><td>${r.brightness.toFixed(3)}</td>` +
+    `<td>${r.rgbAnim ? r.rgbAnim : rgbValue(r.brightness)}</td></tr>`).join("");
+}
+
+// The cell a gesture is painted over, so the settle has somewhere to land.
+function underCell(kind) {
+  if (kind.startsWith("focus"))
+    // Focused, so mark_focus has already pinned the ring at full -- which is
+    // exactly why the ring gesture has to be spent below it.
+    return { color: COLORS.green, rgbAnim: 0, ring: PIP,
+             brightness: IDLE_BRIGHTNESS, ringLevel: ATTENTION_RING_LEVEL };
+  return { color: COLORS.green, rgbAnim: 0, ring: PIP,
+           brightness: IDLE_BRIGHTNESS, ringLevel: RING_CEILING };
+}
+
+function playGesture(kind) {
+  stopRunning();
+  const under = underCell(kind);
+  const slow = kind === "focus-slow" ? 4 : 1;
+  const duration = {
+    focus: PULSE_SECONDS, "focus-slow": PULSE_SECONDS * 4, spawn: SPAWN_SECONDS,
+    done: 6.0, working: 6.0, turn: 6.0,
+  }[kind];
+  const rows = [];
+  const started = performance.now();
+
+  running = setInterval(() => {
+    const t = (performance.now() - started) / 1000;
+    if (t >= duration) { stopRunning(); writeCell(slot, under); trace(rows); return; }
+    let cell;
+    if (kind === "focus" || kind === "focus-slow") {
+      // RGB only. The ring holds the marker still through the whole gesture --
+      // the swell is the event, the ring is the state.
+      const u = t / (PULSE_SECONDS * slow);
+      let swell, settle;
+      if (u < PULSE_RISE) { swell = clamp01(u / PULSE_RISE); settle = 0; }
+      else { swell = 1; settle = smoothstep(clamp01((u - PULSE_RISE) / (1 - PULSE_RISE))); }
+      cell = { color: under.color, rgbAnim: 0, ring: under.ring,
+               brightness: lerp(swell, under.brightness, settle),
+               ringLevel: under.ringLevel };
+    } else if (kind === "spawn") {
+      const u = clamp01(t / SPAWN_SECONDS);
+      const level = 1 - smoothstep(u);
+      cell = { color: COLORS.white, rgbAnim: 0, ring: Math.round(127 * level),
+               brightness: level, ringLevel: level };
+    } else if (kind === "done") {
+      const fade = clamp01(1 - t / (DONE_FADE_SECONDS / 2));
+      cell = { color: COLORS.green, rgbAnim: 0, ring: Math.max(PIP, Math.round(127 * fade)),
+               brightness: lerp(IDLE_BRIGHTNESS, ACTIVE_BRIGHTNESS, fade),
+               ringLevel: lerp(IDLE_BRIGHTNESS, ACTIVE_BRIGHTNESS, fade) };
+    } else if (kind === "working") {
+      // One tool call every 1.2s, decaying between: shimmer rate reads as
+      // tool-call frequency out of the corner of your eye.
+      const sinceTool = t % 1.2;
+      const kick = Math.max(0, 1 - sinceTool / 0.6);
+      const level = lerp(0.35, ACTIVE_BRIGHTNESS, kick);
+      cell = { color: COLORS.orange, rgbAnim: 0, ring: Math.round(127 * (t / duration)),
+               brightness: level, ringLevel: Math.min(level, RING_CEILING) };
+    } else { // turn: the log-scaled stopwatch
+      const elapsed = (t / duration) * 60;
+      const knee = 30, span = Math.log1p(900 / knee);
+      const f = Math.min(1, Math.log1p(elapsed / knee) / span);
+      cell = { color: COLORS.orange, rgbAnim: 0, ring: Math.max(2, Math.round(127 * f)),
+               brightness: ACTIVE_BRIGHTNESS, ringLevel: RING_CEILING };
+    }
+    writeCell(slot, cell);
+    if (rows.length < 60) rows.push({ t, ...cell });
+  }, 1000 / FPS);
+  say(`gesture: ${kind} on slot ${slot}`);
+}
+document.querySelectorAll("[data-gesture]").forEach(
+  b => b.onclick = () => playGesture(b.dataset.gesture));
+
+// ---------------------------------------------------------------------------
+// 6 · The state vocabulary
+// ---------------------------------------------------------------------------
+$("states").onclick = () => {
+  stopRunning();
+  const rows = [];
+  STATE_ORDER.forEach((state, i) => {
+    const name = STATE_COLORS[state];
+    const color = name === null ? null : COLORS[name];
+    const anim = STATE_ANIM[state] || 0;
+    const ring = ["permission", "plan", "waiting", "error"].includes(state) ? 127
+               : state === "done" ? 90 : state === "ended" ? 0 : PIP;
+    const brightness = state === "idle" ? IDLE_BRIGHTNESS
+                     : state === "ended" ? 0 : ACTIVE_BRIGHTNESS;
+    writeCell(i, { color, rgbAnim: anim, ring, brightness,
+                   ringLevel: Math.min(brightness, RING_CEILING) });
+    rows.push(`<tr><td>${i + 1}</td><td>${state}</td><td>${name || "—"}</td>` +
+              `<td>${anim || rgbValue(brightness)}</td><td>${ring}</td></tr>`);
+  });
+  document.querySelector("#states-key tbody").innerHTML = rows.join("");
+  say("painted the ten states across encoders 1-10");
+};
+$("states-stop").onclick = () => { stopRunning(); for (let s = 0; s < PER_BANK; s++) clearSlot(s); };
+
+// ---------------------------------------------------------------------------
+// 7 · Sweeps
+// ---------------------------------------------------------------------------
+let sweep = null;
+function startSweep(kind) {
+  stopRunning();
+  for (let s = 0; s < PER_BANK; s++) clearSlot(s);
+  const plans = {
+    colors: { channel: CH.SWITCH, from: 0, to: 127, prep: s => cc(CH.SWITCH_ANIM, s, RGB_MAX) },
+    white:  { channel: CH.SWITCH, from: 112, to: 127, prep: s => cc(CH.SWITCH_ANIM, s, RGB_MAX) },
+    anim:   { channel: CH.SWITCH_ANIM, from: 0, to: 47, prep: s => cc(CH.SWITCH, s, COLORS.green) },
+    // 0-127, not 0-47: stopping at the RGB's ceiling is precisely how the
+    // indicator band went unnoticed. Sweep the whole channel.
+    ring:   { channel: CH.RING_ANIM, from: 0, to: 127, prep: s => cc(CH.ENCODER, s, 127) },
+    ramp:   { channel: CH.ENCODER, from: 0, to: 127, prep: s => cc(CH.RING_ANIM, s, RING_MAX) },
+    dark:   { channel: CH.SWITCH_ANIM, from: 14, to: 22, prep: s => cc(CH.SWITCH, s, COLORS.green) },
+    banks:  { channel: CH.SYSTEM, from: 0, to: 15, byControl: true },
+  };
+  sweep = { kind, page: 0, ...plans[kind] };
+  showSweep();
+}
+function showSweep() {
+  if (!sweep) return;
+  const start = sweep.from + sweep.page * PER_BANK;
+  const parts = [];
+  for (let i = 0; i < PER_BANK; i++) {
+    const v = start + i;
+    if (v > sweep.to) { if (!sweep.byControl) clearSlot(i); continue; }
+    if (sweep.prep) sweep.prep(i);
+    if (sweep.byControl) cc(sweep.channel, v, BANK_SELECT_VALUE);
+    else cc(sweep.channel, i, v);
+    parts.push(`enc${i + 1}=${v}`);
+  }
+  const what = sweep.byControl ? "cc number" : "value";
+  $("sweep-label").textContent =
+    `${sweep.kind} · ch${sweep.channel + 1} · ${what} ${parts.join(" ")}`;
+  say(`sweep ${sweep.kind}: ${parts.join("  ")}`);
+}
+document.querySelectorAll("[data-sweep]").forEach(
+  b => b.onclick = () => startSweep(b.dataset.sweep));
+$("sweep-next").onclick = () => {
+  if (!sweep) return;
+  if (sweep.from + (sweep.page + 1) * PER_BANK <= sweep.to) { sweep.page++; showSweep(); }
+};
+$("sweep-prev").onclick = () => { if (sweep && sweep.page > 0) { sweep.page--; showSweep(); } };
+
+// ---------------------------------------------------------------------------
+// 8 · Raw
+// ---------------------------------------------------------------------------
+$("rsend").onclick = () => {
+  const ch = Number($("rch").value), n = Number($("rcc").value), v = Number($("rval").value);
+  cc(ch, n, v);
+  say(`sent ch${ch + 1} cc${n} = ${v}`);
+};
+
+// Is a daemon holding the board? It answers /status; a failure is the normal
+// case and means nothing is going to paint over you.
+fetch("http://127.0.0.1:7654/status", { mode: "no-cors" })
+  .then(() => { $("warn-daemon").hidden = false; })
+  .catch(() => {});
+
+boot();
+</script>
+</body>
+</html>

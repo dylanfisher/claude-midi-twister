@@ -398,15 +398,21 @@ class Ceiling(unittest.TestCase):
 
     def test_an_overlay_still_reaches_full_over_a_capped_board(self):
         """Overlays are painted after the cap on purpose: a gesture that could
-        not reach full would be a gesture you might miss."""
+        not reach full would be a gesture you might miss.
+
+        The focus swell spends itself on the RGB and hands the ring straight
+        through, so what has to clear the ceiling here is the marker level the
+        overlay is preserving."""
         session = self.table.ensure("a", "/tmp", {"tty": "/dev/ttys001"})
         session.state, session.state_since = "working", 100.0
         pulse = overlays.FocusOverlay(session, 100.0)
-        cells = board.compose(
-            self.table.all(), 100.0 + config.ATTENTION_PULSE_SECONDS * 0.2,
-            overlays=[pulse],
-        )
-        self.assertAlmostEqual(cells[session.slot].ring_light, 1.0, places=2)
+        at = lambda u: board.compose(  # noqa: E731
+            self.table.all(), 100.0 + config.ATTENTION_PULSE_SECONDS * u,
+            overlays=[pulse], focused=session.slot,
+        )[session.slot]
+        self.assertAlmostEqual(at(0.999).ring_light, 1.0, places=2)
+        self.assertGreater(at(0.999).ring_light, config.RING_CEILING)
+        self.assertAlmostEqual(at(config.ATTENTION_PULSE_RISE).brightness, 1.0, places=2)
 
 
 class Pulsing(unittest.TestCase):
@@ -450,12 +456,28 @@ class Pulsing(unittest.TestCase):
         last = self.paint(config.ATTENTION_PULSE_SECONDS * 0.999)
         self.assertAlmostEqual(last.brightness, 0.8, places=2)
 
-    def test_the_ring_makes_the_same_trip(self):
-        self.under = Cell("red", config.ANIM_NONE, 127, 0.2, ring_level=1.0)
-        self.assertAlmostEqual(self.paint(0.0).ring_light, 0.0, places=2)
-        self.assertAlmostEqual(
-            self.paint(config.ATTENTION_PULSE_SECONDS * 0.999).ring_light, 1.0, places=2
+    def test_the_ring_does_not_move(self):
+        """The swell is the RGB's alone. The ring is the marker arriving and
+        then staying put, and a marker that flinches is a worse marker -- so
+        every frame of the gesture leaves it exactly where the cell underneath
+        had it, whatever that was."""
+        for rest in (1.0, 0.4):
+            with self.subTest(rest=rest):
+                self.under = Cell("red", config.ANIM_NONE, 127, 0.2, ring_level=rest)
+                for u in (0.0, 0.1, 0.2, 0.5, 0.9, 0.999):
+                    at = self.paint(config.ATTENTION_PULSE_SECONDS * u)
+                    self.assertAlmostEqual(at.ring_light, rest, places=6)
+
+    def test_the_ring_does_not_follow_the_brightness_mid_gesture(self):
+        """``ring_level=None`` means "whatever the cell is lit at", which is the
+        one thing it must not mean here: the brightness is mid-swell. The level
+        has to be stated, not defaulted."""
+        self.under = Cell("red", config.ANIM_NONE, 127, 0.2, ring_level=0.4)
+        peak = self.paint(
+            config.ATTENTION_PULSE_SECONDS * config.ATTENTION_PULSE_RISE
         )
+        self.assertAlmostEqual(peak.brightness, 1.0, places=2)
+        self.assertAlmostEqual(peak.ring_light, 0.4, places=2)
 
     def test_it_keeps_the_session_hue(self):
         """A spawn strike is news and wears its own colour. This is an
