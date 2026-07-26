@@ -150,10 +150,14 @@ class Visualizer:
         #: Serialises a frame against the blackout, which is the one write that
         #: has to be the last thing on the wire. Uncontended at 30Hz.
         self._paint_lock = threading.Lock()
-        #: Sleep and wake, both detectors; see :mod:`mft.power`.
+        #: Sleep and wake, all three detectors; see :mod:`mft.power`.
         self._power = power_mod.PowerWatcher(self.on_system_sleep, self.on_system_wake)
         self._wake_clock = power_mod.WakeClock()
-        #: Debounces the two detectors reporting one wake.
+        #: The one that carries the weight: a poll, so it cannot be missed, and
+        #: the only one that can tell a dark wake from someone opening the lid.
+        self._display = power_mod.DisplayPower()
+        self._last_display_poll = float("-inf")
+        #: Debounces the detectors reporting one wake.
         self._last_system_wake = float("-inf")
         #: When a dead MIDI port was last retried; see :meth:`_check_port`.
         self._last_port_retry = float("-inf")
@@ -563,53 +567,100 @@ class Visualizer:
 
     # -- sleep and wake -----------------------------------------------------
 
-    def on_system_sleep(self) -> None:
-        """Darken the board, with the machine waiting on us to finish.
+    def darken(self, reason: str) -> None:
+        """Put the board out, and hold it out. Idempotent.
 
-        Runs on the notification thread (:mod:`mft.power`) and does exactly the
-        one thing that cannot be done after the fact. The flag goes up *before*
-        the blackout and under the same lock a frame holds, or the render loop
-        gets one more frame in afterwards and the last word on the board is a
-        lit one -- which is the entire bug this exists to prevent, and it would
-        show up only as "sometimes it stays on overnight".
+        The flag goes up *before* the blackout and under the same lock a frame
+        holds, or the render loop gets one more frame in afterwards and the last
+        word on the board is a lit one -- which is the entire bug this exists to
+        prevent, and it would show up only as "sometimes it stays on overnight".
 
         Not conditional on there being anything worth showing: an empty board
         still breathes (`config.AMBIENT`), and a desk lamp is exactly what this
         must not be at 3am.
         """
-        if not config.SLEEP_BLACKOUT:
+        if self._suspended.is_set():
             return
         with self._paint_lock:
             self._suspended.set()
             try:
                 self.device.blackout()
             except Exception:
-                log.exception("could not darken the board for sleep")
-        log.info("system sleeping; board dark")
+                log.exception("could not darken the board")
+        log.info("%s; board dark", reason)
+
+    def relight(self, reason: str) -> None:
+        """Hand the board back to the render loop. Idempotent.
+
+        The de-dup cache goes first, since a repaint the cache suppresses is
+        exactly as dark as no repaint at all.
+
+        What this deliberately does *not* do is touch the sleep timer. A board
+        that relights itself to full brightness because a screen came on is
+        worse than one that comes back at the dim level it went down at -- and
+        after a suspend that level is exactly where you left it, the clock it
+        runs on having frozen with the machine. The first hook event or encoder
+        press brings it up, as it always does.
+        """
+        if not self._suspended.is_set():
+            return
+        log.info("%s; repainting", reason)
+        self._suspended.clear()
+        self._forget_board()
+
+    def _forget_board(self) -> None:
+        """Drop every belief about what the device is currently showing.
+
+        Separate from :meth:`relight` because a wake needs it whether or not the
+        board was ever darkened: a suspend can leave the hardware holding
+        something other than what we last sent it, and the de-dup cache would
+        go on suppressing exactly the writes that would fix that.
+        """
+        self.device.forget_all()
+        self._last_cells = None
+        self._wake.set()
+
+    def on_system_sleep(self) -> None:
+        """The notification path into :meth:`darken`, with the machine waiting.
+
+        Runs on the notification thread (:mod:`mft.power`) and does the one
+        thing that cannot be done after the fact. In practice the display went
+        dark a moment before this and :meth:`_check_display` already blacked the
+        board out; this is what covers the case where it did not -- a lid closed
+        on a lit screen, which suspends the machine without an idle timer ever
+        running down.
+        """
+        if not config.SLEEP_BLACKOUT:
+            return
+        self.darken("system sleeping")
 
     def on_system_wake(self, source: str = "notification") -> None:
-        """Put the board back, and re-check the table it is painting.
+        """Re-check the table, and relight only if anyone could see it.
 
-        Idempotent and debounced, because both detectors fire for a healthy
-        wake by design. The order matters: the cache goes first, since a repaint
-        that the de-dup suppresses is exactly as dark as no repaint at all.
+        Idempotent and debounced, because the detectors fire for a healthy wake
+        by design.
 
-        What this deliberately does *not* do is touch the sleep timer. Opening
-        the lid looks identical to a Power Nap from here, and a board that
-        relights itself to full brightness for a backup at 3am is worse than one
-        that comes back at the dim level it went down at -- which, since the
-        clock it runs on froze with the machine, is exactly where you left it.
-        The first hook event or encoder press brings it up, as it always does.
+        The board comes back only when the *display* is on. A dark wake -- Power
+        Nap, a backup, a network arrival -- looks exactly like an opened lid to
+        both of the other detectors, and a Mac in standby has one of these every
+        fifteen minutes all night. Relighting for each of them is how a board
+        stays lit through nine consecutive suspends. The screen is the thing
+        that says a person is there; when it comes on, :meth:`_check_display`
+        relights on the next poll.
         """
         now = time.monotonic()
         with self._lock:
             if now - self._last_system_wake < config.WAKE_DEBOUNCE_SECONDS:
                 return
             self._last_system_wake = now
-        log.info("system awake (%s); repainting", source)
-        self._suspended.clear()
-        self.device.forget_all()
-        self._last_cells = None
+        if config.DISPLAY_BLACKOUT and self._display.asleep:
+            log.info("system awake (%s) but the display is off; board stays dark", source)
+        else:
+            self.relight(f"system awake ({source})")
+            # Unconditionally, and not only when that relight did something: a
+            # board that was never darkened still came through a suspend, and
+            # the device may not be holding what we think it is.
+            self._forget_board()
         if config.WAKE_REDISCOVER:
             self.adopt_running_sessions(awaken=False)
         # Explicitly, rather than waiting for the interval to come round: the
@@ -618,6 +669,31 @@ class Visualizer:
         # precisely when the tabs on the board got closed without telling us.
         self.upkeep.sweep_census()
         self._wake.set()
+
+    def _check_display(self, now: float) -> None:
+        """Follow the screen. Polled, on its own interval.
+
+        The load-bearing detector, and the reason it is a poll: there is no
+        notification here to miss, drop, or stop being delivered. Whatever the
+        other two do or fail to do, a board sitting lit in front of a dark
+        screen is one second from being noticed.
+        """
+        if not config.DISPLAY_BLACKOUT:
+            return
+        if now - self._last_display_poll < config.DISPLAY_POLL_SECONDS:
+            return
+        self._last_display_poll = now
+        asleep = self._display.poll()
+        if asleep is None:
+            return
+        if asleep:
+            self.darken("display asleep")
+        else:
+            # The census too, and for the same reason the wake path runs one:
+            # a screen that has been off for a while is a window in which tabs
+            # got closed, and the board should not come back naming them.
+            self.relight("display awake")
+            self.upkeep.sweep_census()
 
     def _check_wake_clock(self) -> None:
         """The fallback detector, polled once a frame.
@@ -726,6 +802,10 @@ class Visualizer:
             # yet makes every decision below it a decision about a board nobody
             # is writing to, and a dead port makes it one nobody is reading.
             self._check_wake_clock()
+            # After the clock and before everything else: the clock reports a
+            # wake for a dark wake too, and this is what decides whether that
+            # wake gets to light anything up.
+            self._check_display(now)
             self._check_port(now)
             self._check_waiting(now)
             # Before the paint, so a followed bank and the frame that justifies

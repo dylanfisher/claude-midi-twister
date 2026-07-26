@@ -104,11 +104,15 @@ Every module is one job, and the filename is the job. Start at `daemon.py` for
 - `upkeep.py` — *when* to ask, on which thread, and what to do with the answer.
   Three clocks: adoption at boot/wake, the free pid sweep every reap, the `ps`
   census on its own thread.
-- `power.py` — system sleep and wake, over `ctypes` into IOKit. Load-bearing
-  fact, documented at length there and in the README: `time.monotonic()` on
-  macOS does not advance while the machine is asleep, so every deadline in the
-  daemon pauses with it and a suspend is invisible from inside the loop. That is
-  the behaviour you want and the reason this module has to exist.
+- `power.py` — system sleep and wake, over `ctypes` into IOKit, plus the
+  display's power state out of CoreGraphics. The board follows the screen, and
+  that poll is the detector that carries the weight: the IOKit notification can
+  stop being delivered, and on a Mac that dark-wakes for maintenance it does.
+  Load-bearing fact, documented at length there and in the README:
+  `time.monotonic()` on macOS does not advance while the machine is asleep, so
+  every deadline in the daemon pauses with it and a suspend is invisible from
+  inside the loop. That is the behaviour you want and the reason this module has
+  to exist.
 - `banks.py` — which sixteen encoders the front panel shows, and the cooldown on
   moving it. The one non-painting write to the device (invariant 1).
 

@@ -571,7 +571,7 @@ is the board you left. Nothing is missed on the hook side either — the session
 are frozen along with everything else, so there are no events to miss.
 
 What that frozen clock also means is that a suspend is undetectable from inside
-the loop, so it has to be reported from outside. Two detectors, in `power.py`:
+the loop, so it has to be reported from outside. Three detectors, in `power.py`:
 
 - **IOKit power notifications** (`IORegisterForSystemPower`, through `ctypes` —
   this project is not taking on a framework bridge for one callback). The only
@@ -583,9 +583,41 @@ the loop, so it has to be reported from outside. Two detectors, in `power.py`:
   counts time spent asleep and `mach_absolute_time` doesn't, so the gap between
   them grows only across a suspend. It can report a wake and never a sleep, and
   only after the fact — but after the fact is still in time to repaint.
+- **The display's power state** (`CGDisplayIsAsleep`), which is the one that
+  carries the weight. A poll rather than a notification, so nothing can fail to
+  deliver it; true through a suspend *and* through a dark wake, which is the
+  distinction the other two cannot make; and 28 microseconds a call, which buys
+  the right to just ask every second and stop reasoning about it.
 
-Both fire for the same wake on a healthy machine, on purpose: the handler is
-cheap and debounced, and the cost of trusting either one alone is a dead board.
+All three fire for the same wake on a healthy machine, on purpose: the handler
+is cheap and debounced, and the cost of trusting any one alone is a board that
+lies.
+
+**The board follows the screen.** Lit when you can see it, dark when you can't —
+including the screen going off on its own idle timer with the machine still
+awake, which is the one case none of this used to cover. `MFT_DISPLAY_BLACKOUT=0`
+turns that off and leaves the notification as the only way down.
+
+That rule is not a nicety; it is the fix for a real outage. This is what the log
+looked like before it existed:
+
+```
+12:51:15  system sleeping; board dark
+13:06:34  system awake (911s clock gap); repainting
+13:22:54  system awake (931s clock gap); repainting
+13:41:04  system awake (997s clock gap); repainting
+          ... six more ...
+```
+
+One `will sleep` notification, ever. Ten wakes, every one of them from the clock
+and none from IOKit. With `standby` and `powernap` on, the Mac was dark-waking
+for maintenance every fifteen minutes; the fallback dutifully relit the board
+for each one; and the notification that would have put it back never came again.
+The board glowed at an empty desk for two and a half hours. Two things were
+wrong, and both are fixed: **the notification thread was falling out of its run
+loop** after a single delivery — `CFRunLoopRun` returns the moment the loop has
+no sources left in it, and nothing re-entered it — and **a dark wake was allowed
+to relight the board at all**. Now a wake only counts if the screen is on.
 
 On wake the de-dup cache is dropped before anything else, because a repaint the
 cache suppresses is exactly as dark as no repaint at all. Then discovery runs
@@ -593,11 +625,11 @@ again — not a fix for anything sleep does, since no session can start or end
 while the machine is down, just the table re-checked against the process table
 after the one moment the daemon was provably blind.
 
-**The board does not brighten on wake.** A dark wake — Power Nap, a backup —
-looks identical to you opening the lid, and a board that comes up to full for a
-3am backup is worse than one that resumes at the dim level it went down at. That
-level is still exactly right, because the clock behind it froze too. Your first
-keystroke in any session brings it back up, the way it always does.
+**The board does not brighten on wake.** Coming back is not the same as coming
+back *up*: a board that returns to full brightness because a screen switched on
+is worse than one that resumes at the dim level it went down at. After a suspend
+that level is still exactly right, because the clock behind it froze too. Your
+first keystroke in any session brings it back up, the way it always does.
 
 **The port is the failure you'd actually see.** A sleep can leave the USB
 endpoint invalid without closing it: every write raises, and the de-dup cache —
@@ -607,8 +639,10 @@ has started refusing writes is reopened, cache and clock and all, every five
 seconds until it takes. The same path covers a cable pulled out and pushed back
 in an hour later.
 
-`MFT_SLEEP_BLACKOUT=0` leaves the board glowing overnight, if it's somewhere you
-want a nightlight. `MFT_WAKE_REDISCOVER=0` skips the rediscovery. `GET /status`
+`MFT_SLEEP_BLACKOUT=0` and `MFT_DISPLAY_BLACKOUT=0` together leave the board
+glowing overnight, if it's somewhere you want a nightlight; the first alone only
+gives up the notification, which was never the half that worked.
+`MFT_WAKE_REDISCOVER=0` skips the rediscovery. `GET /status`
 reports `suspended` and `port_failing`, which are the other two ways to be dark
 and healthy.
 
@@ -785,6 +819,7 @@ likely want at runtime:
 | Variable | Does |
 |---|---|
 | `MFT_SLEEP`, `MFT_SLEEP_SECONDS` | board sleep, and when the first stage lands |
+| `MFT_DISPLAY_BLACKOUT` | `0` stops the board following the screen off |
 | `MFT_TURN_RING`, `MFT_TURN_RING_SECONDS` | a working ring is the turn's length (`0` = the old tool-call arc), and what fills it |
 | `MFT_CONTEXT_RING` | a resting ring is a context gauge (`0` = a bare pip) |
 | `MFT_CONTEXT_RING_IDLE` | `0` keeps the gauge off the resting states |

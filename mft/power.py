@@ -13,8 +13,14 @@ into a stall it never had, and the board you come back to is the board you left.
 It is also precisely why a suspend has to be *reported* from outside rather than
 measured from inside.
 
-Two independent detectors, because a missed wake means a board that never
-repaints again:
+Three independent detectors, because a missed transition means a board that
+glows at an empty desk all night -- and that is not hypothetical. On a machine
+with `standby` and `powernap` on, the log looked like this: one
+`_SYSTEM_WILL_SLEEP` at 12:51, and then nine wakes over the next two and a half
+hours, every one of them reported by the clock and *none* by IOKit. The Mac was
+dark-waking every fifteen minutes for maintenance, the fallback was dutifully
+relighting the board for each one, and the notification that would have put it
+back never came again. So:
 
 *   **IOKit power notifications** (`IORegisterForSystemPower`), which are the
     only thing that fires *before* the machine suspends -- and being early is
@@ -27,11 +33,22 @@ repaints again:
     does not, so the gap between them grows only across a suspend. It can report
     a wake and never a sleep, and only after the fact -- but after the fact is
     still in time to repaint.
+*   **The display's power state** (:class:`DisplayPower`), which is the one
+    that actually carries the weight. `CGDisplayIsAsleep` is a poll rather than
+    a notification, so nothing can fail to deliver it; it is true through a
+    suspend *and* through a dark wake, which is exactly the distinction the
+    other two cannot make; and it costs 28 microseconds, which buys the right
+    to just ask every second and stop reasoning about it.
 
-Both fire for the same wake on a healthy machine. That is deliberate: the
+    It also answers a question the other two never asked: the screen going off
+    on its own idle timer, with the machine still awake. The board follows the
+    screen -- lit when you can see it, dark when you cannot -- and that is the
+    rule, not a side effect of it.
+
+All three fire for the same wake on a healthy machine. That is deliberate: the
 handler is cheap and idempotent, and the daemon debounces it
 (`config.WAKE_DEBOUNCE_SECONDS`), so the cost of the overlap is nothing and the
-cost of trusting either one alone is a dead board.
+cost of trusting any one alone is a board that lies.
 
 The sleep callback runs on a run loop with the whole machine waiting on it, so
 it must be quick and it must never raise: `IOAllowPowerChange` goes in a
@@ -39,11 +56,11 @@ it must be quick and it must never raise: `IOAllowPowerChange` goes in a
 not a thing a display gets to do -- same argument as the invariant about never
 answering a prompt, one layer down.
 
-One case this deliberately does not try to tell apart: a *dark wake* -- Power
-Nap, a backup, a network arrival -- is indistinguishable from you opening the
-lid, and the board lights back up for it. It goes dark again with the machine a
-minute later. The alternative is a lid you open onto a board that stays dark,
-which is the failure you would actually notice.
+A *dark wake* -- Power Nap, a backup, a network arrival -- is indistinguishable
+from you opening the lid as far as either of the first two detectors is
+concerned, and the board used to light back up for every one of them. The
+display is what tells them apart: a dark wake leaves the screen off, because
+that is what makes it dark. So a wake is only a wake if you could see it.
 """
 
 from __future__ import annotations
@@ -67,6 +84,15 @@ _IOKIT = "/System/Library/Frameworks/IOKit.framework/IOKit"
 _CORE_FOUNDATION = (
     "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
 )
+_CORE_GRAPHICS = (
+    "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
+)
+
+#: How long a run loop that returned on its own is left alone before being
+#: re-entered. Only ever reached on a failure, and its job is to keep that
+#: failure from becoming a spin: a run loop with nothing left in it returns
+#: instantly, every time, forever.
+_RELOOP_SECONDS = 1.0
 
 #: How long :meth:`PowerWatcher.start` waits for the notification thread to say
 #: whether it managed to register. Only a couple of framework calls, so this is
@@ -130,6 +156,80 @@ def slept_since_boot() -> Optional[float]:
     return ticks * _libc.scale
 
 
+def _core_graphics():
+    """CoreGraphics with the two display symbols bound, or None. Cached, for the
+    same reason :func:`_libc` is."""
+    if _core_graphics.cached is not None:
+        return _core_graphics.cached or None
+    _core_graphics.cached = False
+    if sys.platform != "darwin":
+        return None
+    try:
+        lib = ctypes.CDLL(_CORE_GRAPHICS)
+        lib.CGMainDisplayID.restype = ctypes.c_uint32
+        lib.CGMainDisplayID.argtypes = []
+        lib.CGDisplayIsAsleep.restype = ctypes.c_uint32
+        lib.CGDisplayIsAsleep.argtypes = [ctypes.c_uint32]
+    except Exception:
+        log.debug("CoreGraphics display state unavailable", exc_info=True)
+        return None
+    _core_graphics.cached = lib
+    return lib
+
+
+_core_graphics.cached = None
+
+
+def display_asleep() -> Optional[bool]:
+    """Whether the main display is powered down, or None if we cannot ask.
+
+    The main display and not all of them: on a clamshell Mac the main display
+    *is* the external one, and a machine with two screens puts them to sleep
+    together. Asking about one and being right is better than asking about a
+    list and having to decide what a half-lit desk means.
+    """
+    lib = _core_graphics()
+    if lib is None:
+        return None
+    try:
+        return bool(lib.CGDisplayIsAsleep(lib.CGMainDisplayID()))
+    except Exception:
+        return None
+
+
+class DisplayPower:
+    """An edge detector over :func:`display_asleep`.
+
+    Level rather than event, which is what makes it the reliable one: it cannot
+    miss a transition it was not told about, only notice it a poll interval
+    late. Reader injected for the same reason :class:`WakeClock`'s is -- the
+    interesting cases are ones you cannot ask a real machine to perform.
+    """
+
+    def __init__(self, read: Callable[[], Optional[bool]] = display_asleep):
+        self._read = read
+        #: Awake until told otherwise, which makes the asymmetry come out right:
+        #: a daemon that starts with the screen already off reports that on its
+        #: first poll and darkens, and one that starts with the screen on
+        #: reports nothing and leaves the boot animation alone.
+        self._asleep = False
+
+    @property
+    def asleep(self) -> bool:
+        """The last state reported. A reader that cannot answer never moves it,
+        so a machine where this is unavailable is one that is always awake --
+        the same degradation :class:`WakeClock` makes, for the same reason."""
+        return self._asleep
+
+    def poll(self) -> Optional[bool]:
+        """The new state if it just changed, else None."""
+        now = self._read()
+        if now is None or now == self._asleep:
+            return None
+        self._asleep = now
+        return now
+
+
 class WakeClock:
     """The fallback detector: reports how long the last suspend was.
 
@@ -179,6 +279,9 @@ class PowerWatcher:
         self._on_wake = on_wake
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
+        #: Set by :meth:`stop`, and the only reason the run loop is allowed to
+        #: return. See :meth:`_run`.
+        self._stopping = threading.Event()
         self._attached = False
         self._loop = None  # the CFRunLoop this is parked on, for stop()
         # Held for the life of the watcher: ctypes does not keep the trampoline
@@ -202,6 +305,7 @@ class PowerWatcher:
 
     def stop(self) -> None:
         """Let the notification thread out of its run loop. Best effort."""
+        self._stopping.set()
         loop, core = self._loop, self._core
         if loop is None or core is None:
             return
@@ -223,10 +327,31 @@ class PowerWatcher:
             self._ready.set()
         if not self._attached:
             return
-        try:
-            self._core.CFRunLoopRun()
-        except Exception:
-            log.exception("power run loop died; falling back to the clock")
+        # In a loop, because `CFRunLoopRun` returning is not the same as being
+        # finished with: it returns the moment the loop has no sources left in
+        # it, and a run loop that has quietly shed its source is exactly what a
+        # daemon that stops hearing about sleep looks like from in here. It
+        # returned once on this machine after delivering a single will-sleep,
+        # the thread fell out of `_run`, and the board glowed for two and a half
+        # hours. Re-entering costs nothing; not re-entering costs the feature.
+        reloops = 0
+        while not self._stopping.is_set():
+            try:
+                self._core.CFRunLoopRun()
+            except Exception:
+                log.exception("power run loop died; falling back to the clock")
+                return
+            if self._stopping.is_set():
+                return
+            reloops += 1
+            # Loudly the first time and quietly after: whatever makes a run loop
+            # return on its own tends to make it do so again immediately, and a
+            # warning 30 times a second is its own outage.
+            (log.warning if reloops == 1 else log.debug)(
+                "power run loop returned on its own (%d); re-entering", reloops
+            )
+            if self._stopping.wait(_RELOOP_SECONDS):
+                return
 
     def _attach(self) -> bool:
         if sys.platform != "darwin":

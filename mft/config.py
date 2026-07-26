@@ -60,6 +60,19 @@ RING_REFRESH_SECONDS = 0.25
 #: preference if the desk is somewhere you want a nightlight.
 SLEEP_BLACKOUT = _flag("MFT_SLEEP_BLACKOUT", True)
 
+#: Follow the screen: dark board while the display is asleep, lit again when it
+#: comes back. This is what actually keeps the board dark overnight, because it
+#: is a poll and cannot be missed -- the sleep notification can be, and on a
+#: machine that dark-wakes for maintenance it reliably is. Note the scope: the
+#: screen going off on its own idle timer darkens the board too. Off falls back
+#: to the notification alone, which is the old behaviour and the old bug.
+DISPLAY_BLACKOUT = _flag("MFT_DISPLAY_BLACKOUT", True)
+
+#: How often to ask. `CGDisplayIsAsleep` costs about 28us, so this could be
+#: every frame; it is not, because a second of latency on a board coming back
+#: is imperceptible and this way the number is obviously affordable.
+DISPLAY_POLL_SECONDS = 1.0
+
 #: Re-run discovery on wake. Cheap insurance rather than a fix for anything
 #: sleep does: processes are frozen while the machine is, so no session can
 #: start, end or change state in there. What it buys is a table re-checked
