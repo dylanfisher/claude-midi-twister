@@ -14,10 +14,11 @@ different amounts:
   subprocess, no file read -- which is exactly why it can afford to be the thing
   that stops a closed tab from holding a knob for the full TTL.
 * **the census** runs on its own interval, on its own thread, because it spawns
-  ``ps``. It buys the three things the free sweep cannot have: a pid for the
+  ``ps``. It buys the four things the free sweep cannot have: a pid for the
   records that never learned one, the tab back for a record that mistook its
-  own terminal for a host process, and the tty half of
-  :func:`mft.discover.orphans`.
+  own terminal for a host process, the tty half of
+  :func:`mft.discover.orphans`, and the count that retires a record naming
+  nobody in a directory with no room for it (:func:`mft.discover.phantoms`).
 
 Everything here is wrapped whole. Nothing about a roster is worth failing to
 start over, and the board fills itself in from hook events either way -- this
@@ -143,6 +144,38 @@ class Upkeep:
         # back while the record that knows which tty it was on still exists.
         self._released(self.table.release_all(gone))
 
+    def drop_phantoms(self, taken: discover.Census) -> None:
+        """Take back the encoders that describe nobody at all.
+
+        The census's own conclusion, and the only one here that is arithmetic
+        rather than a question about a specific process: a record with no
+        identity, in a directory where every running Claude is already claimed by
+        a record that has one, is a wrong guess adoption made and cannot take
+        back. See :func:`mft.discover.phantoms` for why the counting is safe.
+
+        Always after :meth:`drop_orphans` on the same census -- a record still
+        holding a dead pid would otherwise count as claiming its process, and the
+        phantom next to it would live another half minute for it.
+        """
+        if not config.ORPHAN_SWEEP:
+            return
+        try:
+            gone = discover.phantoms(self.table.all(), taken)
+        except Exception:
+            log.exception("phantom sweep failed")
+            return
+        if not gone:
+            return
+        for session in gone:
+            log.info(
+                "encoder %d describes no session in %s and every Claude there is "
+                "already on the board (%s); releasing it",
+                session.slot + 1,
+                session.cwd or "?",
+                session.label,
+            )
+        self._released(self.table.release_all(gone))
+
     # -- the costly one, off the render thread ------------------------------
 
     def sweep_census(self) -> None:
@@ -189,6 +222,11 @@ class Upkeep:
                 # already answering to that process. See `SessionTable.reconcile`.
                 self.table.reconcile()
             self.drop_orphans(taken)
+            # Last, and on purpose: the two sweeps above are what turn a record
+            # with nothing on it into a record with a pid, and what removes the
+            # ones whose process is already gone. Whatever is still nameless
+            # after both has had every chance to say who it is.
+            self.drop_phantoms(taken)
         except Exception:
             log.exception("census failed")
         finally:

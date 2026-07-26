@@ -37,7 +37,10 @@ FPS = 30.0
 #: The rate the loop falls back to once nothing on the board is moving -- see
 #: :meth:`mft.daemon.Visualizer.run`. A hook event wakes the loop immediately,
 #: so this is not the latency of anything you do; it is only how often a board
-#: that is genuinely static asks itself whether it still is.
+#: that is genuinely static asks itself whether it still is. With one exception,
+#: and it is the one thing down here that has no event to wake it: the attention
+#: poll happens on this loop, so `mft.daemon.Visualizer.run` holds the idle wait
+#: down to `ATTENTION_POLL_SECONDS` while `ATTENTION_FOLLOW` is on.
 IDLE_FPS = 1.0
 
 #: Consecutive identical frames before the loop drops to `IDLE_FPS`. Half a
@@ -740,6 +743,23 @@ ATTENTION_ASK_SECONDS = 1.0
 #: condition that improves between one poll and the next, and this is what keeps
 #: that from being asked four times a second forever.
 ATTENTION_BACKOFF_SECONDS = 30.0
+
+#: The ceiling every *other* ring is held under, so that the focused one has
+#: somewhere brighter to be. The marker used to be full against a board of rings
+#: that were also allowed to reach full -- true, but not legible, because "the
+#: brightest ring" is only a place to look when nothing else is up there with it.
+#: This is the whole difference between a marker and a tie.
+#:
+#: Applied across the board and not per state, because the reading is comparative:
+#: every ring gets the same headroom taken off it, so a gauge still reads as a
+#: gauge and a stopwatch still fills, only under a lower roof. Raise it toward
+#: 1.0 to give the rest of the board its brightness back and the marker less to
+#: stand out against; 1.0 exactly restores the old behaviour.
+#:
+#: Overlays are painted after the cap and are not subject to it (`board.compose`)
+#: -- a spawn strike, a boot word or the focus swell itself is a gesture, and a
+#: gesture that could not reach full would be a gesture you might miss.
+RING_CEILING = float(os.environ.get("MFT_RING_CEILING", 0.5))
 
 #: Hold the focused encoder's ring at this level. On the *ring*, deliberately:
 #: channels 3 and 6 carry either an animation or a brightness and never both, so

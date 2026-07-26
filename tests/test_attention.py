@@ -288,6 +288,84 @@ class Marking(unittest.TestCase):
         )
 
 
+class Ceiling(unittest.TestCase):
+    """The headroom the marker stands in: every other ring held under a cap."""
+
+    def setUp(self):
+        self.table = SessionTable()
+
+    def test_it_takes_the_top_off_and_leaves_the_bottom_alone(self):
+        """A clip, not a scale. The dim end of the ramp is where an encoder stops
+        reading as claimed at all, and that is the reading worth protecting."""
+        bright = Cell("green", config.ANIM_NONE, 40, 1.0)
+        faint = Cell("green", config.ANIM_NONE, 40, 0.1)
+        cells = [bright, faint]
+        board.cap_rings(cells)
+        self.assertEqual(cells[0].ring_light, config.RING_CEILING)
+        self.assertEqual(cells[1].ring_light, 0.1)
+
+    def test_it_touches_neither_the_hue_nor_the_ring_position(self):
+        cells = [Cell("red", config.SLOW_ANIM, 127, 1.0)]
+        board.cap_rings(cells)
+        self.assertEqual(cells[0].color, "red")
+        self.assertEqual(cells[0].rgb_anim, config.SLOW_ANIM)
+        self.assertEqual(cells[0].ring, 127)
+        self.assertEqual(cells[0].brightness, 1.0)
+
+    def test_a_dark_encoder_stays_dark(self):
+        cells = [board.BLANK]
+        board.cap_rings(cells)
+        self.assertIs(cells[0], board.BLANK)
+
+    def test_a_ceiling_of_one_is_the_old_board(self):
+        cells = [Cell("green", config.ANIM_NONE, 40, 1.0)]
+        was = config.RING_CEILING
+        config.RING_CEILING = 1.0
+        try:
+            board.cap_rings(cells)
+        finally:
+            config.RING_CEILING = was
+        self.assertIsNone(cells[0].ring_level)
+
+    def test_the_focused_ring_is_the_only_one_above_it(self):
+        """The whole arrangement in one assertion: the cap runs first and the
+        marker is the one encoder allowed back up there."""
+        here = self.table.ensure("a", "/tmp/a", {"tty": "/dev/ttys001"})
+        there = self.table.ensure("b", "/tmp/b", {"tty": "/dev/ttys002"})
+        for session in (here, there):
+            session.state, session.state_since = "working", 100.0
+        cells = board.compose(self.table.all(), 100.0, focused=here.slot)
+        self.assertEqual(cells[here.slot].ring_light, config.ATTENTION_RING_LEVEL)
+        self.assertLessEqual(cells[there.slot].ring_light, config.RING_CEILING)
+
+    def test_a_busy_session_is_marked_like_any_other(self):
+        """Every state answers the marker the same way -- the states worth
+        finding are exactly the busy ones, and a marker that only worked on a
+        quiet board would work only where you did not need it."""
+        for state in ("working", "thinking", "streaming", "permission", "plan",
+                      "waiting", "error", "done", "idle"):
+            with self.subTest(state=state):
+                table = SessionTable()
+                session = table.ensure("a", "/tmp", {"tty": "/dev/ttys001"})
+                session.state, session.state_since = state, 100.0
+                cells = board.compose(table.all(), 100.0, focused=session.slot)
+                self.assertEqual(
+                    cells[session.slot].ring_light, config.ATTENTION_RING_LEVEL
+                )
+
+    def test_an_overlay_still_reaches_full_over_a_capped_board(self):
+        """Overlays are painted after the cap on purpose: a gesture that could
+        not reach full would be a gesture you might miss."""
+        session = self.table.ensure("a", "/tmp", {"tty": "/dev/ttys001"})
+        session.state, session.state_since = "working", 100.0
+        pulse = overlays.FocusOverlay(session, 100.0)
+        cells = board.compose(
+            self.table.all(), 100.0 + config.ATTENTION_PULSE_SECONDS * 0.2,
+            overlays=[pulse],
+        )
+        self.assertAlmostEqual(cells[session.slot].ring_light, 1.0, places=2)
+
+
 class Pulsing(unittest.TestCase):
     """The swell, which is pure paint and so is the easy half."""
 
@@ -312,9 +390,29 @@ class Pulsing(unittest.TestCase):
         pulse that kept one would be a pulse you cannot see."""
         self.assertEqual(self.paint(0.1).rgb_anim, config.ANIM_NONE)
 
-    def test_it_never_dims_what_is_already_brighter(self):
+    def test_it_starts_from_dark_even_under_a_bright_encoder(self):
+        """A pulse is a change, not a level. Brightening a session already lit at
+        full is a gesture you cannot see, so the strike goes down before it comes
+        up -- on the encoders worth pointing at, the dip *is* the pulse."""
         self.under = Cell("red", config.ANIM_NONE, 127, 1.0)
-        self.assertEqual(self.paint(config.ATTENTION_PULSE_SECONDS * 0.9).brightness, 1.0)
+        self.assertAlmostEqual(self.paint(0.0).brightness, 0.0, places=2)
+        peak = config.ATTENTION_PULSE_SECONDS * config.ATTENTION_PULSE_RISE
+        self.assertAlmostEqual(self.paint(peak).brightness, 1.0, places=2)
+
+    def test_it_settles_onto_the_state_underneath_rather_than_onto_dark(self):
+        """The overlay retires into the cell it was covering, so the last frame
+        of the gesture has to be that cell -- a fall to zero would put a black
+        frame between the pulse and the session it is handing back to."""
+        self.under = Cell("red", config.ANIM_NONE, 127, 0.8)
+        last = self.paint(config.ATTENTION_PULSE_SECONDS * 0.999)
+        self.assertAlmostEqual(last.brightness, 0.8, places=2)
+
+    def test_the_ring_makes_the_same_trip(self):
+        self.under = Cell("red", config.ANIM_NONE, 127, 0.2, ring_level=1.0)
+        self.assertAlmostEqual(self.paint(0.0).ring_light, 0.0, places=2)
+        self.assertAlmostEqual(
+            self.paint(config.ATTENTION_PULSE_SECONDS * 0.999).ring_light, 1.0, places=2
+        )
 
     def test_it_keeps_the_session_hue(self):
         """A spawn strike is news and wears its own colour. This is an

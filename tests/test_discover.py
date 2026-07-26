@@ -405,7 +405,9 @@ class Ttys(unittest.TestCase):
 
     def test_a_session_with_no_tty_at_all_still_keeps_the_hour(self):
         """Nothing here reads a Claude process's argv, and a record with
-        neither pid nor tty is exactly what would need that."""
+        neither pid nor tty is exactly what would need that. See
+        `discover.phantoms` for the one thing that does settle those, which is
+        arithmetic about a directory rather than a question about a process."""
         self.add("nameless")
         self.assertEqual(self.sweep("/dev/ttys004"), [])
 
@@ -422,6 +424,104 @@ class Ttys(unittest.TestCase):
             discover.epitaph(closed, taken, self.alive), "the tab on /dev/ttys003 is closed"
         )
         self.assertEqual(discover.epitaph(dead, taken, self.alive), "pid 8 is gone")
+
+
+class Phantoms(unittest.TestCase):
+    """A record naming nobody, in a directory with no room left for it.
+
+    The knob this was written for: adoption matched a session that had exited
+    twenty minutes earlier -- its transcript was the newer one -- and gave it the
+    process belonging to a session that had been idle at a prompt since lunch.
+    The ambiguity rule then stripped the terminal off it, leaving a record with
+    no pid and no tty, which is the one shape `orphans` cannot ask about.
+    """
+
+    def setUp(self):
+        self.table = SessionTable()
+
+    def add(self, session_id: str, cwd: str, **terminal) -> Session:
+        session = self.table.ensure(session_id, cwd, terminal or None)
+        assert session is not None
+        session.terminal = dict(terminal)
+        return session
+
+    def census(self, *procs: discover.Proc) -> discover.Census:
+        return discover.Census(
+            procs=list(procs), ttys=frozenset({"/dev/ttys001"}), size=400
+        )
+
+    def sweep(self, taken: discover.Census) -> list[str]:
+        return [s.session_id for s in discover.phantoms(self.table.all(), taken)]
+
+    def test_a_record_naming_nobody_goes_when_every_claude_is_spoken_for(self):
+        self.add("real", "/tmp/a", pid="7", tty="/dev/ttys001")
+        self.add("phantom", "/tmp/a")
+        taken = self.census(discover.Proc(pid=7, tty="/dev/ttys001", cwd="/tmp/a"))
+        self.assertEqual(self.sweep(taken), ["phantom"])
+
+    def test_it_stays_while_there_is_a_process_it_could_be(self):
+        """The safe half, and the common one: two live sessions in a directory
+        where only one of them has said which tab it is. The other is exactly
+        what the nameless record might be."""
+        self.add("real", "/tmp/a", pid="7", tty="/dev/ttys001")
+        self.add("maybe", "/tmp/a")
+        taken = self.census(
+            discover.Proc(pid=7, tty="/dev/ttys001", cwd="/tmp/a"),
+            discover.Proc(pid=8, tty="/dev/ttys002", cwd="/tmp/a"),
+        )
+        self.assertEqual(self.sweep(taken), [])
+
+    def test_a_directory_with_no_recognised_claude_concludes_nothing(self):
+        """The day `claude_processes` stops recognising a session's argv, this
+        has to read as no evidence rather than as an empty desk."""
+        self.add("real", "/tmp/a", pid="7", tty="/dev/ttys001")
+        self.add("nameless", "/tmp/a")
+        self.assertEqual(self.sweep(self.census()), [])
+
+    def test_a_tty_claims_a_process_as_well_as_a_pid_does(self):
+        """`notify.sh` names a tab without naming a process, so the record
+        accounting for a Claude often holds no pid at all."""
+        self.add("real", "/tmp/a", tty="/dev/ttys001")
+        self.add("phantom", "/tmp/a")
+        taken = self.census(discover.Proc(pid=7, tty="/dev/ttys001", cwd="/tmp/a"))
+        self.assertEqual(self.sweep(taken), ["phantom"])
+
+    def test_two_nameless_records_cannot_account_for_each_other(self):
+        self.add("one", "/tmp/a")
+        self.add("two", "/tmp/a")
+        taken = self.census(discover.Proc(pid=7, tty="/dev/ttys001", cwd="/tmp/a"))
+        self.assertEqual(self.sweep(taken), [])
+
+    def test_a_record_that_describes_a_tab_is_never_touched_here(self):
+        """Even one whose process is gone: that is the sweep next door, which
+        can check it. This one only ever releases a record naming nothing."""
+        self.add("elsewhere", "/tmp/a", pid="999", tty="/dev/ttys009")
+        taken = self.census(discover.Proc(pid=7, tty="/dev/ttys001", cwd="/tmp/a"))
+        self.assertEqual(self.sweep(taken), [])
+
+    def test_another_directory_is_another_question(self):
+        self.add("real", "/tmp/a", pid="7", tty="/dev/ttys001")
+        self.add("nameless", "/tmp/b")
+        taken = self.census(discover.Proc(pid=7, tty="/dev/ttys001", cwd="/tmp/a"))
+        self.assertEqual(self.sweep(taken), [])
+
+    def test_an_ended_session_keeps_its_fade(self):
+        self.add("real", "/tmp/a", pid="7", tty="/dev/ttys001")
+        ended = self.add("phantom", "/tmp/a")
+        ended.ended_at = time.monotonic()
+        taken = self.census(discover.Proc(pid=7, tty="/dev/ttys001", cwd="/tmp/a"))
+        self.assertEqual(self.sweep(taken), [])
+
+    def test_an_unusable_census_concludes_nothing(self):
+        self.add("real", "/tmp/a", pid="7", tty="/dev/ttys001")
+        self.add("phantom", "/tmp/a")
+        thin = discover.Census(
+            procs=[discover.Proc(pid=7, tty="/dev/ttys001", cwd="/tmp/a")],
+            ttys=frozenset(),
+            size=3,
+        )
+        self.assertEqual(self.sweep(thin), [])
+        self.assertEqual(discover.phantoms(self.table.all(), None), [])
 
 
 class LearnPids(unittest.TestCase):

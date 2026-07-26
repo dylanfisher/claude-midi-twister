@@ -33,7 +33,7 @@ from .board import (
     bank_slots,
     spiral_path,
 )
-from .render import Cell
+from .render import Cell, lerp
 from .state import Session
 
 
@@ -671,19 +671,28 @@ class FocusOverlay(Overlay):
 
         rise = config.ATTENTION_PULSE_RISE
         if u < rise:
-            # Linear on the way up so the leading edge is a strike; eased on the
-            # way down so the encoder is seen settling back onto its own state
-            # rather than switching off.
-            level = clamp01(u / rise)
+            # Up from dark, linearly, so the leading edge is a strike -- and
+            # *replacing* what is underneath rather than brightening it.
+            #
+            # A `max` against the session's own level was the obvious reading of
+            # "never dim what is already lit", and it made the gesture invisible
+            # on exactly the encoders worth pointing at: a session already at
+            # full swallowed the whole swell and did nothing at all. A pulse is a
+            # change, not a level, and the only change left to an encoder that is
+            # already as bright as the pulse is to go dark first.
+            swell, settle = clamp01(u / rise), 0.0
         else:
-            level = 1.0 - smoothstep(clamp01((u - rise) / (1.0 - rise)))
-        # `max`, never a replacement: a session that is already brighter than the
-        # swell is one the pulse must not dim on its way through.
+            # And back down onto its own state, not down to nothing: the overlay
+            # retires at the end of this and the cell underneath returns in one
+            # frame, so a fall to zero would put a black frame between the
+            # gesture and the state it is handing back to. Eased, so the encoder
+            # is seen settling rather than switching off.
+            swell, settle = 1.0, smoothstep(clamp01((u - rise) / (1.0 - rise)))
         board[slot] = Cell(
             under.color,
             config.ANIM_NONE,
             under.ring,
-            max(under.brightness, level),
-            max(under.ring_light, level),
+            lerp(swell, under.brightness, settle),
+            lerp(swell, under.ring_light, settle),
         )
 

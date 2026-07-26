@@ -457,6 +457,32 @@ def ambient(board: list[Cell], now: float) -> None:
         )
 
 
+def cap_rings(board: list[Cell]) -> None:
+    """Hold every ring under :data:`config.RING_CEILING`, so the marker has room.
+
+    Run *before* :func:`mark_focus`, which is the entire arrangement: the cap
+    takes the top off the board and the marker is the one encoder allowed back
+    up there. Doing it the other way round would cap the marker too, and a
+    marker at the same level as everything else is not a marker.
+
+    The ring only, and by setting ``ring_level`` rather than ``brightness``: the
+    hue is how loudly a session is asking for you and nothing here is entitled
+    to quieten that. It is a separate channel (6, against the RGB's 3) and this
+    is exactly the case the split exists for -- see :class:`mft.render.Cell`.
+
+    Ring *position* is untouched. A gauge that reads three-quarters full still
+    reads three-quarters full; it is the light behind it that moved.
+    """
+    ceiling = config.RING_CEILING
+    if ceiling >= 1.0:
+        return
+    for slot, cell in enumerate(board):
+        if cell is BLANK:
+            continue
+        if cell.ring_light > ceiling:
+            board[slot] = replace(cell, ring_level=ceiling)
+
+
 def mark_focus(board: list[Cell], slot: int) -> None:
     """Hold one encoder's ring at full: the tab you are looking at.
 
@@ -511,6 +537,10 @@ def compose(
     # nothing to win from the budget, but it *is* a thing a sleeping board
     # should keep -- a tab in front of you is the strongest evidence there is
     # that somebody is here, so `dim` is told to spare it below.
+    #
+    # The cap first and the marker second, always: the ceiling is what makes the
+    # marker the brightest ring on the board rather than one of several.
+    cap_rings(board)
     if focused is not None:
         mark_focus(board, focused)
 

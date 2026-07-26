@@ -838,6 +838,19 @@ class Visualizer:
         self._boot()
         active = 1.0 / config.FPS
         idle = 1.0 / config.IDLE_FPS
+        if config.ATTENTION_FOLLOW:
+            # A still board is exactly the board you alt-tab *into* -- an idle
+            # session, a finished one, a prompt sitting there waiting -- so the
+            # idle rate is the marker's real latency, and at 1Hz it is a second
+            # of nothing before the encoder admits you arrived. The poll gates
+            # itself on its own clock anyway (`mft.attention`); this only stops
+            # the loop from sleeping through it.
+            #
+            # It is not free, and it is close: the window list is 0.4ms and a
+            # frame that composes to the same cells writes nothing to the wire,
+            # so four idle frames a second cost a couple of milliseconds of CPU
+            # against the thirty frames a second any animation already spends.
+            idle = min(idle, config.ATTENTION_POLL_SECONDS)
         still = 0  # consecutive frames that composed to the same board
         last_reap = time.monotonic()
         while not self._stop.is_set():

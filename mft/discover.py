@@ -32,10 +32,18 @@ wake; the pid check runs constantly and for free; this reads the whole process
 table every half minute and spends it on the things neither of those can do --
 giving a pid to the records that never had one (:func:`learn_pids`), taking a
 tab back from a record that called it a host process (:func:`relabel_hosts`),
-and noticing that a tty on the board belongs to nobody. That last one is the only
-*absence* anything here draws a conclusion from, and it is allowed to because
-it recognises nothing: a closed tab frees its pty, and reading which ttys are
-in use does not depend on knowing what a Claude process looks like.
+noticing that a tty on the board belongs to nobody, and counting the records in
+a directory against the Claudes actually running there (:func:`phantoms`). The
+tty one is the only *absence* anything here draws a conclusion from, and it is
+allowed to because it recognises nothing: a closed tab frees its pty, and
+reading which ttys are in use does not depend on knowing what a Claude process
+looks like.
+
+The join at the heart of adoption is a guess, and :func:`phantoms` is what keeps
+a wrong one from lasting: nothing on disk says which of a directory's transcripts
+belongs to which of its processes, so a session that exited an hour ago can be
+matched to a live Claude and put on the board in place of the session that really
+owns it. See that function for what makes the arithmetic safe to act on.
 """
 
 from __future__ import annotations
@@ -573,6 +581,78 @@ def orphans(
         if tty and tty not in taken.ttys:  # type: ignore[union-attr]
             dead.append(session)
     return dead
+
+
+def phantoms(
+    sessions: Iterable[Session], taken: Optional[Census] = None
+) -> list[Session]:
+    """Records describing nobody, in a directory with no room left for them.
+
+    The hole :func:`orphans` cannot reach, and the one that produced the knob
+    this function was written for. Adoption joins transcripts to processes by
+    working directory, newest transcript first (:func:`discover`), and that join
+    is a guess whenever a directory holds more recent transcripts than live
+    Claudes: a session that exited twenty minutes ago has a *newer* transcript
+    than one that has been sitting at a prompt since lunch, so the dead one is
+    matched and the live one is missed. Then, because the directory matched more
+    than once, the ambiguity rule strips the terminal identity off everything it
+    matched -- deliberately, so a wrong tab is never recorded -- and the result
+    is a record with no tty and no pid. Both of `orphans`' facts need one of
+    those to ask about, so the phantom is immune to the sweep and holds its
+    encoder for the full `SESSION_TTL_SECONDS`. An hour of a knob describing a
+    session that ended before the daemon started.
+
+    What settles it is counting, and only in a directory where the counting is
+    safe. Every live Claude in that cwd that some *identified* record already
+    claims -- by pid or by tty -- is spoken for. When all of them are, a record
+    there with no identity at all has nothing left to be, because there is no
+    process left for it to be running as.
+
+    Three things keep this from being the "compare the board against the live
+    processes" test that :func:`orphans` deliberately refuses:
+
+    *   It concludes nothing in a directory where no Claude was recognised. That
+        is the failure mode of recognition going stale -- `claude_processes` no
+        longer knowing what a session's argv looks like -- and it reads here as
+        "no evidence", never as "nobody is there".
+    *   It only ever releases a record that names *nothing*: no tty, no pid, no
+        terminal at all. A record that describes a tab is answered by the sweep
+        that can check it, and is left alone here whatever the arithmetic says.
+    *   Every process must be claimed by a record that is itself identified, so
+        one phantom cannot account for another.
+
+    Run it after :func:`orphans` on the same census, so that a record still
+    holding a dead pid has already gone rather than counting as a claim.
+    """
+    if taken is None or not taken.usable:
+        return []
+    live = [s for s in sessions if s.ended_at is None]
+    procs_by_cwd: dict[str, list[Proc]] = {}
+    for proc in taken.procs:
+        if proc.cwd:
+            procs_by_cwd.setdefault(proc.cwd, []).append(proc)
+
+    found: list[Session] = []
+    for cwd, procs in procs_by_cwd.items():
+        here = [s for s in live if s.cwd == cwd]
+        nameless = [s for s in here if not s.keys and not s.terminal]
+        if not nameless:
+            continue
+        claimed: set[int] = set()
+        for session in here:
+            if session in nameless:
+                continue
+            claimed |= {p.pid for p in _claimed_procs(session, procs)}
+        if len(claimed) >= len(procs):
+            found.extend(nameless)
+    return found
+
+
+def _claimed_procs(session: Session, procs: list[Proc]) -> list[Proc]:
+    """Which of these processes this record says it is -- by number or by pty."""
+    pids = set(_recorded_pids(session))
+    tty = _recorded_tty(session)
+    return [p for p in procs if p.pid in pids or (tty and p.tty == tty)]
 
 
 def epitaph(

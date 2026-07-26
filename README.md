@@ -248,7 +248,9 @@ Adopted sessions land as `idle` — a transcript records what a session *did*,
 never what it's doing now. Their context ring is real, read from that same
 transcript. The first genuine hook event takes over. When two tabs sit in the
 same working directory, both keep an encoder but give up their terminal
-identity, since guessing would hand the wrong knob to the next `/clear`.
+identity, since guessing would hand the wrong knob to the next `/clear`. That
+give-up is also how a wrong guess gets *out* again — see [where a record naming
+nobody comes from](#where-a-record-naming-nobody-comes-from).
 
 ## Sessions that outlive their process
 
@@ -302,6 +304,17 @@ on the things the pid sweep can't have for free:
   exactly as long as it's open; close it and no process on the machine is on that
   tty again. So a session that named a tty whose tty is now free had its tab
   closed — whatever any pid says.
+- **`discover.phantoms`**, which is arithmetic rather than a question about any
+  particular process, and is the only thing that reaches a record naming
+  *nothing*. Every live Claude in a directory that some **identified** record
+  already claims — by pid or by tty — is spoken for; when all of them are, a
+  record sitting in that directory with no tty, no pid and no terminal has
+  nothing left to be. It concludes nothing in a directory where no Claude was
+  recognised (that's recognition going stale, and it has to read as no evidence),
+  it only ever releases a record that names nothing, and one nameless record can
+  never account for another. It runs after the two sweeps above on the same
+  census, so a record still holding a dead pid has already gone rather than
+  counting as a claim.
 
 That last one is the only *absence* anything here concludes from, and the
 reason it's allowed to is that it recognises nothing. The earlier version of this
@@ -311,9 +324,31 @@ like, and the day that changes it clears the board. Reading which ttys are in us
 needs no such knowledge — it's a column, not a command line. The census
 self-checks the read before trusting the negative (`Census.usable`: a real
 machine has hundreds of processes and at least one terminal, so a table with
-neither is a read that went wrong, not a desk that emptied), and the records with
-*neither* a pid nor a tty — the ones that would need argv recognition — still
-keep the hour.
+neither is a read that went wrong, not a desk that emptied). A record with
+*neither* a pid nor a tty is the one shape neither half can ask about, and it is
+what `phantoms` above is for — but only where the counting settles it. Where it
+doesn't, that record still keeps the hour.
+
+### Where a record naming nobody comes from
+
+Worth spelling out, because it looks impossible: every path that creates a
+session writes down *something*. Adoption is the one that doesn't. The
+transcript-to-process join is a guess whenever a directory holds more recent
+transcripts than live Claudes, and it guesses newest-first — so a session that
+exited twenty minutes ago beats one that has been parked at a prompt since
+lunch, takes the live process that really belongs to the parked one, and lands
+on the board. Then, because that directory matched more than once, the ambiguity
+rule strips the terminal off everything it matched (deliberately — a wrong tab
+must never be recorded), and what's left is a record for a session that no longer
+exists, wearing no identity, immune to both of `orphans`' facts, holding an
+encoder for the full hour. That is the knob `phantoms` was written for.
+
+Nothing on disk links a transcript to a process id — the transcript never
+mentions one, and a `claude` process holds no handle to its own file — so the
+join cannot be made exact and the guess is not going away. What changed is how
+long a wrong one lasts: half a minute, once the *real* session says which tab it
+is. Until that happens the two records are genuinely indistinguishable from out
+here, and the board keeps them both, which is the honest answer.
 
 It also settles pid reuse, which the pid sweep gets wrong in the expensive
 direction: a recycled number reads as alive, but a live `claude` is on its tty by
@@ -773,6 +808,15 @@ arrow reversed — switch to a Claude tab yourself and its encoder **swells once
 and then holds its ring at full**, so the board stops being a list of agents and
 becomes a map with a *you are here* on it.
 
+The swell goes **out from dark**, not up from wherever the session was sitting.
+The first version brightened what was underneath and never dimmed it, which
+sounds right and made the gesture invisible on precisely the encoders worth
+pointing at: a session already lit at full swallowed the whole thing. A pulse is
+a change, not a level, and the only change left to an encoder that is already as
+bright as the pulse is to go dark first. It falls back onto the session's own
+level rather than onto black, because the overlay retires into that cell one
+frame later.
+
 The marker is on the **ring**, deliberately. Hue says what the session is doing,
 and RGB brightness is already spent on how badly it wants you — and is discarded
 outright while an animation is on it (see [attention debt](#attention-debt)), so
@@ -781,6 +825,18 @@ The ring has its own channel and its own level, so it reads over a shimmer, a
 sweep or a strobe without arguing with any of them. Ring *position* is left
 alone too: it's a gauge, a stopwatch or an arc, and overwriting it would trade a
 fact for a pointer.
+
+And every *other* ring is held under a ceiling (`MFT_RING_CEILING`, 0.5) so that
+full means something. "The brightest ring on the board" is only a place to look
+if nothing else is up there with it, and before the cap a working session's ring
+was allowed to sit at exactly the level the marker uses. The cap is a clip, not
+a scale — the top comes off every ring and the bottom is left where it is,
+because the dim end is where an encoder stops reading as claimed at all, and a
+board of pips too faint to see is the failure mode that costs you a session
+(invariant 6). Ring position is untouched by it; a gauge three-quarters full
+still reads three-quarters full, under a lower roof. Overlays are painted after
+the cap and ignore it, so the swell on arrival, a spawn strike and the boot word
+all still reach full.
 
 Arriving in a tab also does what a press does — forgives the attention debt,
 clears the alert, resets the sleep clock. That's the line the debt section has
@@ -807,6 +863,17 @@ application, only while that application is frontmost, and never merely to
 *clear* the marker: switching to a browser is answered for free. Worst case —
 four Claudes in one Terminal window, with you sitting in it — is one 80ms query
 a second and it stops the moment you switch away.
+
+The cheap poll rides the render loop, which is what made the first version of
+this feel late: a board with nothing moving on it drops to `IDLE_FPS` (1Hz), and
+a still board is precisely the board you alt-tab *into* — an idle session, a
+finished one, a prompt that has been sitting there. The poll's own quarter-second
+clock never got a chance to fire. So the loop holds its idle wait down to
+`ATTENTION_POLL_SECONDS` while the marker is on: four wakeups a second instead of
+one, each of them 0.4ms of window list and a compose that produces identical
+cells and therefore writes nothing to the wire. A couple of milliseconds of CPU a
+second, against the thirty frames a second any animation on the board already
+costs.
 
 Only `kCGWindowName`, the window *title*, is redacted without Screen Recording
 permission. The owner's name and the window layer, which is all this needs, are
@@ -924,6 +991,7 @@ likely want at runtime:
 | `MFT_ATTENTION_FOLLOW` | `0` stops the board marking the tab you're looking at |
 | `MFT_ATTENTION_PULSE` | `0` keeps the standing ring marker but drops the swell on arrival |
 | `MFT_ATTENTION_ATTENDS` | `0` leaves forgiving the debt to the encoder press alone |
+| `MFT_RING_CEILING` | how bright an unfocused ring may get (`1.0` = no ceiling, the old board) |
 | `MFT_SUBAGENT_STACK` | the violet pile in the corner |
 | `MFT_SUBAGENT_SHIMMER` | `0` holds every dot at one level instead of brightening it on its own tool calls |
 | `MFT_TAB_TITLE`, `MFT_TAB_TITLE_MAX` | the glyph in the terminal tab strip |
