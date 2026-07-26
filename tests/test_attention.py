@@ -34,8 +34,9 @@ class Watcher(attention.AttentionWatcher):
     """
 
     def __init__(self, front_app: str = "", tty: str = "") -> None:
-        super().__init__(front=lambda: self.front_app)
+        super().__init__(front=lambda: attention.Front(self.front_app, self.front_window))
         self.front_app = front_app
+        self.front_window = 1
         self.tty = tty
         self.asks = 0
 
@@ -224,6 +225,48 @@ class Polling(unittest.TestCase):
         self.watcher.front_app = "Figma"
         self.assertIsNone(self.poll(now=200.0))
         self.assertEqual(self.watcher.asks, asks)
+
+    def test_a_window_switch_skips_the_floor_the_way_an_app_switch_does(self):
+        """Two windows of one terminal are two window numbers, and that is the
+        whole reason the free half reads the number: command-` between them is
+        an edge, not a wait for `ATTENTION_ASK_SECONDS`."""
+        self.session("a", "/dev/ttys001")
+        self.session("b", "/dev/ttys002")
+        self.watcher.front_app = "Terminal"
+        self.watcher.tty = "/dev/ttys001"
+        self.assertIsNotNone(self.poll(now=100.0))
+        asks = self.watcher.asks
+
+        # Well inside the floor: without the window number this would be the
+        # stale answer, and the marker would sit on the wrong knob until it
+        # expired.
+        self.watcher.front_window += 1
+        self.watcher.tty = "/dev/ttys002"
+        found = self.poll(now=100.0 + config.ATTENTION_POLL_SECONDS)
+        self.assertEqual(found.session_id, "b")
+        self.assertEqual(self.watcher.asks, asks + 1)
+
+    def test_the_floor_holds_when_nothing_switched(self):
+        """The other side of it, against the real gate: no edge means the
+        expensive question keeps its rate limit, so a frontmost terminal holding
+        two sessions is not a subprocess every frame."""
+        watcher = attention.AttentionWatcher(front=lambda: attention.Front("Terminal"))
+        terminal = attention.TERMINALS[0]
+        watcher._last_ask = 100.0
+        watcher._ask(terminal, 100.0 + config.ATTENTION_ASK_SECONDS / 2, force=False)
+        self.assertFalse(watcher._asking.is_set())
+
+    def test_a_switch_during_an_ask_is_not_dropped(self):
+        """`_ask` returns early while a subprocess is out. Forgetting the switch
+        that arrived meanwhile would cost a whole floor on exactly the move the
+        floor exists to be skipped for."""
+        watcher = attention.AttentionWatcher(front=lambda: attention.Front("Terminal"))
+        terminal = attention.TERMINALS[0]
+        watcher._asking.set()
+        watcher._ask(terminal, 100.0, force=True)  # dropped: one is already out
+        watcher._asking.clear()
+        watcher._ask(terminal, 100.0, force=False)  # inside the floor, but owed
+        self.assertTrue(watcher._asking.is_set())
 
     def test_an_unreachable_window_server_marks_nothing(self):
         """Not macOS, or the symbols are missing. No marker, no crash, no log

@@ -16,11 +16,18 @@ the two questions cost wildly different amounts:
     through `ctypes`, the same way :mod:`mft.power` reaches `CGDisplayIsAsleep`,
     and the same reason: this project has two dependencies and neither of them
     is going to be a framework bridge. Only `kCGWindowName` -- the *title* --
-    is redacted without Screen Recording permission; the owner's name and the
-    window layer, which is all this needs, are not. No permission, no
-    subprocess, ~1ms.
+    is redacted without Screen Recording permission; the owner's name, the
+    window layer and the window *number*, which is all this needs, are not. No
+    permission, no subprocess, a third of a millisecond.
+
+    The number is why this half answers more than "which app": two windows of
+    one terminal are two different numbers, so command-\\` between them is an
+    edge the free layer can see, and the costly half gets asked at once instead
+    of waiting out its floor. Only two tabs of the *same* window are invisible
+    from here -- they share a window, and the title that would tell them apart
+    is the one field the window server redacts.
 *   **Which tab inside it** -- an AppleScript, and therefore a subprocess. About
-    80ms of wall clock on a warm machine, which is three dropped frames, so it
+    60ms of wall clock on a warm machine, which is two dropped frames, so it
     never runs on the render thread.
 
 The saving grace is that the second question usually does not have to be asked.
@@ -82,13 +89,25 @@ _WINDOW_LIST_OPTIONS = (1 << 0) | (1 << 4)
 _UTF8 = 0x08000100
 _SINT32 = 3
 
+#: The poll's own rate limit, as a fraction of `config.ATTENTION_POLL_SECONDS`.
+#:
+#: Under one, and that is the point. The render loop's idle period is clamped to
+#: exactly the poll interval (`daemon.Visualizer.run`), so the two clocks are the
+#: same number and a frame that lands a hair early -- scheduler jitter, or plain
+#: float subtraction: 100.1 - 100.0 is 0.0999999999 -- fails the gate and pushes
+#: the poll a whole interval out. That beat is invisible in the code and doubles
+#: the marker's latency half the time. Giving the gate a little slack means the
+#: poll is paced by the loop, which is the clock that actually matters, and the
+#: worst this can cost is one extra window list in a tenth of a second.
+_POLL_SLACK = 0.9
+
 #: How far down the window list to look for an ordinary window before giving up.
 #: The answer is normally the first entry; a bound at all is here so that a
 #: pathological list cannot turn a poll into a scan.
 _MAX_WINDOWS = 40
 
 
-# --- the free half: which application ---------------------------------------
+# --- the free half: which application, and which of its windows -------------
 
 
 def _window_list():
@@ -97,7 +116,7 @@ def _window_list():
 
     Cached on the function like :func:`mft.power._core_graphics`, and for a
     stronger reason: the CFStrings are allocated objects, and building three of
-    them per poll would be a leak on a four-times-a-second clock.
+    them per poll would be a leak on a ten-times-a-second clock.
     """
     if _window_list.cached is not None:
         return _window_list.cached or None
@@ -140,6 +159,7 @@ def _window_list():
             for name, value in (
                 ("layer", "kCGWindowLayer"),
                 ("owner", "kCGWindowOwnerName"),
+                ("number", "kCGWindowNumber"),
             )
         }
         if not all(keys.values()):
@@ -172,12 +192,27 @@ def _cf_str(cf, ref) -> str:
     return buf.value.decode(errors="replace")
 
 
-def frontmost_app() -> Optional[str]:
-    """The name of the application owning the frontmost ordinary window.
+@dataclass(frozen=True)
+class Front:
+    """The frontmost ordinary window, as much of it as is free to know.
 
-    ``""`` for "nothing in front we can name", ``None`` for "cannot ask" -- a
-    distinction only the logs care about, since both mean the board marks
-    nothing, but the second one is a machine where this feature is simply
+    ``app`` is what the board reports and what picks a :class:`Terminal`;
+    ``window`` is only ever compared with the last one, to notice that you moved
+    somewhere new. Zero means the window server did not say, which compares
+    equal to itself and so simply reads as "no window switch" -- the app name
+    still does its half of the work.
+    """
+
+    app: str
+    window: int = 0
+
+
+def frontmost() -> Optional[Front]:
+    """The application owning the frontmost ordinary window, and which window.
+
+    ``Front("")`` for "nothing in front we can name", ``None`` for "cannot
+    ask" -- a distinction only the logs care about, since both mean the board
+    marks nothing, but the second one is a machine where this feature is simply
     absent and the first is a desk with a browser on it.
 
     Layer zero is what makes it *ordinary*: the menu bar, the Dock and every
@@ -204,8 +239,9 @@ def frontmost_app() -> Optional[str]:
                 continue
             name = _cf_str(cf, cf.CFDictionaryGetValue(entry, keys["owner"]))
             if name:
-                return name
-        return ""
+                number = _cf_int(cf, cf.CFDictionaryGetValue(entry, keys["number"]))
+                return Front(name, number or 0)
+        return Front("")
     except Exception:
         log.debug("could not read the window list", exc_info=True)
         return None
@@ -397,7 +433,7 @@ class AttentionWatcher:
     def __init__(
         self,
         *,
-        front: Callable[[], Optional[str]] = frontmost_app,
+        front: Callable[[], Optional[Front]] = frontmost,
         wake: Callable[[], None] = lambda: None,
     ) -> None:
         self._front = front
@@ -409,12 +445,18 @@ class AttentionWatcher:
         #: What CoreGraphics last called the frontmost app, for `/status` and to
         #: notice an app switch, which is when a stale tty stops being an answer.
         self._app: str = ""
+        #: And which of that app's windows, for the same reason one level down.
+        self._window: int = 0
         self._asking = threading.Event()
+        #: A switch that arrived while the previous ask was still out. Dropping
+        #: it would cost a whole `ATTENTION_ASK_SECONDS` on exactly the move the
+        #: floor is meant to be skipped for, so it is remembered instead.
+        self._forced = False
         self._last_poll = float("-inf")
         self._last_ask = float("-inf")
         #: Terminals whose AppleScript just failed, and when. A denial or a
         #: missing scripting dictionary does not get better between one poll and
-        #: the next, and asking four times a second is how a quiet feature turns
+        #: the next, and asking ten times a second is how a quiet feature turns
         #: into a busy log.
         self._backoff: dict[str, float] = {}
 
@@ -431,19 +473,20 @@ class AttentionWatcher:
     def poll(self, now: float, sessions: Sequence[Session]) -> None:
         """Look, on the render thread. Never blocks for longer than a window
         list, and never raises."""
-        if now - self._last_poll < config.ATTENTION_POLL_SECONDS:
+        if now - self._last_poll < config.ATTENTION_POLL_SECONDS * _POLL_SLACK:
             return
         self._last_poll = now
         try:
-            app = self._front() or ""
+            front = self._front() or Front("")
         except Exception:
             log.debug("frontmost app unavailable", exc_info=True)
-            app = ""
+            front = Front("")
         with self._lock:
-            switched = app != self._app
-            self._app = app
+            switched = front.app != self._app or front.window != self._window
+            self._app = front.app
+            self._window = front.window
 
-        terminal = terminal_for(app)
+        terminal = terminal_for(front.app)
         if terminal is None:
             # Not a terminal, so nothing on the board is in front of you. This
             # is the common case and it is the cheap one: no subprocess ever
@@ -459,7 +502,7 @@ class AttentionWatcher:
             # Sorted, and that is not tidiness: `_set` wakes the render loop when
             # the answer *changes*, and a set iterated into a tuple can come back
             # in a different order for the same tab -- which would look like a
-            # change every quarter second and hold the loop at 30Hz forever.
+            # change on every poll and hold the loop at 30Hz forever.
             self._set(tuple(sorted(hosted[0].keys)))
             return
         if not hosted or terminal.front_tty is None:
@@ -478,16 +521,19 @@ class AttentionWatcher:
     def _ask(self, terminal: Terminal, now: float, force: bool) -> None:
         """Spend a subprocess on which tab, off the render thread.
 
-        ``force`` is an app switch, which is the one moment the previous answer
-        is certainly stale -- inside one app the tab you are on changes far less
-        often than the ordinary tick, so everything else waits for it.
+        ``force`` is an app or window switch, which is the one moment the
+        previous answer is certainly stale -- inside one window the tab you are
+        on changes far less often than the ordinary tick, so everything else
+        waits for the floor.
         """
+        self._forced = self._forced or force
         if self._asking.is_set():
             return
         if now - self._backoff.get(terminal.name, float("-inf")) < config.ATTENTION_BACKOFF_SECONDS:
             return
-        if not force and now - self._last_ask < config.ATTENTION_ASK_SECONDS:
+        if not self._forced and now - self._last_ask < config.ATTENTION_ASK_SECONDS:
             return
+        self._forced = False
         self._last_ask = now
         self._asking.set()
         threading.Thread(

@@ -852,32 +852,48 @@ questions cost wildly different amounts.
 
 | Question | How | Cost |
 |---|---|---|
-| which **app** is in front | `CGWindowListCopyWindowInfo` via `ctypes` | ~0.5ms, no permission, no subprocess |
-| which **tab** inside it | AppleScript for the selected tab's tty | ~80ms of subprocess, off the render thread |
+| which **app and window** is in front | `CGWindowListCopyWindowInfo` via `ctypes` | 0.33ms, no permission, no subprocess |
+| which **tab** inside it | AppleScript for the selected tab's tty | ~60ms of subprocess, off the render thread |
 
 The saving grace is that the second question usually doesn't get asked. **If the
 app in front holds exactly one session on the board, the free answer is already
 the exact answer** — and one Claude per terminal is the ordinary desk. The
 AppleScript only runs to disambiguate two or more sessions in the *same*
 application, only while that application is frontmost, and never merely to
-*clear* the marker: switching to a browser is answered for free. Worst case —
-four Claudes in one Terminal window, with you sitting in it — is one 80ms query
-a second and it stops the moment you switch away.
+*clear* the marker: switching to a browser is answered for free.
+
+The free half reads the window *number* as well as the owner's name, and that is
+what keeps the expensive half from being felt. An app switch and a window switch
+are both edges it can see, and on an edge the AppleScript is asked immediately
+rather than waiting out `ATTENTION_ASK_SECONDS` — so ⌘-tab and ⌘-` are both as
+fast as the free poll. The one move left paying the floor is ⌘-{ between two tabs
+of a *single* window holding two Claudes: they share a window, and the title that
+would tell them apart is the one field the window server redacts. That case is
+answered within 0.4s, which costs a subprocess two and a half times a second and
+only while such a window is frontmost.
 
 The cheap poll rides the render loop, which is what made the first version of
 this feel late: a board with nothing moving on it drops to `IDLE_FPS` (1Hz), and
 a still board is precisely the board you alt-tab *into* — an idle session, a
-finished one, a prompt that has been sitting there. The poll's own quarter-second
-clock never got a chance to fire. So the loop holds its idle wait down to
-`ATTENTION_POLL_SECONDS` while the marker is on: four wakeups a second instead of
-one, each of them 0.4ms of window list and a compose that produces identical
-cells and therefore writes nothing to the wire. A couple of milliseconds of CPU a
-second, against the thirty frames a second any animation on the board already
-costs.
+finished one, a prompt that has been sitting there. The poll's own clock never
+got a chance to fire. So the loop holds its idle wait down to
+`ATTENTION_POLL_SECONDS` while the marker is on: ten wakeups a second instead of
+one, each of them a third of a millisecond of window list and a compose that
+produces identical cells and therefore writes nothing to the wire. Three
+milliseconds of CPU a second, against the thirty frames a second any animation on
+the board already costs.
+
+Those two clocks are now the *same* number, and that is a trap worth naming: the
+poll's rate limit is checked against a frame time, so a frame landing a hair
+early — scheduler jitter, or plain float subtraction, where `100.1 - 100.0` is
+`0.0999999999` — would fail the gate and push the poll a whole interval out,
+silently doubling the latency about half the time. The gate carries a little
+slack (`attention._POLL_SLACK`) so the loop, which is the clock that actually
+matters, sets the pace.
 
 Only `kCGWindowName`, the window *title*, is redacted without Screen Recording
-permission. The owner's name and the window layer, which is all this needs, are
-not.
+permission. The owner's name, the window layer and the window number, which is
+all this needs, are not.
 
 | Terminal | Can tell its own tabs apart |
 |---|---|

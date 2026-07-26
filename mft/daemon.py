@@ -850,10 +850,11 @@ class Visualizer:
             # itself on its own clock anyway (`mft.attention`); this only stops
             # the loop from sleeping through it.
             #
-            # It is not free, and it is close: the window list is 0.4ms and a
-            # frame that composes to the same cells writes nothing to the wire,
-            # so four idle frames a second cost a couple of milliseconds of CPU
-            # against the thirty frames a second any animation already spends.
+            # It is not free, and it is close: the window list is a third of a
+            # millisecond and a frame that composes to the same cells writes
+            # nothing to the wire, so ten idle frames a second cost a few
+            # milliseconds of CPU against the thirty frames a second any
+            # animation already spends.
             idle = min(idle, config.ATTENTION_POLL_SECONDS)
         still = 0  # consecutive frames that composed to the same board
         last_reap = time.monotonic()

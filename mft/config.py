@@ -726,22 +726,35 @@ FOLLOW_ALERT_COOLDOWN_SECONDS = 30.0
 #: you already knew.
 ATTENTION_FOLLOW = _flag("MFT_ATTENTION_FOLLOW", True)
 
-#: How often to ask the window server which application is in front. Free enough
-#: (about a millisecond, no permission, no subprocess) to be four times a second,
-#: which is the difference between the marker feeling attached to the alt-tab and
-#: feeling like it is catching up.
-ATTENTION_POLL_SECONDS = 0.25
+#: How often to ask the window server which window is in front. This is the
+#: marker's real latency in the common case, because it is also the floor the
+#: render loop's idle rate is held under -- a still board is exactly the board
+#: you alt-tab *into*, so nothing else is going to notice sooner.
+#:
+#: A tenth of a second, because measured on this hardware the window list is
+#: 0.33ms: ten polls a second is three milliseconds of CPU a second, against the
+#: thirty frames a second any animation on the board already spends. A quarter
+#: second was the old value and was the difference between the marker feeling
+#: attached to the switch and feeling like it is catching up.
+ATTENTION_POLL_SECONDS = float(os.environ.get("MFT_ATTENTION_POLL_SECONDS", 0.1))
 
-#: The floor on the *expensive* question -- which tab, via AppleScript, ~80ms of
-#: subprocess. Only ever reached when one terminal is holding two or more
-#: sessions, and skipped entirely on an app switch, which is answered at once.
-#: Raise it if you keep four Claudes in one Terminal window and can feel it.
-ATTENTION_ASK_SECONDS = 1.0
+#: The floor on the *expensive* question -- which tab, via AppleScript, ~60ms of
+#: subprocess on a warm machine. Only ever reached when one terminal is holding
+#: two or more sessions, and skipped entirely on an app *or window* switch, both
+#: of which the free half sees and answers at once.
+#:
+#: So what is left paying this is one move: command-{ between two tabs of one
+#: window that holds two Claudes. That is worth well under a second, and 0.4 is
+#: about the slowest that still reads as a response rather than a delay. The
+#: cost is a subprocess two and a half times a second, and only while such a
+#: window is frontmost -- switch to anything else and the polling stops dead.
+#: Raise it if you keep four Claudes in one window and can hear the fans.
+ATTENTION_ASK_SECONDS = float(os.environ.get("MFT_ATTENTION_ASK_SECONDS", 0.4))
 
 #: How long to leave a terminal alone after its AppleScript comes back empty.
 #: A missing scripting dictionary or a refused Automation grant is not a
 #: condition that improves between one poll and the next, and this is what keeps
-#: that from being asked four times a second forever.
+#: that from being asked on every poll forever.
 ATTENTION_BACKOFF_SECONDS = 30.0
 
 #: The ceiling every *other* ring is held under, so that the focused one has
