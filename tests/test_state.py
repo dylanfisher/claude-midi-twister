@@ -597,6 +597,51 @@ class StateMachine(unittest.TestCase):
         )
         self.assertEqual(classify_notification({"message": "waiting for your input"}), "waiting")
 
+    def test_the_idle_nag_leaves_a_finished_session_green(self):
+        # Claude Code posts this a minute after every turn ends. `done` is
+        # already the right answer, and amber would take the floor back.
+        self.feed(
+            event("Stop"),
+            event("Notification", notification_type="idle_prompt"),
+        )
+        self.assertEqual(self.session.state, "done")
+        self.assertFalse(self.session.alert)
+
+    def test_the_idle_nag_leaves_an_idle_session_alone(self):
+        self.session.set_state("idle")
+        self.feed(event("Notification", notification_type="idle_prompt"))
+        self.assertEqual(self.session.state, "idle")
+        self.assertFalse(self.session.alert)
+
+    def test_an_untyped_idle_message_is_the_same_nag(self):
+        self.feed(
+            event("Stop"),
+            event("Notification", message="Claude is idle"),
+        )
+        self.assertEqual(self.session.state, "done")
+
+    def test_the_idle_nag_still_lands_on_a_session_that_is_not_resting(self):
+        # Nothing else has said this turn ended, so the nag is the only thing
+        # that knows -- amber beats an orange knob that is lying.
+        self.feed(
+            event("UserPromptSubmit"),
+            event("Notification", notification_type="idle_prompt"),
+        )
+        self.assertEqual(self.session.state, "waiting")
+        self.assertTrue(self.session.alert)
+
+    def test_a_real_ask_is_still_amber_after_a_finished_turn(self):
+        self.feed(
+            event("Stop"),
+            event("Notification", notification_type="agent_needs_input"),
+        )
+        self.assertEqual(self.session.state, "waiting")
+        self.assertTrue(self.session.alert)
+
+    def test_an_unreadable_notification_is_not_treated_as_the_nag(self):
+        self.feed(event("Stop"), event("Notification"))
+        self.assertEqual(self.session.state, "waiting")
+
     def test_next_prompt_clears_the_alert(self):
         self.feed(
             event("Notification", notification_type="permission_prompt"),

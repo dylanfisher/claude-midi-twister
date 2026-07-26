@@ -122,7 +122,7 @@ notifications rather than a telemetry stream:
 | `SessionStart` | claim an encoder, `idle` |
 | `UserPromptSubmit` | `thinking`, new turn, reset counters |
 | `PreToolUse` / `PostToolUse` / `PostToolUseFailure` | `working`, re-read the context gauge — and if it carries an `agent_id`, brighten that subagent's dot |
-| `Notification` | `permission` / `plan` / `waiting` / `done`, by `notification_type` |
+| `Notification` | `permission` / `plan` / `waiting` / `done`, by `notification_type` — except the idle nag at a resting session, which is dropped |
 | `SubagentStart` / `SubagentStop` | stack up from the bottom-right of the bank |
 | `PreCompact` / `PostCompact` | drain the ring, then refill it |
 | `StopFailure` | `error`, and spell the reason if it's a rate limit |
@@ -354,6 +354,18 @@ invisible until you turn your head. So motion is a budget.
   breath for idle-waiting. One blinking red for all of them trains you to ignore
   blinking red. Errors are also red but *solid* — a rate limit is bad, but it
   isn't waiting on your hand.
+
+- **The idle nag doesn't take the floor back.** Claude Code posts an
+  `idle_prompt` notification sixty seconds after every turn it finishes, so on a
+  board you walked away from it is the most common notification there is. Landing
+  it as `waiting` turned a session that had just gone green amber a minute later,
+  with its ring pinned full — the shape that means *the agent is blocked on you*
+  — for a session that has the floor and is doing nothing with it. At rest it now
+  says nothing at all: the green `done` ramp already knows the turn ended, and
+  fading is the honest way to say "a while ago". `agent_needs_input` is a real
+  ask and stays amber, and the nag still lands on a session that *isn't* resting,
+  where it's the only thing that knows the turn is over and amber beats an orange
+  knob that's lying. See `events.is_idle_nag`.
 - **Everything that blinks, blinks together.** The daemon sends MIDI clock, so
   gates stay in phase instead of drifting apart and reading as broken hardware.
   `MFT_CLOCK_BPM=0` turns it off.

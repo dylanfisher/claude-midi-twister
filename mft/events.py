@@ -40,6 +40,16 @@ NOTIFICATION_STATES = {
     "agent_completed": "done",  # green, decaying
 }
 
+#: The notification types that are only "nothing has happened here for a while",
+#: as against the ones that say the agent wants something it hasn't got. Claude
+#: Code fires the idle nag a minute after every turn ends, so on a board left
+#: alone it is the *most* common notification there is -- see :func:`is_idle_nag`.
+IDLE_NAG_TYPES = frozenset({"idle_prompt"})
+
+#: States the idle nag has nothing to add to: the green ramp is already saying
+#: it, and saying it better.
+RESTING_STATES = frozenset({"done", "idle"})
+
 #: Fallback for payloads without a `notification_type`, matched against the
 #: human-readable message.
 _MESSAGE_STATES = (
@@ -81,6 +91,31 @@ def classify_notification(event: dict[str, Any]) -> Optional[str]:
     # An unlabelled notification with no recognisable message still means
     # *something* wants you; treat it as the gentle one.
     return "waiting"
+
+
+def is_idle_nag(event: dict[str, Any]) -> bool:
+    """Is this notification only "you haven't answered this prompt in a while"?
+
+    Claude Code posts one sixty seconds after every turn it finishes, whether or
+    not anything is wrong, so a session you simply walked away from went green,
+    faded for a minute, and then turned amber and pinned its ring at full --
+    the shape the board uses for *the agent is blocked on you*, spent on a
+    session that has the floor and is doing nothing with it. The green `done`
+    ramp already says everything the nag knows, and says it as a fade rather
+    than an alert, so at rest this event is worth nothing and costs the one hue
+    that means "yours again".
+
+    Only the nag. `agent_needs_input` is a different thing arriving down the same
+    pipe: the agent asked and is waiting on the answer, and amber is exactly
+    right for it. An unlabelled notification we can't read is not treated as a
+    nag either -- it stays `waiting`, on the same reasoning as
+    :func:`classify_notification`'s fallback: something wants you, and the
+    gentle read of "something" is still an ask.
+    """
+    kind = str(event.get("notification_type") or "").strip()
+    if kind:
+        return kind in IDLE_NAG_TYPES
+    return "idle" in str(event.get("message", "")).lower()
 
 
 def _tool_use_key(event: dict[str, Any]) -> Optional[str]:
@@ -302,6 +337,11 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
     elif name == "Notification":
         session.last_message = event.get("message", "")
         state = classify_notification(event)
+        if state == "waiting" and is_idle_nag(event) and session.state in RESTING_STATES:
+            # A resting session being told it is resting. Dropped entirely --
+            # not even the attention debt, which `Stop` already owes and whose
+            # clock this would not move anyway. See :func:`is_idle_nag`.
+            state = None
         if state:
             session.set_state(state)
             if state != "done":
