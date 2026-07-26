@@ -38,6 +38,10 @@ def session_payload(session: Session, now: float) -> dict:
         "turns": session.turn_count,
         "tool_calls": session.tool_calls,
         "last_tool": session.last_tool,
+        # In units of failed tool calls, which is what the red in a working
+        # encoder's hue is measuring. The first question about a knob that has
+        # gone red is "is that real or is the daemon confused", and this is it.
+        "failures": round(session.failure_heat, 2),
         "subagents": session.subagents,
         "model": session.model,
         "context_tokens": session.context_tokens,

@@ -207,6 +207,44 @@ def _gauge_level(session: Session, now: float, base: float) -> float:
     return lerp(base, config.GAUGE_STALE_LEVEL, age / config.DONE_FADE_SECONDS)
 
 
+def _hue(color: str | int | None) -> int:
+    """A colour name or a raw wheel value, as a wheel value."""
+    if isinstance(color, str):
+        return config.COLORS[color]
+    return config.COLOR_OFF if color is None else int(color)
+
+
+def working_color(session: Session, base: str | int | None) -> str | int | None:
+    """`working`'s hue, warmed toward red by how badly the turn is going.
+
+    The one thing a tool-call board is in a position to know and has never said.
+    Hue is what the encoder is *doing* and everything else about `working`
+    already describes rate -- the shimmer is calls per second, the ring is how
+    long the turn has run -- so none of them can tell an agent making progress
+    apart from an agent retrying the same failing edit. They look identical, and
+    the second one is the one you want to be interrupted about.
+
+    Hue and nothing else, deliberately. It stays out of `arbitrate_motion` for
+    the same reason the subagent shimmer does: a level (or here a colour) is not
+    a rate, so this cannot compete for the one fast animation the board allows
+    itself, which belongs to an encoder where a human is actually blocking. A
+    failing agent is still working. It has not become an alert and must not be
+    able to make itself one -- it does not pin the ring, does not owe you
+    attention, and does not pull the bank onto itself.
+
+    Interpolated on the wheel rather than switched at a threshold, so two
+    failures and five look different from across the room. The curve is in
+    :data:`config.FAILURE_HEAT_CURVE`: orange and red are six values apart on
+    this hardware, and a linear ramp would spend the whole first failure inside
+    the width of a rounding error.
+    """
+    fraction = session.failure_fraction
+    if fraction <= 0:
+        return base
+    eased = 1.0 - (1.0 - fraction) ** config.FAILURE_HEAT_CURVE
+    return round(lerp(_hue(base), _hue(config.FAILURE_HEAT_COLOR), eased))
+
+
 def _working_brightness(session: Session, now: float) -> float:
     """Bright on each tool call, decaying between them, sagging away entirely
     once the session has stopped calling tools at all.
@@ -252,6 +290,10 @@ def render(session: Session, now: float) -> Cell:
         # where "how long has this been going" is the whole reason you looked.
         ring = _turn_ring(session, now) if config.TURN_RING else _arc_ring(session)
         brightness = _working_brightness(session, now)
+        # ...and the hue says how well it is going. The shimmer above is
+        # untouched: same rate, same decay, same stall sag -- only the colour
+        # under it moves. See :func:`working_color`.
+        color = working_color(session, color)
 
     elif state in SWEEP_RATE:
         ring = _sweep(now, SWEEP_RATE[state])

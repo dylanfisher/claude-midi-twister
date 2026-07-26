@@ -121,7 +121,7 @@ notifications rather than a telemetry stream:
 |---|---|
 | `SessionStart` | claim an encoder, `idle` |
 | `UserPromptSubmit` | `thinking`, new turn, reset counters |
-| `PreToolUse` / `PostToolUse` / `PostToolUseFailure` | `working`, re-read the context gauge — and if it carries an `agent_id`, brighten that subagent's dot |
+| `PreToolUse` / `PostToolUse` / `PostToolUseFailure` | `working`, re-read the context gauge — and if it carries an `agent_id`, brighten that subagent's dot. A failure warms the hue toward red, a success cools it back |
 | `Notification` | `permission` / `plan` / `waiting` / `done`, by `notification_type` — except the idle nag at a resting session, which is dropped |
 | `SubagentStart` / `SubagentStop` | stack up from the bottom-right of the bank |
 | `PreCompact` / `PostCompact` | drain the ring, then refill it |
@@ -440,6 +440,30 @@ invisible until you turn your head. So motion is a budget.
   twenty. `MFT_TURN_RING=0` puts the old rotating tool-call arc back, which this
   replaced — the arc is a fine thing to watch and a redundant one to spend the
   ring on, since its spin rate is tool-call frequency and so is the shimmer.
+
+- **A working encoder gets redder as its tool calls fail.** Everything else
+  about `working` is a rate — the shimmer is calls per second, the ring is how
+  long the turn has run — so an agent retrying the same failing edit six times
+  looks exactly like an agent doing good work. It is the same orange, shimmering
+  at the same speed, and it is the one you actually want to walk over to. So the
+  hue carries how *well* it is going: one failed call warms it, three make it
+  red, and every clean call after that cools it back a third of the way to
+  orange. A turn that hits a wall and recovers visibly comes back.
+
+  Hue and nothing else. It never pins the ring, never animates, never owes you
+  attention and never pulls the bank onto itself — a failing agent is still
+  working and hasn't become a thing that blocks you, and the alert vocabulary is
+  reserved for the states where a human is actually in the way. It can't be
+  confused with `error` for the same reason a glance settles it: `error` is
+  solid red with a full ring, this shimmers with a stopwatch under it.
+
+  Failures are read from `PostToolUseFailure` *and* from a `PostToolUse` whose
+  response says it errored — the second because the failure hook is recent, so a
+  settings file written before it reports every failure as an ordinary success
+  and the board would never warm at all. Structured response keys only: an agent
+  reading an error log is not an agent hitting errors. `MFT_FAILURE_HEAT=0`
+  turns it off, and `curl localhost:7654/status` reports the heat as `failures`,
+  in units of failed calls.
 
 - **A resting ring is a fuel gauge.** It fills as that agent's context window
   fills, so "this one is about to compact" is legible from across the room. Read
@@ -1041,6 +1065,7 @@ likely want at runtime:
 | `MFT_SLEEP`, `MFT_SLEEP_SECONDS` | board sleep, and when the first stage lands |
 | `MFT_DISPLAY_BLACKOUT` | `0` stops the board following the screen off |
 | `MFT_TURN_RING`, `MFT_TURN_RING_SECONDS` | a working ring is the turn's length (`0` = the old tool-call arc), and what fills it |
+| `MFT_FAILURE_HEAT`, `MFT_FAILURE_HEAT_FULL` | a working encoder reddens as its tool calls fail, and how many failures reach full red |
 | `MFT_CONTEXT_RING` | a resting ring is a context gauge (`0` = a bare pip) |
 | `MFT_CONTEXT_RING_IDLE` | `0` keeps the gauge off the resting states |
 | `MFT_CONTEXT_SETTINGS_MODEL` | `0` reads the context window off the transcript alone, never `settings.json` |

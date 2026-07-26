@@ -157,9 +157,16 @@ def run_session(url: str, rng: random.Random, index: int, stop: threading.Event)
         for agent_id in agents:
             send(hook_event_name="SubagentStart", agent_id=agent_id, agent_type="Explore")
 
-        for _ in range(rng.randint(1, 8)):
+        # Every so often a turn goes badly: the same call fails, and fails
+        # again, and the encoder warms from orange toward red while the shimmer
+        # under it carries on exactly as before. It recovers part-way through,
+        # so the cool-down is visible too -- three good calls to walk back one
+        # bad one, which is a slow enough fade to be worth watching.
+        trouble = rng.random() < 0.25
+        for call in range(rng.randint(4, 10) if trouble else rng.randint(1, 8)):
             if stop.is_set():
                 return
+            failing = trouble and call < 4 and rng.random() < 0.75
             tool = rng.choice(TOOLS)
             # Some calls come from a subagent rather than the parent, which is
             # what a real fan-out looks like on the wire: same session_id, an
@@ -170,7 +177,14 @@ def run_session(url: str, rng: random.Random, index: int, stop: threading.Event)
             send(hook_event_name="PreToolUse", tool_name=tool, **attribution)
             stop.wait(rng.uniform(0.3, 1.5))
             transcript.grow(rng.randint(2_000, 12_000))
-            send(hook_event_name="PostToolUse", tool_name=tool, **attribution)
+            send(
+                hook_event_name=(
+                    "PostToolUseFailure" if failing else "PostToolUse"
+                ),
+                tool_name=tool,
+                tool_use_id=f"sim-{index}-{turn}-call-{call}",
+                **attribution,
+            )
 
             if rng.random() < 0.12:
                 send(

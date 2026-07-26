@@ -84,6 +84,17 @@ class Session:
     #: Ring segment, advanced once per completed tool call. The fallback
     #: activity signal for when there is no context reading to show instead.
     arc: int = 0
+    #: How badly this turn is going, in units of failed tool calls: up one on a
+    #: failure, down :data:`config.FAILURE_COOL_STEP` on a success, and it is
+    #: what slides `working`'s hue toward red. Turn-scoped -- a new prompt is a
+    #: fresh start, and the heat of a turn you have already answered describes
+    #: nothing you can still act on.
+    failure_heat: float = 0.0
+    #: The tool call the heat above was last raised by. A failed call can arrive
+    #: twice -- as `PostToolUseFailure` and as a `PostToolUse` whose response
+    #: says it errored -- and the second one must not be read as the agent
+    #: recovering. Only ever compared, never trusted for anything else.
+    failed_tool_use: str = ""
     #: Where this session's transcript lives, and what came out of it. Filled by
     #: the daemon, which owns the file read; see :mod:`mft.context`.
     transcript_path: str = ""
@@ -144,6 +155,52 @@ class Session:
         """You looked at it. Clear the alert and forgive the debt."""
         self.alert = False
         self.attention_since = None
+
+    def tool_failed(self, tool_use: str = "") -> None:
+        """A tool call came back an error: warm the working hue toward red.
+
+        Saturating rather than counting on: what the board is being asked is
+        "is this going badly", and the answer stops getting more useful after
+        the third failure. An unbounded count would also take proportionally
+        longer to cool down, so an agent that failed thirty times and then
+        recovered would stay red for the rest of the turn.
+
+        Counted once per call rather than once per report: a failure that
+        arrives as both `PostToolUseFailure` and an errored `PostToolUse` is one
+        failing edit, and reading it twice would make every failure on an
+        install that sends both worth double.
+        """
+        if tool_use and tool_use == self.failed_tool_use:
+            return
+        self.failure_heat = min(config.FAILURE_HEAT_FULL, self.failure_heat + 1.0)
+        self.failed_tool_use = tool_use
+
+    def tool_succeeded(self, tool_use: str = "") -> None:
+        """A tool call came back clean: cool back toward `working`'s own hue.
+
+        A call already counted as a failure never cools -- see
+        :attr:`failed_tool_use`. Anything with no id to compare is taken at face
+        value, which is the same bet the rest of this file makes about payload
+        fields that move around: the cost is a third of one failure's worth of
+        heat, and the alternative is a board that never cools at all on an
+        install whose payloads don't carry ids.
+        """
+        if tool_use and tool_use == self.failed_tool_use:
+            return
+        heat = self.failure_heat - config.FAILURE_COOL_STEP
+        # Snapped rather than merely clamped: three thirds of a failure leave
+        # 1.1e-16 behind, and "cooled all the way back" is a thing the status
+        # payload prints and the tests ask about. Nothing visible turns on it --
+        # it is a rounding error's worth of hue -- but a field that is never
+        # quite zero is a field nobody can compare against.
+        self.failure_heat = 0.0 if heat < config.FAILURE_COOL_STEP / 2 else heat
+
+    @property
+    def failure_fraction(self) -> float:
+        """0.0 -> 1.0 across :data:`config.FAILURE_HEAT_FULL` failures."""
+        if not config.FAILURE_HEAT or config.FAILURE_HEAT_FULL <= 0:
+            return 0.0
+        return min(1.0, max(0.0, self.failure_heat / config.FAILURE_HEAT_FULL))
 
     @property
     def context_fraction(self) -> Optional[float]:

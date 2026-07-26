@@ -137,6 +137,43 @@ def _tool_use_key(event: dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _tool_use_id(event: dict[str, Any]) -> str:
+    """Whatever this payload calls the id of the tool call it describes.
+
+    Three spellings because they have all been seen; the same list
+    :func:`_tool_use_key` walks, minus the Task/Agent filter, since a failed
+    `Bash` has an id worth pairing up too.
+    """
+    for field_name in ("tool_use_id", "toolUseID", "tool_use_ID"):
+        value = event.get(field_name)
+        if value:
+            return str(value)
+    return ""
+
+
+def is_tool_failure(name: str, event: dict[str, Any]) -> bool:
+    """Did this completed tool call go wrong?
+
+    Two ways to be told, and both are needed. `PostToolUseFailure` is the hook
+    that says so outright -- and is a *recent* hook, so a settings file written
+    before it exists reports every failure as an ordinary `PostToolUse` and the
+    board would never warm at all. That payload usually carries the same fact in
+    its response, so it is read there too.
+
+    Structured keys only (:data:`config.FAILURE_RESPONSE_KEYS`). Matching on the
+    prose of a tool response would make an agent reading an error log look like
+    an agent hitting errors, which is precisely the distinction this exists to
+    draw.
+    """
+    if name == "PostToolUseFailure":
+        return True
+    response = event.get("tool_response")
+    if isinstance(response, dict):
+        if any(response.get(key) for key in config.FAILURE_RESPONSE_KEYS):
+            return True
+    return bool(event.get("error"))
+
+
 def _agent_key(event: dict[str, Any]) -> Optional[str]:
     agent_id = event.get("agent_id")
     return f"{AGENT_KEY}{agent_id}" if agent_id else None
@@ -199,6 +236,8 @@ def clear_session(session: Session, now: float) -> list[str]:
     session.subagents_in_flight.clear()
     session.tool_history.clear()
     session.arc = 0
+    session.failure_heat = 0.0
+    session.failed_tool_use = ""
     session.compacting_since = None
     session.last_tool = ""
     session.last_tool_at = None
@@ -301,6 +340,11 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
         session.turn_started_at = now
         session.turn_count += 1
         session.tool_calls = 0
+        # A fresh prompt is a fresh start: whatever went wrong last turn is a
+        # thing you have now answered, and carrying its heat into a turn that
+        # may well be the fix would make the correction look like the fault.
+        session.failure_heat = 0.0
+        session.failed_tool_use = ""
         session.subagents_in_flight.clear()
         session.attended()
         session.set_state("thinking")
@@ -329,6 +373,14 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
         # spin rate is tool-call frequency and a ring that stops is a stall.
         session.arc = (session.arc + 1) % config.ARC_SEGMENTS
         session.tool_history.append(tool)
+        # ...and this is the other half of the same fact: how *well* it is
+        # going. Failures warm the working hue toward red and successes cool it
+        # back, so a session grinding through the same failing edit stops
+        # looking like a session doing good work.
+        if is_tool_failure(name, event):
+            session.tool_failed(_tool_use_id(event))
+        else:
+            session.tool_succeeded(_tool_use_id(event))
         still_working(session)
 
     elif name == "MessageDisplay":

@@ -702,6 +702,51 @@ ACTIVE_FLOOR = 0.55
 STALL_SECONDS = 45.0
 STALL_FADE_SECONDS = 120.0
 
+# --- Tool failures ----------------------------------------------------------
+# An agent grinding through the same failing edit six times looks exactly like
+# an agent doing good work: same orange, same shimmer, same rotating arc. Tool
+# calls are the one thing the board watches most closely and it has never
+# distinguished the ones that *worked*. So `working` carries a temperature: the
+# hue slides toward red as calls fail and cools back to orange as they succeed.
+#
+# Hue only. The shimmer, the stopwatch ring and the motion budget are all
+# untouched -- a failing agent is still working, it has not become an alert, and
+# nothing here may promote it into one. It says "this is going badly", which is
+# a thing you glance at and decide about, not a thing that blocks.
+
+FAILURE_HEAT = _flag("MFT_FAILURE_HEAT", True)
+
+#: How many failures reach the far end of the ramp. Three: one is an event, two
+#: is a coincidence, three is the pattern you actually wanted to be told about.
+FAILURE_HEAT_FULL = float(os.environ.get("MFT_FAILURE_HEAT_FULL", 3.0))
+
+#: How much of one failure a successful call takes back. A third, so the agent
+#: has to string three good calls together to undo one bad one -- heat that
+#: evaporated on the first success would be gone before you looked up, and the
+#: signal is worth more as a slow-moving average than as a flicker.
+FAILURE_COOL_STEP = float(os.environ.get("MFT_FAILURE_COOL_STEP", 1.0 / 3))
+
+#: The far end of the ramp. `error`'s own hue on purpose -- red already means
+#: "this went wrong" on this board, and a failing tool call is the small version
+#: of that. They cannot be confused: `error` is solid with a full ring, this
+#: shimmers with a stopwatch under it.
+FAILURE_HEAT_COLOR = "red"
+
+#: The wheel between orange and red is six values wide (72 -> 78), so a linear
+#: ramp would spend the first failure on two of them and nobody would ever see
+#: it. The curve gives the first failure most of the distance and lets the rest
+#: confirm it: 1 -> 75, 2 -> 77, 3 -> 78. Raising this flattens it back toward
+#: linear, which is what you want if your unit's wheel is wider here.
+FAILURE_HEAT_CURVE = float(os.environ.get("MFT_FAILURE_HEAT_CURVE", 2.0))
+
+#: Where a `PostToolUse` payload admits the call failed, for installs whose
+#: settings predate `PostToolUseFailure` -- `--check` reports that drift, but a
+#: hook that isn't installed reports nothing at all, and this is the same fact
+#: arriving down the pipe that *is* installed. Structured keys only: a `Read` of
+#: a file that mentions an error is not a failed read, and string-sniffing a tool
+#: response would turn the board red for reading this very comment.
+FAILURE_RESPONSE_KEYS = ("is_error", "isError", "error")
+
 # --- Attention debt ---------------------------------------------------------
 # The interesting thing to encode is not agent state but *your neglect*. A
 # session that wants you and does not get you gets slowly more insistent, and

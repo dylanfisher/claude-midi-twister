@@ -679,6 +679,100 @@ class StateMachine(unittest.TestCase):
         self.assertEqual(self.session.arc, 2)
         self.assertEqual(list(self.session.tool_history), ["Read", "Bash"])
 
+    def working(self):
+        """A session mid-turn, which is the only state the heat is painted in."""
+        self.feed(event("UserPromptSubmit"), event("PreToolUse", tool_name="Edit"))
+        return self.session
+
+    def test_a_failed_tool_call_warms_the_working_hue_toward_red(self):
+        session = self.working()
+        cool = render(session, time.monotonic()).color
+        self.feed(event("PostToolUseFailure", tool_name="Edit", tool_use_id="a"))
+        warm = render(session, time.monotonic()).color
+        self.assertEqual(session.failure_heat, 1.0)
+        self.assertGreater(
+            render_mod._hue(warm), render_mod._hue(cool), "one failure is invisible"
+        )
+        self.assertLess(render_mod._hue(warm), config.COLORS["red"])
+
+    def test_failures_saturate_at_red_and_stop_there(self):
+        session = self.working()
+        for n in range(6):
+            self.feed(event("PostToolUseFailure", tool_name="Edit", tool_use_id=str(n)))
+        self.assertEqual(session.failure_heat, config.FAILURE_HEAT_FULL)
+        self.assertEqual(
+            render_mod._hue(render(session, time.monotonic()).color),
+            config.COLORS["red"],
+        )
+
+    def test_successful_calls_cool_it_back_to_orange(self):
+        session = self.working()
+        self.feed(event("PostToolUseFailure", tool_name="Edit", tool_use_id="a"))
+        # A third of a failure each, so it takes three of them.
+        for n in range(3):
+            self.assertGreater(session.failure_heat, 0.0)
+            self.feed(event("PostToolUse", tool_name="Edit", tool_use_id=f"ok{n}"))
+        self.assertEqual(session.failure_heat, 0.0)
+        self.assertEqual(render(session, time.monotonic()).color, "orange")
+
+    def test_a_failure_reported_twice_is_one_failure(self):
+        # `PostToolUseFailure` and a `PostToolUse` whose response says it errored
+        # are the same call arriving down two pipes; the second is not recovery.
+        session = self.working()
+        self.feed(
+            event("PostToolUseFailure", tool_name="Edit", tool_use_id="a"),
+            event(
+                "PostToolUse",
+                tool_name="Edit",
+                tool_use_id="a",
+                tool_response={"is_error": True},
+            ),
+        )
+        self.assertEqual(session.failure_heat, 1.0)
+
+    def test_an_errored_response_counts_without_the_failure_hook(self):
+        # Settings written before `PostToolUseFailure` existed report every
+        # failure as an ordinary PostToolUse, silently.
+        session = self.working()
+        self.feed(
+            event(
+                "PostToolUse",
+                tool_name="Bash",
+                tool_use_id="a",
+                tool_response={"is_error": True},
+            )
+        )
+        self.assertEqual(session.failure_heat, 1.0)
+
+    def test_heat_is_turn_scoped(self):
+        session = self.working()
+        self.feed(event("PostToolUseFailure", tool_name="Edit", tool_use_id="a"))
+        self.feed(event("Stop"), event("UserPromptSubmit"))
+        self.assertEqual(session.failure_heat, 0.0)
+        self.feed(event("PostToolUseFailure", tool_name="Edit", tool_use_id="b"))
+        self.feed({"hook_event_name": "SessionEnd", "reason": "clear"})
+        self.assertEqual(session.failure_heat, 0.0)
+
+    def test_a_failing_session_is_still_only_working(self):
+        # It may warm the hue and nothing else: no alert, no debt, no ring pin,
+        # no animation. A failing agent has not become a thing that blocks you.
+        session = self.working()
+        for n in range(6):
+            self.feed(event("PostToolUseFailure", tool_name="Edit", tool_use_id=str(n)))
+        cell = render(session, time.monotonic())
+        self.assertEqual(session.state, "working")
+        self.assertFalse(session.alert)
+        self.assertIsNone(session.attention_since)
+        self.assertEqual(cell.rgb_anim, config.ANIM_NONE)
+        self.assertLess(cell.ring, 127)
+
+    def test_only_working_carries_the_heat(self):
+        session = self.working()
+        for n in range(6):
+            self.feed(event("PostToolUseFailure", tool_name="Edit", tool_use_id=str(n)))
+        self.feed(event("Stop"))
+        self.assertEqual(render(session, time.monotonic()).color, "green")
+
     def test_tool_history_is_bounded(self):
         self.feed(*[event("PostToolUse", tool_name="Grep")] * 50)
         self.assertEqual(len(self.session.tool_history), config.PEEK_HISTORY)
