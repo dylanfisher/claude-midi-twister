@@ -21,7 +21,7 @@ from mft import render as render_mod  # noqa: E402
 from mft.render import Cell, attention_debt, render  # noqa: E402
 from mft.events import apply_event, classify_notification  # noqa: E402
 from mft.identity import merge_terminal, terminal_keys  # noqa: E402
-from mft.state import SessionTable  # noqa: E402
+from mft.state import SessionTable, Subagent  # noqa: E402
 
 
 def event(name: str, **kw) -> dict:
@@ -35,10 +35,13 @@ def set_subagents(session, count: int) -> None:
     flight rather than being a number anyone can set, so the tests that only
     care about how many dots appear go through here.
 
-    Activity stamps are left at zero -- long ago, so every dot sits at the
-    shimmer floor. Tests about brightness set their own.
+    Both stamps are left at zero -- long ago, so every dot sits at the shimmer
+    floor, and spawned at the origin so its ring is whatever the board's clock
+    says. Tests about brightness or the stopwatch set their own.
     """
-    session.subagents_in_flight = {f"agent:{i}": 0.0 for i in range(count)}
+    session.subagents_in_flight = {
+        f"agent:{i}": Subagent(0.0, 0.0) for i in range(count)
+    }
 
 
 class SlotAllocation(unittest.TestCase):
@@ -858,7 +861,15 @@ class StateMachine(unittest.TestCase):
         self.feed(event("PostToolUse", tool_name="Grep", agent_id="y"))
         after = self.session.subagents_in_flight
         self.assertEqual(after["agent:x"], before["agent:x"])
-        self.assertGreater(after["agent:y"], before["agent:y"])
+        self.assertGreater(
+            after["agent:y"].last_tool_at, before["agent:y"].last_tool_at
+        )
+        # The credit lands on the activity stamp alone. A subagent that
+        # calls a tool has not just been spawned, and a ring that reset on
+        # every call would be a stopwatch nobody could read.
+        self.assertEqual(
+            after["agent:y"].started_at, before["agent:y"].started_at
+        )
 
     def test_the_parents_own_tool_calls_touch_no_subagent(self):
         self.feed(event("SubagentStart", agent_id="x"))
@@ -1013,7 +1024,7 @@ class Clearing(unittest.TestCase):
         session = vis.table.get("old")
         session.tool_history.extend(["Read", "Bash"])
         session.arc, session.tool_calls, session.context_tokens = 5, 9, 120_000
-        session.subagents_in_flight["agent:x"] = 0.0
+        session.subagents_in_flight["agent:x"] = Subagent(0.0, 0.0)
         session.alert = True
         session.attention_since = 0.0
 
@@ -1691,7 +1702,10 @@ class Board(unittest.TestCase):
         now = 1000.0
         parent = self.table.ensure("a", "/tmp/p")
         parent.state = "working"
-        parent.subagents_in_flight = {"agent:x": now - 600.0, "agent:y": now}
+        parent.subagents_in_flight = {
+            "agent:x": Subagent(now - 600.0, now - 600.0),
+            "agent:y": Subagent(now, now),
+        }
         cells = board.blank_board()
         board.stack_subagents(cells, [parent], {parent.slot}, now)
         levels = sorted(c.brightness for c in cells if c.color == config.SUBAGENT_COLOR)
@@ -1705,13 +1719,95 @@ class Board(unittest.TestCase):
                 board.subagent_brightness(1000.0, 1000.0), config.SUBAGENT_BRIGHTNESS
             )
 
+    def test_the_ring_is_a_stopwatch_on_how_long_the_subagent_has_been_out(self):
+        """The scale you can read off the hardware without a curve in your head:
+        a quarter ring is ten minutes, half is twenty, all the way round is
+        forty. Linear, unlike a session's turn ring, because a subagent is
+        spawned for exactly the work that doesn't finish in two minutes."""
+        full = config.SUBAGENT_RING_SECONDS
+        # From an eighth up; below that the floor holds the ring off zero, which
+        # `test_a_just_spawned_dot_still_shows_a_ring` is about.
+        for elapsed, want in ((full / 8, 0.125), (full / 4, 0.25), (full / 2, 0.5)):
+            with self.subTest(elapsed=elapsed):
+                ring = board.subagent_ring(1000.0 - elapsed, 1000.0)
+                self.assertAlmostEqual(ring / 127, want, delta=0.02)
+
+    def test_a_just_spawned_dot_still_shows_a_ring(self):
+        """An empty ring reads as an unclaimed encoder, which is the one thing
+        a lit dot must never look like."""
+        self.assertEqual(board.subagent_ring(1000.0, 1000.0), config.SUBAGENT_RING_FLOOR)
+
+    def test_the_stopwatch_saturates_rather_than_wrapping(self):
+        """A wrap is ambiguous with a fresh spawn, and there is nothing you do
+        at ninety minutes that you didn't already do at forty."""
+        for elapsed in (config.SUBAGENT_RING_SECONDS, 100_000.0):
+            self.assertEqual(board.subagent_ring(1000.0 - elapsed, 1000.0), 127)
+
+    def test_a_dot_with_no_spawn_time_wears_the_old_stub(self):
+        """Nothing about the pile gets worse on an install that can't feed the
+        stopwatch: it goes back to the flat stub every dot used to wear."""
+        self.assertEqual(board.subagent_ring(None, 1000.0), config.SUBAGENT_RING)
+        with mock.patch.object(config, "SUBAGENT_TIME_RING", False):
+            self.assertEqual(board.subagent_ring(0.0, 1000.0), config.SUBAGENT_RING)
+
+    def test_each_dot_keeps_its_own_stopwatch(self):
+        """The mirror of the shimmer test, and the reading that matters most:
+        one dot most of the way round beside fresh ones is the fan-out that
+        went out and never came back."""
+        now = 1000.0
+        parent = self.table.ensure("a", "/tmp/p")
+        parent.state = "working"
+        parent.subagents_in_flight = {
+            "agent:old": Subagent(now - config.SUBAGENT_RING_SECONDS, now),
+            "agent:new": Subagent(now, now),
+        }
+        cells = board.blank_board()
+        board.stack_subagents(cells, [parent], {parent.slot}, now)
+        rings = sorted(c.ring for c in cells if c.color == config.SUBAGENT_COLOR)
+        self.assertEqual(rings, [config.SUBAGENT_RING_FLOOR, 127])
+
+    def test_a_tool_call_does_not_rewind_the_stopwatch(self):
+        """The two stamps move independently: a subagent that calls a tool has
+        not just been spawned. Pinned on the board rather than the record
+        because this is the whole reason the record has two fields."""
+        now = 1000.0
+        parent = self.table.ensure("a", "/tmp/p")
+        parent.state = "working"
+        parent.subagents_in_flight = {
+            "agent:x": Subagent(now - config.SUBAGENT_RING_SECONDS / 2, now)
+        }
+        cells = board.blank_board()
+        board.stack_subagents(cells, [parent], {parent.slot}, now)
+        dot = next(c for c in cells if c.color == config.SUBAGENT_COLOR)
+        self.assertAlmostEqual(dot.ring / 127, 0.5, delta=0.02)
+        self.assertAlmostEqual(dot.brightness, config.SUBAGENT_KICK_BRIGHTNESS)
+
+    def test_a_pile_from_the_tool_use_path_alone_still_fills_its_rings(self):
+        """Only the `agent_id` signal can attribute a tool call, so those dots
+        have no shimmer -- but a PreToolUse for a Task *is* the spawn, so an
+        install too old for SubagentStart still gets every stopwatch."""
+        now = 1000.0
+        parent = self.table.ensure("a", "/tmp/p")
+        parent.state = "working"
+        parent.subagents_in_flight = {
+            "tool:1": Subagent(now - config.SUBAGENT_RING_SECONDS, now)
+        }
+        cells = board.blank_board()
+        board.stack_subagents(cells, [parent], {parent.slot}, now)
+        dot = next(c for c in cells if c.color == config.SUBAGENT_COLOR)
+        self.assertEqual(dot.ring, 127)
+        self.assertAlmostEqual(dot.brightness, config.SUBAGENT_BRIGHTNESS)
+
     def test_the_pile_never_animates(self):
         """Invariant 4: the shimmer is a level, never a rate. Nothing in the
         corner may compete with the encoder a human is blocking on."""
         now = 1000.0
         parent = self.table.ensure("a", "/tmp/p")
         parent.state = "working"
-        parent.subagents_in_flight = {"agent:x": now, "agent:y": now - 5.0}
+        parent.subagents_in_flight = {
+            "agent:x": Subagent(now, now),
+            "agent:y": Subagent(now - 5.0, now - 5.0),
+        }
         cells = board.compose([parent], now)
         pile = [c for c in cells if c.color == config.SUBAGENT_COLOR]
         self.assertEqual(len(pile), 2)

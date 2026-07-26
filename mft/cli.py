@@ -107,9 +107,13 @@ def print_discovered() -> int:
     found = discover_mod.discover()
     for entry in found:
         tab = entry.terminal.get("tty") or entry.terminal.get("pid") or "unknown tab"
-        # The state is a guess read off a transcript, so this is where you check
-        # it against what the session is actually doing.
-        print(f"{entry.session_id[:8]}  {entry.state or 'idle':8}  {tab}  {entry.cwd}")
+        # The state and the pile are both guesses read off transcripts, so this
+        # is where you check them against what the session is actually doing.
+        pile = f"  +{len(entry.subagents)} subagent(s)" if entry.subagents else ""
+        print(
+            f"{entry.session_id[:8]}  {entry.state or 'idle':8}  {tab}  "
+            f"{entry.cwd}{pile}"
+        )
     print(f"{len(found)} running session{'' if len(found) == 1 else 's'}")
     return 0
 

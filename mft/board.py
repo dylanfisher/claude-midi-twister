@@ -306,29 +306,57 @@ def subagent_brightness(last_tool_at: Optional[float], now: float) -> float:
     return lerp(config.SUBAGENT_IDLE_BRIGHTNESS, config.SUBAGENT_KICK_BRIGHTNESS, kick)
 
 
+def subagent_ring(started_at: Optional[float], now: float) -> int:
+    """How far round one violet dot's ring is, given when its subagent spawned.
+
+    A stopwatch, linear to :data:`config.SUBAGENT_RING_SECONDS` and then held
+    full: a quarter ring is ten minutes out, half is twenty, all the way round is
+    forty. Saturating rather than wrapping for the same reason
+    :func:`mft.render._turn_ring` does -- a wrap is ambiguous with a fresh spawn,
+    and forty minutes and ninety are not two things you do differently.
+
+    ``None`` -- no spawn time at all, or the stopwatch switched off -- falls back
+    to the flat stub every dot used to wear, so nothing about the pile gets worse
+    on an install that can't feed this.
+    """
+    if started_at is None or not config.SUBAGENT_TIME_RING:
+        return config.SUBAGENT_RING
+    elapsed = max(0.0, now - started_at)
+    span = config.SUBAGENT_RING_SECONDS
+    fraction = min(1.0, elapsed / span) if span > 0 else 0.0
+    return max(config.SUBAGENT_RING_FLOOR, int(127 * fraction))
+
+
 def stack_subagents(
     board: list[Cell], sessions: Sequence[Session], claimed: set[int], now: float
 ) -> None:
     """Pile in-flight subagents into the bottom-right of their parent's bank.
 
-    They get a hue used for nothing else, a stub ring and no animation at all,
-    because the one thing you must never do is mistake a subagent for a session:
-    it owns no encoder of its own, it answers only the one gesture its parent
-    would have answered, and it disappears when the parent's turn ends.
+    They get a hue used for nothing else and no animation at all, because the one
+    thing you must never do is mistake a subagent for a session: it owns no
+    encoder of its own, it answers only the one gesture its parent would have
+    answered, and it disappears when the parent's turn ends.
 
-    The one thing that does move is brightness, per dot, on each tool call that
-    subagent makes -- see :func:`subagent_brightness`. That stays on the right
-    side of the line: a level is not a state, and no amount of shimmer makes a
-    violet dot read as a session.
+    Two things move, and both are quantities rather than states. Brightness, per
+    dot, on each tool call that subagent makes (:func:`subagent_brightness`), and
+    the ring, filling with how long the subagent has been out
+    (:func:`subagent_ring`). Between them a hung fan-out is legible from across
+    the room: a dot that stopped shimmering with most of its ring gone. Neither
+    crosses the line -- a level and a stopwatch are not states, and no amount of
+    either makes a violet dot read as a session, because the hue never moves.
     """
     activity: dict[int, list[Optional[float]]] = {}
+    started: dict[int, list[Optional[float]]] = {}
     for slot, session, index in _subagent_pile(sessions, claimed, len(board)):
         claimed.add(slot)
+        # Per parent, not per dot: both properties walk the whole pile, and a
+        # sixteen-wide fan-out would otherwise rebuild both lists sixteen times.
         stamps = activity.setdefault(session.slot, session.subagent_activity)
+        births = started.setdefault(session.slot, session.subagent_started)
         board[slot] = Cell(
             config.SUBAGENT_COLOR,
             config.SUBAGENT_ANIM,
-            config.SUBAGENT_RING,
+            subagent_ring(births[index] if index < len(births) else None, now),
             subagent_brightness(stamps[index] if index < len(stamps) else None, now),
         )
 

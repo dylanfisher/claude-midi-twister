@@ -17,7 +17,7 @@ terminal tab to the front**.
 │    │    │ ◦  │ ◦  │   ● dim green     idle — the ring is its context window
 └────┴────┴────┴────┘   ● magenta       running unsupervised
   press → focus that tab       ◦ violet        subagents, stacked from the corner,
-  hold  → peek at its history                  each shimmering on its own tool calls
+  hold  → peek at its history                  ring = how long it has been out
 ```
 
 Nothing on the device can answer a prompt, approve a tool call, or block a
@@ -267,6 +267,25 @@ the file's own mtime is all that's left. Past `DISCOVER_ACTIVE_SECONDS` (three
 minutes) the reading is dropped and the session lands `idle`. On a real desk that
 gate does most of the work: of five transcripts sitting mid-turn here, one was a
 session genuinely thinking and four were prompts abandoned an hour ago.
+
+**The violet pile comes back too.** It is the state a restart loses hardest: a
+daemon that missed a fan-out starting will hear every one of those subagents
+*end*, and a pop for a dot it never put up buys nothing. Claude Code gives each
+subagent its
+own transcript, under `<session-id>/subagents/agent-<agent_id>.jsonl` beside the
+parent's file, so `discover.subagents` reads each one exactly the way the section
+above reads a parent: an unanswered `tool_use` at the end is a subagent still
+out, a turn that stopped on `end_turn` handed its answer back. The id in that
+filename is the same one hooks carry, so a rebuilt dot is indistinguishable from
+one `SubagentStart` created and the eventual `SubagentStop` pops the right one.
+That file's birth time is read alongside its mtime, so a rebuilt dot comes back
+with its stopwatch already running — a restart into a fan-out that has been
+grinding for half an hour would otherwise adopt a pile of empty rings, which is
+the exact reading the stopwatch exists to give and the moment it is worth most.
+The same freshness gate applies, for a sharper version of the same reason — a
+subagent killed along with the daemon leaves a file frozen mid-call forever. A
+pile that is already standing is never edited from a file, only an empty one
+filled. `MFT_DISCOVER_SUBAGENTS=0` turns it off.
 
 Their context ring is real, read from that same transcript. The first genuine
 hook event takes over, and overwrites whatever was guessed. When two tabs sit in
@@ -763,12 +782,34 @@ ones after it slide up to close the gap.
 ```
 
 Subagents are not sessions and never look like one: violet — a hue used for
-nothing else — with a stub ring and no animation. They own no encoder of their
-own, never take a claimed slot, and collapse back when the parent's turn ends.
-The stub ring is deliberate: a subagent has no context reading of its own.
+nothing else — and no animation at all. They own no encoder of their own, never
+take a claimed slot, and collapse back when the parent's turn ends.
 `MFT_SUBAGENT_STACK=0` turns them off.
 
-Each dot **brightens on the tool calls its own subagent makes** and sinks back
+Two things move on a dot, and both are quantities rather than states. The hue is
+what identifies a subagent, and the hue never moves, so a level and a stopwatch
+next to it are still unmistakable.
+
+The **ring fills with how long that subagent has been out**: a quarter round is
+ten minutes, half is twenty, all the way round is forty
+(`MFT_SUBAGENT_RING_SECONDS`, raise it toward an hour if your fan-outs run long).
+Past full it stays full, because a wrap would be ambiguous with a fresh spawn and
+there is nothing you do at ninety minutes you didn't already do at forty.
+
+Linear, deliberately, where a session's turn ring is log-scaled. A turn's ring is
+a curve because nearly every turn is over inside two minutes and a linear scale
+buries all of them at the floor; a subagent is spawned for precisely the work
+that isn't, so its readings are spread across the whole span and the scale can be
+one you read off the hardware without a curve in your head.
+
+This is the reading you cannot get anywhere else. The parent's terminal shows one
+line of `Task` output whether the subagent is thinking or wedged, and the pile
+itself only says how many are out. A dot most of the way round, sitting at the
+shimmer floor beside fresh ones, is a fan-out that went out and never came back —
+legible from across the room. `MFT_SUBAGENT_TIME_RING=0` puts the old flat stub
+back on every dot, which is also what a dot whose spawn nothing recorded wears.
+
+Each dot also **brightens on the tool calls its own subagent makes** and sinks back
 between them — the same shimmer a session's encoder carries, and the same thing
 it means: rate reads as how hard the pile is working, and one dot sitting at the
 floor while its neighbours flicker is a subagent that has hung. Crucially it is
@@ -815,6 +856,10 @@ signal the abandoned pulse was reaching for, on the channel that could carry it.
 It also stays clear of `arbitrate_motion` entirely — a level is not a rate, so
 the pile cannot compete with the one fast animation the board allows itself, and
 that animation belongs to whichever encoder a human is blocking on.
+
+A restart mid-fan-out is the other way the pile goes missing, and that one is
+recoverable from disk — see [sessions that predate the
+daemon](#sessions-that-predate-the-daemon).
 
 If your settings predate the `SubagentStart` hook you'd see no subagents at all,
 silently, so `PreToolUse`/`PostToolUse` for `Task` and `Agent` are counted as a
@@ -1085,6 +1130,7 @@ likely want at runtime:
 | `MFT_RING_BRIGHTNESS_MIN`, `MFT_RING_BRIGHTNESS_MAX`, `MFT_RING_ANIM_OFFSET` | channel 6's brightness band, if your firmware moved it |
 | `MFT_HOST`, `MFT_PORT` | where the daemon listens |
 | `MFT_DISCOVER` | `0` is the same as `--no-discover` |
+| `MFT_DISCOVER_SUBAGENTS` | `0` adopts sessions without rebuilding their violet pile |
 
 ### Calibrating
 

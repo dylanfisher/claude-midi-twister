@@ -57,6 +57,30 @@ AGENT_KEY = "agent:"
 TOOL_KEY = "tool:"
 
 
+@dataclass(frozen=True)
+class Subagent:
+    """The two things a violet dot draws itself from: when its subagent was
+    spawned, and when it was last seen doing something.
+
+    Two fields rather than one because they answer different questions and move
+    in opposite directions -- the ring grows out of `started_at` and the
+    brightness sinks away from `last_tool_at`. They were one float for a while,
+    and the collapse hid the ambiguity in plain sight: the tool-use path never
+    updates its value, so what read as one dict of activity stamps was really
+    spawn times for half its keys and activity stamps for the other half.
+
+    Frozen, so a tool call replaces the record rather than editing it. That costs
+    nothing -- assigning an existing key leaves it exactly where it was in the
+    dict, and the dict's order is the pile's order -- and it buys the thing every
+    other value on this board already has: you can hold one and know it still
+    says what it said. A mutable version made ``dict(in_flight)`` a snapshot that
+    silently wasn't one.
+    """
+
+    started_at: float
+    last_tool_at: float
+
+
 @dataclass
 class Session:
     session_id: str
@@ -115,8 +139,9 @@ class Session:
     tool_history: deque[str] = field(
         default_factory=lambda: deque(maxlen=config.PEEK_HISTORY)
     )
-    #: Identifiers of the subagents currently in flight, each mapped to when it
-    #: was last seen doing something. Two independent signals feed this --
+    #: Identifiers of the subagents currently in flight, each mapped to a
+    #: :class:`Subagent` record of when it started and when it was last seen
+    #: doing something. Two independent signals feed this --
     #: SubagentStart/Stop by ``agent_id``, and PreToolUse/PostToolUse on
     #: Task/Agent by tool use id -- because SubagentStart is a recent hook and
     #: a settings file that predates it silently reports no subagents at all.
@@ -125,10 +150,10 @@ class Session:
     #: Reset at the top of every turn, which is the only real floor available.
     #:
     #: A dict rather than a set because the keys are only half of it: the values
-    #: are what let the pile shimmer per dot instead of sitting at one level. It
-    #: is ordered by arrival and stays that way -- a dot must not hop knobs
-    #: because its neighbour called a tool.
-    subagents_in_flight: dict[str, float] = field(default_factory=dict)
+    #: are what let the pile shimmer per dot instead of sitting at one level, and
+    #: fill its ring instead of holding a stub. It is ordered by arrival and stays
+    #: that way -- a dot must not hop knobs because its neighbour called a tool.
+    subagents_in_flight: dict[str, Subagent] = field(default_factory=dict)
     #: From the hook payload; "bypassPermissions" means nobody is watching.
     permission_mode: str = ""
     #: Set when the session wants a human. Cleared by pressing the encoder.
@@ -236,8 +261,39 @@ class Session:
         beyond the agent-keyed records.
         """
         stamps: list[Optional[float]] = [
-            at for k, at in self.subagents_in_flight.items() if k.startswith(AGENT_KEY)
+            rec.last_tool_at
+            for k, rec in self.subagents_in_flight.items()
+            if k.startswith(AGENT_KEY)
         ]
+        return (stamps + [None] * self.subagents)[: self.subagents]
+
+    @property
+    def subagent_started(self) -> list[Optional[float]]:
+        """One entry per violet dot, in the order they arrived: when that
+        subagent was spawned, or ``None`` if nothing said.
+
+        ``None`` is rare here, unlike :attr:`subagent_activity`, and the
+        difference is the whole reason this is a second property rather than the
+        same list read twice. *Both* signals know a spawn time -- the tool-use
+        path's PreToolUse is the spawn -- where only the ``agent_id`` path can
+        attribute a later tool call to one subagent. So this takes the larger
+        namespace rather than always the agent-keyed one, matching what
+        :attr:`subagents` counted, and an install too old for SubagentStart gets
+        a filling ring on every dot instead of a row of stubs.
+
+        Where both signals are live the two lists can disagree about which dot is
+        which -- dot *n*'s ring and dot *n*'s shimmer may be two different
+        subagents for the handover of a turn. That slop is already in
+        :attr:`subagent_activity`'s padding and it is the same size: both
+        namespaces are ordered by arrival, so index *n* is the *n*-th spawn
+        either way, and the pile is a count of who is out rather than a roster.
+        """
+        agents: list[Optional[float]] = []
+        tools: list[Optional[float]] = []
+        for key, rec in self.subagents_in_flight.items():
+            target = agents if key.startswith(AGENT_KEY) else tools
+            target.append(rec.started_at)
+        stamps = agents if len(agents) >= len(tools) else tools
         return (stamps + [None] * self.subagents)[: self.subagents]
 
     @property

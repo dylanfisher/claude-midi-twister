@@ -16,6 +16,12 @@ Two sources, joined:
 *   **The process table.** Proves liveness, and carries the tty, which is what
     :func:`mft.identity.terminal_keys` wants for a durable slot.
 
+A session's *subagents* are a third file each, under
+``<session-id>/subagents/agent-<agent_id>.jsonl``, and :func:`subagents` reads
+them the same way for the same reason: the pile is exactly the state a restart
+mid-fan-out loses hardest, because every one of those subagents will announce
+its *end* to a daemon that never heard it start.
+
 Neither is sufficient alone, so nothing is adopted without both. The bias
 throughout is toward showing too little: a missing encoder is a session you
 find in a moment anyway, while a phantom one is a knob that lies until the TTL
@@ -54,13 +60,13 @@ import os
 import re
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Optional
 
 from . import config
 from .context import tail_lines
 from .identity import is_hostless, merge_terminal, terminal_keys
-from .state import Session, SessionTable
+from .state import AGENT_KEY, Session, SessionTable, Subagent
 
 log = logging.getLogger("mft.discover")
 
@@ -150,6 +156,10 @@ class Discovered:
     #: The state to adopt into, or ``""`` for the resting default. Only ever one
     #: of the busy states; see :func:`activity`.
     state: str = ""
+    #: The subagents still in flight, each mapped to ``(idle_for, out_for)`` --
+    #: how long ago it was last seen writing, and how long ago it was spawned.
+    #: Ages rather than timestamps; see :func:`subagents`.
+    subagents: dict[str, tuple[float, float]] = field(default_factory=dict)
 
 
 # --- the process table ------------------------------------------------------
@@ -743,7 +753,7 @@ def _numbers(values: Iterable[Any]) -> list[int]:
 _CONVERSATION = ("user", "assistant")
 
 
-def activity(lines: list[str]) -> str:
+def activity(lines: list[str], sidechain: bool = False) -> str:
     """What the tail of a transcript says the agent is doing *now*, or ``""``.
 
     The premise `adopt` was written without: a transcript is not only a record of
@@ -776,6 +786,14 @@ def activity(lines: list[str]) -> str:
 
     `thinking` and `working` are both honest at the resolution the board renders
     them: one is "no tool call is out", the other is "one is".
+
+    ``sidechain`` swaps which half of a conversation is read: the session's own
+    messages, or a subagent's. It is a swap and not a widening because the two
+    never belong to the same reading -- a subagent's turn ending says nothing
+    about its parent, and the parent's tail is what :func:`discover` wants.
+    Modern Claude Code writes them to separate files anyway; the flag stays
+    because the entries are still marked, and :func:`subagents` reads a file
+    where *every* entry carries it.
     """
     for line in reversed(lines):
         # Cheap gate. Every conversational entry names its role, and the
@@ -787,7 +805,7 @@ def activity(lines: list[str]) -> str:
         except json.JSONDecodeError:
             continue
         kind = entry.get("type")
-        if kind not in _CONVERSATION or entry.get("isSidechain"):
+        if kind not in _CONVERSATION or bool(entry.get("isSidechain")) != sidechain:
             continue
         message = entry.get("message")
         if not isinstance(message, dict):
@@ -812,6 +830,95 @@ def activity(lines: list[str]) -> str:
         # to a call.
         return "thinking"
     return ""
+
+
+#: Where a session's subagents keep their own transcripts: a directory named
+#: after the session id, beside the session's own file, holding one
+#: `agent-<agent_id>.jsonl` each. The id in that filename is the same one hooks
+#: send as `agent_id`, which is the whole reason this is recoverable -- a
+#: rebuilt key is indistinguishable from one a `SubagentStart` created, so the
+#: `SubagentStop` that eventually arrives pops the dot it was meant to pop.
+_SUBAGENT_DIR = "subagents"
+_SUBAGENT_FILE = re.compile(r"^agent-(.+)\.jsonl$")
+
+
+def subagents(transcript_path: str, now: float = 0.0) -> dict[str, tuple[float, float]]:
+    """The subagents of one session that are still going, how stale each is, and
+    how long each has been out.
+
+    :func:`activity` applied once per subagent, for the same reason and with the
+    same caveat. A subagent that is still working has an unanswered `tool_use`
+    at the end of its file; one that has handed its answer back stopped on
+    `end_turn`. Nothing else on disk distinguishes them, and nothing needs to:
+    the pile is a count of who is out, not a record of what they did.
+
+    Keyed the way hooks key it (see :data:`_SUBAGENT_DIR`) and ordered by
+    creation, so a rebuilt pile stacks in spawn order rather than in whatever
+    order the directory happened to be read -- a dot that moves knobs is a dot
+    you have to re-read.
+
+    The values are **ages**, not timestamps, and that is deliberate. A file's
+    mtime is wall clock and every deadline on the board is
+    :func:`time.monotonic`; handing a session one of those as if it were the
+    other would put a subagent's last tool call days in the future. Converting
+    is :func:`adopt`'s job, because it is the one holding both clocks.
+
+    Two ages, because the ring wants the second one. The subagent's own file is
+    born when it spawns and touched as it writes, so mtime is the activity and
+    birth time is the spawn -- the same tie-break already read below for spawn
+    order, spent twice. Without it, a daemon restarted into a fan-out that has
+    been grinding for half an hour adopts a pile of empty rings, which is the
+    exact reading the stopwatch exists to give and the exact moment it is worth
+    most. `st_birthtime` is a macOS luxury; where it is missing this degrades to
+    mtime, which says the subagent has been out no longer than it has been quiet
+    -- an understatement, and invariant 6's preferred direction.
+
+    Anything the freshness gate drops is left off entirely rather than adopted
+    flat. A subagent killed along with the daemon leaves a file that says
+    "mid-tool-call" for as long as the disk survives, and invariant 6 says the
+    missing dot is the cheaper mistake.
+    """
+    if not config.DISCOVER_SUBAGENTS or not transcript_path.endswith(".jsonl"):
+        return {}
+    now = now or time.time()
+    root = os.path.join(transcript_path[: -len(".jsonl")], _SUBAGENT_DIR)
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        # The ordinary case by a long way: a session that spawned nobody has no
+        # such directory. Not worth a log line per session per adoption.
+        return {}
+
+    live: list[tuple[float, str, tuple[float, float]]] = []
+    for entry in entries:
+        found = _SUBAGENT_FILE.match(entry.name)
+        if not found:
+            continue
+        try:
+            stat = entry.stat()
+        except OSError:
+            continue
+        age = now - stat.st_mtime
+        if age > config.DISCOVER_ACTIVE_SECONDS:
+            continue
+        try:
+            lines = tail_lines(entry.path, config.DISCOVER_TAIL_BYTES)
+        except OSError as exc:
+            log.debug("unreadable subagent transcript %s: %s", entry.path, exc)
+            continue
+        if not activity(lines, sidechain=True):
+            continue
+        # Creation time is spawn order, and now also how long the dot has been
+        # out. macOS has it; the fallback keeps this from being a platform
+        # assumption for the sake of a tie-break.
+        born = getattr(stat, "st_birthtime", stat.st_mtime)
+        # Never younger than it is quiet: a clock skew that put the two the other
+        # way round would draw a ring shorter than the silence it sits beside.
+        out_for = max(0.0, age, now - born)
+        live.append((born, f"{AGENT_KEY}{found.group(1)}", (max(0.0, age), out_for)))
+
+    live.sort()
+    return {key: ages for _, key, ages in live}
 
 
 def _read_transcript(path: str, modified_at: float) -> Optional[Transcript]:
@@ -937,6 +1044,7 @@ def discover(
                 terminal=proc.terminal,
                 permission_mode=transcript.permission_mode,
                 state=_believable(transcript, now),
+                subagents=subagents(transcript.path, now),
             )
         )
 
@@ -954,17 +1062,7 @@ def discover(
         return found
     log.info("%d discovered sessions could not be pinned to a tab", len(ambiguous))
     return [
-        d
-        if d.session_id not in ambiguous
-        else Discovered(
-            session_id=d.session_id,
-            cwd=d.cwd,
-            transcript_path=d.transcript_path,
-            terminal={},
-            permission_mode=d.permission_mode,
-            state=d.state,
-        )
-        for d in found
+        d if d.session_id not in ambiguous else replace(d, terminal={}) for d in found
     ]
 
 
@@ -1052,7 +1150,9 @@ def resolve_terminal(
     return shared
 
 
-def adopt(table: SessionTable, found: list[Discovered]) -> list[Session]:
+def adopt(
+    table: SessionTable, found: list[Discovered], now: float = 0.0
+) -> list[Session]:
     """Put discovered sessions on the board.
 
     They land as ``idle`` unless the transcript caught them mid-turn, in which
@@ -1071,8 +1171,15 @@ def adopt(table: SessionTable, found: list[Discovered]) -> list[Session]:
     :func:`mft.render._turn_ring` already falls back to `state_since` for
     exactly this case rather than being handed a number nobody measured.
 
+    The violet pile comes back too, and it is the one thing here that is not a
+    guess: a subagent's transcript names it with the same id its hooks carry, so
+    a rebuilt dot is the dot a `SubagentStop` will remove. ``now`` is the
+    board's clock -- :func:`subagents` hands back ages precisely so the two
+    clocks meet here and nowhere else.
+
     The first real hook event finds the session by id and takes over.
     """
+    now = now or time.monotonic()
     adopted: list[Session] = []
     for entry in found:
         # A hook event can beat discovery to the same session, and what it says
@@ -1094,5 +1201,13 @@ def adopt(table: SessionTable, found: list[Discovered]) -> list[Session]:
         # rest is told what its transcript thinks it is doing.
         if entry.state and not known and session.state == "idle":
             session.set_state(entry.state)
+        # Same guard again, plus one more: a pile that is already standing was
+        # built from live events, and the file can only be a worse copy of it.
+        # This fills an empty pile, it never edits one.
+        if entry.subagents and not known and not session.subagents_in_flight:
+            for key, (idle_for, out_for) in entry.subagents.items():
+                session.subagents_in_flight[key] = Subagent(
+                    started_at=now - out_for, last_tool_at=now - idle_for
+                )
         adopted.append(session)
     return adopted

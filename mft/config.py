@@ -691,6 +691,16 @@ DISCOVER_STATES = _flag("MFT_DISCOVER_STATES", True)
 #: sessions and risks a knob that says `working` about an abandoned turn,
 #: lowering it falls back to `idle` more often, which is only the old behaviour.
 DISCOVER_ACTIVE_SECONDS = float(os.environ.get("MFT_DISCOVER_ACTIVE", "180"))
+#: Rebuild the violet pile too, not just the parent's state. Claude Code gives
+#: every subagent its own transcript under `<session-id>/subagents/`, so the
+#: same tail that says what a session is doing says which of its subagents are
+#: still going -- and without this a restart mid-fan-out shows an empty pile
+#: until every one of them finishes, which is the moment the pile was for.
+#: Gated by the same freshness as the state above and for the same reason: a
+#: subagent killed with the daemon leaves a file frozen mid-tool-call forever,
+#: and adopting that is a dot that lies. Turning this off costs nothing a
+#: restart didn't already cost.
+DISCOVER_SUBAGENTS = _flag("MFT_DISCOVER_SUBAGENTS", True)
 
 #: A tool call briefly kicks the encoder to full brightness; it decays back to
 #: ACTIVE_FLOOR over this long, so frequency reads as shimmer.
@@ -1224,10 +1234,46 @@ SUBAGENT_IDLE_BRIGHTNESS = 0.30
 #: TOOL_KICK_SECONDS: the dots are small, they sit in a clump, and a fast decay
 #: across a pile of them flickers rather than shimmers.
 SUBAGENT_KICK_SECONDS = 3.0
-#: A short stub rather than a gauge or a full ring: the ring is meaningless here
-#: (a subagent has no context reading of its own) and it should not look like it
-#: is trying to mean something.
+#: What the ring says when there is no clock to draw -- SUBAGENT_TIME_RING off,
+#: or a dot whose spawn nothing recorded. A short stub rather than a gauge or a
+#: full ring: with nothing to mean, it should not look like it is trying to mean
+#: something. This was the ring for every dot until the stopwatch below.
 SUBAGENT_RING = 24
+
+#: How long this subagent has been out, as a ring that fills.
+#:
+#: The pile already says how many are running and the shimmer says how hard, but
+#: neither says *how long*, and "one of these fanned-out agents went out twenty
+#: minutes ago and hasn't come back" is the failure you cannot see from anywhere
+#: else -- least of all from the parent's terminal, which shows one line of Task
+#: output whether the subagent is thinking or wedged.
+#:
+#: The obvious objection is that a filling ring is the session vocabulary
+#: (:data:`TURN_RING`, :data:`CONTEXT_RING`) and invariant 6 says a subagent must
+#: never read as a session. It holds because the ring was the *only* channel the
+#: dots weren't already using: hue is violet and used for nothing else, animation
+#: is off, and both of those are what identify a subagent. A ring is a quantity,
+#: and a quantity next to an unmistakable hue is still unmistakable.
+#:
+#: `MFT_SUBAGENT_TIME_RING=0` puts the flat stub back on every dot.
+SUBAGENT_TIME_RING = _flag("MFT_SUBAGENT_TIME_RING", True)
+#: A full ring, and past it it simply stays full.
+#:
+#: Linear, unlike :data:`TURN_RING_FULL_SECONDS`, and the difference is the point
+#: rather than an oversight. A turn's ring is log-scaled because nearly every
+#: turn is over inside two minutes; a subagent is spawned precisely for the work
+#: that isn't, and the readings you care about are spread across the whole span
+#: instead of piled at the bottom. So the scale is the one you can read off the
+#: hardware without a curve in your head: a quarter ring is ten minutes, half is
+#: twenty, full is forty. Raise it toward an hour if your fan-outs run long --
+#: the cost is that everything short lives in the first two segments again.
+SUBAGENT_RING_SECONDS = float(os.environ.get("MFT_SUBAGENT_RING_SECONDS", 2400.0))
+#: Where a just-spawned dot starts. Same job as :data:`CONTEXT_RING_FLOOR` and
+#: the same value: below this the ring is too short to read as anything, and a
+#: dot with no ring at all reads as an unclaimed encoder. Deliberately far below
+#: the old :data:`SUBAGENT_RING` stub -- a floor up at 24 would eat the first
+#: seven minutes of the scale, which is where most subagents live and die.
+SUBAGENT_RING_FLOOR = 4
 
 # --- Idle ambient -----------------------------------------------------------
 

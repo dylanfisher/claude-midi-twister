@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import replace
 from typing import Any, Optional
 
 from . import config
-from .state import AGENT_KEY, TOOL_KEY, Session
+from .state import AGENT_KEY, TOOL_KEY, Session, Subagent
 
 log = logging.getLogger("mft.events")
 
@@ -196,8 +197,12 @@ def _touch_subagent(session: Session, event: dict[str, Any], now: float) -> None
     subagent by a turn.
     """
     key = _agent_key(event)
-    if key and key in session.subagents_in_flight:
-        session.subagents_in_flight[key] = now
+    record = session.subagents_in_flight.get(key) if key else None
+    if record is not None:
+        # Only the activity stamp. A subagent that calls a tool has not just been
+        # spawned, and a stopwatch that reset on every call would say nothing.
+        # Assigning a key it already has leaves the dot where it was in the pile.
+        session.subagents_in_flight[key] = replace(record, last_tool_at=now)
 
 
 #: Effects the daemon acts on, because they need the board or the wire rather
@@ -355,7 +360,7 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
         session.last_tool_at = now
         key = _tool_use_key(event)
         if key:
-            session.subagents_in_flight[key] = now
+            session.subagents_in_flight.setdefault(key, Subagent(now, now))
         _touch_subagent(session, event, now)
         if session.turn_started_at is None:
             session.turn_started_at = now
@@ -410,10 +415,12 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
     elif name == "SubagentStart":
         key = _agent_key(event)
         if key:
-            # Born bright. A subagent that has not called a tool yet is thinking,
-            # not stalled, and starting it at the floor would make every spawn
-            # look like it arrived already dead.
-            session.subagents_in_flight[key] = now
+            # Born bright and born empty. A subagent that has not called a tool
+            # yet is thinking, not stalled, and starting it at the floor would
+            # make every spawn look like it arrived already dead -- while its
+            # ring starts at the floor for the opposite reason, because it has
+            # genuinely been out no time at all.
+            session.subagents_in_flight.setdefault(key, Subagent(now, now))
         still_working(session)
 
     elif name == "SubagentStop":

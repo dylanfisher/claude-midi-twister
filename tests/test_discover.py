@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import time
@@ -14,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mft import config, discover  # noqa: E402
 from mft.identity import is_hostless, terminal_keys  # noqa: E402
-from mft.state import Session, SessionTable  # noqa: E402
+from mft.state import Session, SessionTable, Subagent  # noqa: E402
 
 
 def write_transcript(
@@ -180,6 +181,11 @@ def user_turn(*blocks: str) -> dict:
     return {"type": "user", "message": {"role": "user", "content": content}}
 
 
+def sidechain(entry: dict) -> dict:
+    """The same entry as a subagent writes it: every line of its own file."""
+    return {**entry, "isSidechain": True}
+
+
 class Activity(unittest.TestCase):
     """What the tail of a transcript says the agent is doing *now*. The premise
     is that Claude Code flushes an assistant's `tool_use` before the tool it
@@ -275,6 +281,93 @@ class Freshness(unittest.TestCase):
         self.assertEqual([d.state for d in found], [""])
 
 
+class Subagents(unittest.TestCase):
+    """The violet pile is the state a restart loses hardest: every subagent that
+    was in flight will announce its *end* to a daemon that never heard it start.
+    Claude Code gives each one its own transcript, so it can be read back."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.parent = self.root / "-tmp-a" / "sess-a.jsonl"
+        self.parent.parent.mkdir(parents=True)
+        self.parent.write_text("{}\n")
+        self.addCleanup(self._tmp.cleanup)
+
+    def _agent(self, agent_id: str, *entries: dict, age: float = 0.0) -> Path:
+        directory = self.root / "-tmp-a" / "sess-a" / "subagents"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"agent-{agent_id}.jsonl"
+        path.write_text("\n".join(conversation(*entries)) + "\n")
+        stamp = time.time() - age
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def test_an_unanswered_tool_call_is_a_subagent_still_out(self):
+        self._agent("a1", sidechain(user_turn()), sidechain(assistant("tool_use")))
+        found = discover.subagents(str(self.parent))
+        # Keyed exactly the way a SubagentStart hook keys it, so the Stop that
+        # eventually arrives pops the dot this put up.
+        self.assertEqual(list(found), ["agent:a1"])
+
+    def test_a_subagent_that_handed_its_answer_back_is_not_in_flight(self):
+        self._agent(
+            "a1",
+            sidechain(user_turn()),
+            sidechain(assistant("text", stop="end_turn")),
+        )
+        self.assertEqual(discover.subagents(str(self.parent)), {})
+
+    def test_a_subagent_frozen_mid_call_goes_cold(self):
+        # Killed along with the daemon: the file says "mid-tool-call" forever.
+        self._agent(
+            "a1",
+            sidechain(assistant("tool_use")),
+            age=config.DISCOVER_ACTIVE_SECONDS + 60,
+        )
+        self.assertEqual(discover.subagents(str(self.parent)), {})
+
+    def test_the_pile_stacks_in_spawn_order(self):
+        self._agent("older", sidechain(assistant("tool_use")), age=30)
+        self._agent("newer", sidechain(assistant("tool_use")), age=1)
+        found = discover.subagents(str(self.parent))
+        self.assertEqual(list(found), ["agent:older", "agent:newer"])
+
+    def test_ages_not_timestamps(self):
+        # The file's clock is wall and the board's is monotonic; `adopt` is the
+        # only place they meet.
+        self._agent("a1", sidechain(assistant("tool_use")), age=12)
+        idle_for, out_for = discover.subagents(str(self.parent))["agent:a1"]
+        self.assertAlmostEqual(idle_for, 12, 0)
+        # This file was born a moment ago whatever its mtime says, so the only
+        # honest floor for "how long has it been out" is how long it has been
+        # quiet. Understating the ring beats inventing one.
+        self.assertAlmostEqual(out_for, 12, 0)
+
+    def test_a_subagent_is_out_at_least_as_long_as_it_has_been_quiet(self):
+        """The ring reads `out_for`, and it may never be the shorter number:
+        a dot half a ring round that has been silent for two minutes is the
+        reading the stopwatch exists for, and it has to survive a clock that
+        disagrees with itself."""
+        self._agent("a1", sidechain(assistant("tool_use")), age=120)
+        idle_for, out_for = discover.subagents(str(self.parent))["agent:a1"]
+        self.assertGreaterEqual(out_for, idle_for)
+
+    def test_a_session_that_spawned_nobody_has_no_directory(self):
+        self.assertEqual(discover.subagents(str(self.parent)), {})
+        self.assertEqual(discover.subagents(""), {})
+
+    def test_the_flag_turns_the_whole_thing_off(self):
+        self._agent("a1", sidechain(assistant("tool_use")))
+        with mock.patch.object(config, "DISCOVER_SUBAGENTS", False):
+            self.assertEqual(discover.subagents(str(self.parent)), {})
+
+    def test_a_subagents_own_tail_is_read_with_the_flag_flipped(self):
+        lines = conversation(sidechain(assistant("tool_use")))
+        self.assertEqual(discover.activity(lines, sidechain=True), "working")
+        self.assertEqual(discover.activity(lines), "")
+
+
 class Adoption(unittest.TestCase):
     def test_a_session_caught_mid_turn_is_adopted_working(self):
         table = SessionTable()
@@ -319,6 +412,33 @@ class Adoption(unittest.TestCase):
         self.assertTrue(session.unsupervised)
         # Keyed on the tab, so the next /clear in it lands on the same encoder.
         self.assertEqual(session.key, "tty:/dev/ttys001")
+
+    def test_a_recovered_pile_lands_on_the_boards_clock(self):
+        table = SessionTable()
+        entry = discover.Discovered(
+            "sess-a", "/tmp/a", "/tmp/a.jsonl", subagents={"agent:a1": (12.0, 300.0)}
+        )
+        session = discover.adopt(table, [entry], now=1_000.0)[0]
+        self.assertEqual(session.subagents, 1)
+        # Ages on disk, monotonic stamps on the board.
+        self.assertEqual(
+            session.subagents_in_flight, {"agent:a1": Subagent(700.0, 988.0)}
+        )
+        self.assertEqual(session.subagent_activity, [988.0])
+        # And the ring comes back with it: a daemon restarted into a fan-out
+        # that has been out five minutes adopts five minutes of stopwatch, not
+        # a pile of fresh spawns.
+        self.assertEqual(session.subagent_started, [700.0])
+
+    def test_a_standing_pile_is_never_edited_by_a_file(self):
+        table = SessionTable()
+        live = table.ensure("sess-a", "/tmp/a", {"tty": "/dev/ttys009"})
+        live.subagents_in_flight["agent:live"] = Subagent(5.0, 5.0)
+        entry = discover.Discovered(
+            "sess-a", "/tmp/a", "/tmp/a.jsonl", subagents={"agent:a1": (1.0, 1.0)}
+        )
+        discover.adopt(table, [entry], now=1_000.0)
+        self.assertEqual(live.subagents_in_flight, {"agent:live": Subagent(5.0, 5.0)})
 
     def test_an_unpinned_session_still_gets_an_encoder(self):
         table = SessionTable()
