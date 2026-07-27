@@ -588,6 +588,11 @@ GAUGE_STALE_LEVEL = 0.08
 #: between them is exact everywhere you would actually read it, and the joins are
 #: between adjacent ring values rather than at them.
 #:
+#: Read it as the shape of the fill and not as the ring values themselves --
+#: :func:`mft.render.stopwatch_ring` spends the bottom few values of the 127 on
+#: a floor, so the marks land a value or three high. That is the trade it
+#: documents, and it is well under one LED.
+#:
 #: The shape is the same argument the log curve made and the flat linear one
 #: didn't: short work has to be *visibly moving*, because nearly every turn is
 #: over inside a few minutes and a linear ring spends that entire common case in
@@ -596,9 +601,10 @@ GAUGE_STALE_LEVEL = 0.08
 #: that is genuinely stuck keeps having somewhere to go.
 #:
 #: The first minute gets its own leg, and it is the steepest on the curve: an
-#: eighth of the ring for the first sixty seconds, so half a minute is already
-#: clear of :data:`CONTEXT_RING_FLOOR` and a turn that has only just started is
-#: visibly climbing rather than sitting on the stub. Without it the first leg ran
+#: eighth of the ring for the first sixty seconds, so a turn that has only just
+#: started is visibly climbing -- a value every couple of seconds, which on a
+#: ring that blends between its LEDs is a fill you can watch rather than a stub
+#: that occasionally jumps. Without it the first leg ran
 #: all the way to five minutes and every short turn -- which is most of them --
 #: spent its whole life indistinguishable from a turn that hadn't begun. It costs
 #: nothing further up: the four marks the scale is read by are unmoved.

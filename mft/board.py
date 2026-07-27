@@ -37,7 +37,7 @@ from itertools import islice
 from typing import Iterable, Iterator, Optional, Sequence
 
 from . import config
-from .render import Cell, lerp, render, stopwatch_fraction
+from .render import Cell, lerp, render, stopwatch_ring
 from .state import Session, priority
 
 # --- the grid ---------------------------------------------------------------
@@ -322,8 +322,9 @@ def subagent_ring(started_at: Optional[float], now: float) -> int:
     """
     if started_at is None or not config.SUBAGENT_TIME_RING:
         return config.SUBAGENT_RING
-    fraction = stopwatch_fraction(now - started_at, config.SUBAGENT_RING_SECONDS)
-    return max(config.SUBAGENT_RING_FLOOR, int(127 * fraction))
+    return stopwatch_ring(
+        now - started_at, config.SUBAGENT_RING_SECONDS, config.SUBAGENT_RING_FLOOR
+    )
 
 
 def stack_subagents(

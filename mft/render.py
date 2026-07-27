@@ -169,6 +169,29 @@ def stopwatch_fraction(elapsed: float, span: float) -> float:
     return curve[-1][1]
 
 
+def stopwatch_ring(elapsed: float, span: float, floor: int) -> int:
+    """:func:`stopwatch_fraction` as a ring position, held off zero by `floor`.
+
+    The floor is an *offset*, not a clamp, and that is the whole reason this is
+    a function rather than a `max()` at each call site. Clamped, the ring sat on
+    the floor stub until the curve caught up with it -- nineteen seconds, on the
+    hour span, which is a large fraction of the turns this board ever shows and
+    every one of them frozen at exactly the value that means "hasn't started".
+    Offset, the stopwatch is off the stub on its first frame and climbs a value
+    every couple of seconds from there, which is what a stopwatch has to look
+    like in the moment you glance up to see whether anything is happening.
+
+    It costs the marks a few values of the 127, because the floor has to come
+    out of the range somewhere: the error is ``floor * (1 - fraction)``, so a
+    quarter ring reads 34 rather than 31 and it shrinks to nothing by the top.
+    Three or four values is a quarter of one LED's blend and invisible on the
+    hardware; nineteen seconds of a dead ring was not. See
+    :data:`config.STOPWATCH_CURVE` for the marks themselves.
+    """
+    fraction = stopwatch_fraction(elapsed, span)
+    return floor + int((127 - floor) * fraction)
+
+
 def _turn_ring(session: Session, now: float) -> int:
     """A stopwatch: the ring fills with how long this turn has been running.
 
@@ -183,8 +206,9 @@ def _turn_ring(session: Session, now: float) -> int:
         # own: we know when we started *believing* it was working, and that is
         # the same number for every purpose except the first few seconds.
         started = session.state_since
-    fraction = stopwatch_fraction(now - started, config.TURN_RING_FULL_SECONDS)
-    return max(config.CONTEXT_RING_FLOOR, int(127 * fraction))
+    return stopwatch_ring(
+        now - started, config.TURN_RING_FULL_SECONDS, config.CONTEXT_RING_FLOOR
+    )
 
 
 def _gauge_ring(session: Session, fallback: int) -> int:

@@ -1192,13 +1192,19 @@ class Rendering(unittest.TestCase):
         """The scale the whole board is read by, and the reason it isn't linear:
         a flat hour would put every ordinary turn in the bottom segment, so the
         first quarter of the ring buys the first five minutes and the last
-        quarter still has half an hour left in it."""
+        quarter still has half an hour left in it.
+
+        The tolerance is three values of the 127 because the floor is an offset
+        rather than a clamp -- see :func:`mft.render.stopwatch_ring`, which buys
+        a live first twenty seconds with it. Three values is a quarter of one
+        LED's blend; you cannot see it on the hardware and you can see the stub.
+        """
         self.session.state = "working"
         self.session.turn_started_at = 0.0
         for minutes, want in ((5, 0.25), (15, 0.5), (30, 0.75), (60, 1.0)):
             with self.subTest(minutes=minutes):
                 ring = render(self.session, minutes * 60.0).ring
-                self.assertAlmostEqual(ring / 127, want, delta=0.01)
+                self.assertAlmostEqual(ring / 127, want, delta=3 / 127)
 
     def test_a_turn_that_just_started_is_visibly_climbing(self):
         """Most turns are short, and the first leg of the curve is the steepest
@@ -1208,11 +1214,31 @@ class Rendering(unittest.TestCase):
         self.session.turn_started_at = 0.0
         floor = config.CONTEXT_RING_FLOOR
         self.assertGreater(render(self.session, 30.0).ring, floor)
-        self.assertAlmostEqual(render(self.session, 60.0).ring / 127, 0.125, delta=0.01)
+        self.assertAlmostEqual(
+            render(self.session, 60.0).ring / 127, 0.125, delta=4 / 127
+        )
         # And the first minute climbs faster than any minute after it.
         first = render(self.session, 60.0).ring - render(self.session, 0.0).ring
         later = render(self.session, 300.0).ring - render(self.session, 240.0).ring
         self.assertGreater(first, later)
+
+    def test_the_stopwatch_leaves_its_floor_on_the_first_frame(self):
+        """The floor is an offset, not a clamp. Clamped, the curve took nineteen
+        seconds to catch up with the stub and every turn shorter than that was
+        frozen at the one value that means "this hasn't started" -- which is a
+        large share of every turn this board ever shows.
+
+        Tween, in other words: the ring has to be climbing while you are looking
+        at it, and on this hardware that means spending values, not segments."""
+        self.session.state = "working"
+        self.session.turn_started_at = 0.0
+        floor = config.CONTEXT_RING_FLOOR
+        self.assertEqual(render(self.session, 0.0).ring, floor)
+        self.assertGreater(render(self.session, 5.0).ring, floor)
+        # Every couple of seconds through the first minute, so it reads as motion
+        # rather than as a ring that occasionally jumps.
+        steps = {render(self.session, float(t)).ring for t in range(0, 61)}
+        self.assertGreaterEqual(len(steps), 12)
 
     def test_a_turn_adopted_mid_flight_still_runs_its_stopwatch(self):
         """`mft.discover` hands over sessions that predate the daemon, and they
@@ -1745,7 +1771,7 @@ class Board(unittest.TestCase):
         for minutes, want in ((5, 0.25), (15, 0.5), (30, 0.75), (60, 1.0)):
             with self.subTest(minutes=minutes):
                 ring = board.subagent_ring(1000.0 - minutes * 60, 1000.0)
-                self.assertAlmostEqual(ring / 127, want, delta=0.01)
+                self.assertAlmostEqual(ring / 127, want, delta=3 / 127)
 
     def test_a_dot_and_an_encoder_at_the_same_age_read_the_same(self):
         """One scale, or it is a scale you have to look twice to read. The dots

@@ -463,10 +463,19 @@ invisible until you turn your head. So motion is a budget.
   hasn't started. It saturates rather than wrapping — a wrapped ring is
   indistinguishable from a turn that just started, and there's nothing you do
   differently at two hours than at one. The points are interpolated straight
-  through (`config.STOPWATCH_CURVE`), exact everywhere you'd actually read it.
-  `MFT_TURN_RING=0` puts the old rotating tool-call arc back, which this
-  replaced — the arc is a fine thing to watch and a redundant one to spend the
-  ring on, since its spin rate is tool-call frequency and so is the shimmer.
+  through (`config.STOPWATCH_CURVE`) — the ring is a continuous 0–127 fill and
+  never a value snapped to a mark, so the hardware blends between its LEDs the
+  whole way up and the ring reads as *filling* rather than as a dot that steps.
+  A value every four seconds through the first minute, every minute by the far
+  end. The floor a fresh ring sits on is an offset rather than a clamp
+  (`render.stopwatch_ring`) for the same reason: clamped, the curve took
+  nineteen seconds to climb past it, and a turn shorter than that — most turns —
+  spent its whole life frozen at the one value that means *nothing here has
+  started*. It costs the marks a couple of values out of 127, which is a
+  fraction of one LED. `MFT_TURN_RING=0` puts the old rotating tool-call arc
+  back, which this replaced — the arc is a fine thing to watch and a redundant
+  one to spend the ring on, since its spin rate is tool-call frequency and so is
+  the shimmer.
 
 - **A working encoder gets redder as its tool calls fail.** Everything else
   about `working` is a rate — the shimmer is calls per second, the ring is how
