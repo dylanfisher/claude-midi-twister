@@ -77,6 +77,14 @@ class Upkeep:
         #: how a caller knows one is still out there rather than starting a
         #: second. See :meth:`sweep_census`.
         self._censusing = threading.Event()
+        #: Whether the last adoption pass raised. Adoption is wrapped whole and
+        #: on purpose -- see this module's docstring -- but "wrapped" turned out
+        #: to mean "invisible": a discovery that threw on every wake for an
+        #: afternoon left a plausible-looking board and said so only in a log
+        #: nobody reads until something is already wrong. `mft.status` publishes
+        #: this so the question "is the roster even being rebuilt" has an answer
+        #: you can curl.
+        self.discovery_failing = False
 
     # -- adoption -----------------------------------------------------------
 
@@ -93,8 +101,10 @@ class Upkeep:
         try:
             found = discover.adopt(self.table, discover.discover())
         except Exception:
+            self.discovery_failing = True
             log.exception("discovery failed; starting with an empty board")
             return Adopted.nothing()
+        self.discovery_failing = False
         # Discovery reconstructs identities from the process table and writes
         # them onto sessions a hook may already have created, so this is exactly
         # the moment one tab can end up described twice.

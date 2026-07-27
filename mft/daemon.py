@@ -43,6 +43,7 @@ from . import (
     overlays as overlays_mod,
     power as power_mod,
     render as render_mod,
+    staleness as staleness_mod,
     status as status_mod,
     tab as tab_mod,
     twister as twister_mod,
@@ -103,6 +104,12 @@ class Visualizer:
             self.table, released=self.tabs.restore, wake=self._wake_loop
         )
         self._stop = threading.Event()
+        #: What our own source looked like when we imported it, and the modules
+        #: that have been written since. Checked on wake because that is both a
+        #: natural pause and, on this machine, the moment a rebuilt roster is
+        #: most load-bearing. See :mod:`mft.staleness`.
+        self._source_marks = staleness_mod.snapshot()
+        self._stale: list[str] = []
         #: Set by anything that changes what the board should say, so the render
         #: loop can sleep long between static frames without an event having to
         #: wait out that sleep. See :meth:`run`.
@@ -321,6 +328,8 @@ class Visualizer:
             bank=self.banks.current,
             focused=self._focused_slot,
             focused_app=self._attention.app,
+            discovery_failing=self.upkeep.discovery_failing,
+            stale=self._stale,
         )
 
     # -- encoder input ------------------------------------------------------
@@ -674,6 +683,11 @@ class Visualizer:
             # board that was never darkened still came through a suspend, and
             # the device may not be holding what we think it is.
             self._forget_board()
+        # Before adoption rather than after it, so that when adoption does fail
+        # the reason is already the line above the traceback: nine times in ten
+        # a job that broke across a suspend broke because the file it lives in
+        # was saved while we were asleep.
+        self._stale = staleness_mod.report(self._source_marks, f"awake ({source})")
         if config.WAKE_REDISCOVER:
             self.adopt_running_sessions(awaken=False)
         # Explicitly, rather than waiting for the interval to come round: the

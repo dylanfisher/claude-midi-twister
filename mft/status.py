@@ -72,6 +72,8 @@ def payload(
     bank: int,
     focused: int | None = None,
     focused_app: str = "",
+    discovery_failing: bool = False,
+    stale: Sequence[str] = (),
 ) -> dict:
     """The whole answer. ``bank`` is zero-based in; one-based out, like slots."""
     return {
@@ -99,6 +101,15 @@ def payload(
         # pane's. Null is the honest and common answer.
         "focused": None if focused is None else focused + 1,
         "focused_app": focused_app,
+        # The two ways the board can be wrong about *who is on it* rather than
+        # about how it looks, and both are otherwise silent. `discovery_failing`
+        # means adoption raised last time it ran, so nothing that predates the
+        # daemon -- or that a wake was meant to reinstate -- has been put back.
+        # `stale` names the modules edited since this process imported them,
+        # which is the usual cause of the first: the daemon is running code you
+        # have already replaced on disk. Non-empty means restart, not debug.
+        "discovery_failing": discovery_failing,
+        "stale": list(stale),
         "sessions": [
             session_payload(s, now) for s in sorted(sessions, key=lambda s: s.slot)
         ],
