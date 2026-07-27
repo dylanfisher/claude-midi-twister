@@ -37,7 +37,7 @@ from itertools import islice
 from typing import Iterable, Iterator, Optional, Sequence
 
 from . import config
-from .render import Cell, lerp, render
+from .render import Cell, lerp, render, stopwatch_fraction
 from .state import Session, priority
 
 # --- the grid ---------------------------------------------------------------
@@ -309,11 +309,12 @@ def subagent_brightness(last_tool_at: Optional[float], now: float) -> float:
 def subagent_ring(started_at: Optional[float], now: float) -> int:
     """How far round one violet dot's ring is, given when its subagent spawned.
 
-    A stopwatch, linear to :data:`config.SUBAGENT_RING_SECONDS` and then held
-    full: a quarter ring is ten minutes out, half is twenty, all the way round is
-    forty. Saturating rather than wrapping for the same reason
-    :func:`mft.render._turn_ring` does -- a wrap is ambiguous with a fresh spawn,
-    and forty minutes and ninety are not two things you do differently.
+    The same stopwatch a session's turn ring wears (:data:`config.STOPWATCH_CURVE`),
+    over :data:`config.SUBAGENT_RING_SECONDS` and then held full: a quarter ring
+    is five minutes out, half is fifteen, three quarters is thirty, all the way
+    round is an hour. One scale for both, because the dots sit on the same board
+    as the encoders and a ring that meant two different things depending on which
+    it was drawn on would be a scale you have to look twice to read.
 
     ``None`` -- no spawn time at all, or the stopwatch switched off -- falls back
     to the flat stub every dot used to wear, so nothing about the pile gets worse
@@ -321,9 +322,7 @@ def subagent_ring(started_at: Optional[float], now: float) -> int:
     """
     if started_at is None or not config.SUBAGENT_TIME_RING:
         return config.SUBAGENT_RING
-    elapsed = max(0.0, now - started_at)
-    span = config.SUBAGENT_RING_SECONDS
-    fraction = min(1.0, elapsed / span) if span > 0 else 0.0
+    fraction = stopwatch_fraction(now - started_at, config.SUBAGENT_RING_SECONDS)
     return max(config.SUBAGENT_RING_FLOOR, int(127 * fraction))
 
 

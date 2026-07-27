@@ -143,18 +143,39 @@ def _arc_ring(session: Session) -> int:
     return int(fraction * 127)
 
 
+def stopwatch_fraction(elapsed: float, span: float) -> float:
+    """How far round a stopwatch ring is, after `elapsed` seconds of a `span`.
+
+    The one scale every filling-with-time ring on the board shares, so that half
+    a ring means the same fifteen minutes on a session's encoder and on a violet
+    subagent dot. The shape lives in :data:`config.STOPWATCH_CURVE`; this is only
+    the interpolation between its points.
+
+    Saturates rather than wrapping. A wrap would be ambiguous with a stopwatch
+    that just started, which is the one reading that must never be wrong, and
+    there is nothing you do differently at two hours than at one.
+    """
+    if span <= 0:
+        return 0.0
+    x = min(1.0, max(0.0, elapsed) / span)
+    curve = config.STOPWATCH_CURVE
+    for (x0, y0), (x1, y1) in zip(curve, curve[1:]):
+        if x <= x1:
+            # The curve starts at (0, 0), so a zero-width leg can only be a
+            # hand-edited table; hold its right end rather than dividing by it.
+            if x1 == x0:
+                return y1
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return curve[-1][1]
+
+
 def _turn_ring(session: Session, now: float) -> int:
     """A stopwatch: the ring fills with how long this turn has been running.
 
-    Log-scaled, because turn lengths are. Nearly every turn finishes inside two
-    minutes and the ones you care about run to twenty, and no linear ring shows
-    you both -- on a linear scale to fifteen minutes the entire common case is
-    the bottom eighth. The knee spends the first quarter of the ring on the first
-    half-minute, so a turn is legibly *moving* from the moment it starts.
-
-    Saturates rather than wrapping. A wrap would be ambiguous with a fresh turn,
-    which is the one reading that must never be wrong, and there is nothing you
-    do differently at forty minutes than at twenty.
+    Front-loaded rather than linear, because turn lengths are: nearly every turn
+    finishes inside a few minutes and the ones you care about run to half an
+    hour, and no linear ring shows you both. See :data:`config.STOPWATCH_CURVE`
+    for the shape and why a subagent's dot wears the same one.
     """
     started = session.turn_started_at
     if started is None:
@@ -162,10 +183,7 @@ def _turn_ring(session: Session, now: float) -> int:
         # own: we know when we started *believing* it was working, and that is
         # the same number for every purpose except the first few seconds.
         started = session.state_since
-    elapsed = max(0.0, now - started)
-    knee = config.TURN_RING_KNEE_SECONDS
-    span = math.log1p(config.TURN_RING_FULL_SECONDS / knee)
-    fraction = min(1.0, math.log1p(elapsed / knee) / span) if span > 0 else 0.0
+    fraction = stopwatch_fraction(now - started, config.TURN_RING_FULL_SECONDS)
     return max(config.CONTEXT_RING_FLOOR, int(127 * fraction))
 
 

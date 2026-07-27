@@ -568,6 +568,52 @@ CONTEXT_RING_IDLE = _flag("MFT_CONTEXT_RING_IDLE", True)
 #: come with it, because the reading did not get any more urgent, only older.
 GAUGE_STALE_LEVEL = 0.08
 
+# --- Stopwatch scale --------------------------------------------------------
+# The one curve every filling-with-elapsed-time ring on the board uses.
+
+#: The shape of a stopwatch ring: elapsed time as a fraction of that ring's full
+#: span, mapped to how far round the ring goes.
+#:
+#: Read against a one-hour span it is the scale the board is meant to be read by:
+#: **a quarter ring is five minutes, half is fifteen, three quarters is thirty,
+#: all the way round is an hour.** Every stopwatch on the hardware uses it -- a
+#: session's turn ring and a subagent dot's -- so a ring at half means fifteen
+#: minutes wherever you find it, which is the whole reason it is one table and
+#: not two curves tuned separately.
+#:
+#: Piecewise linear through those points, and that is deliberate rather than a
+#: failure to find a formula. They are not a curve anything closed-form hits: a
+#: log with a knee that lands five minutes at a quarter puts thirty at five
+#: sixths, and a power curve misses two of the four. Interpolating straight
+#: between them is exact everywhere you would actually read it, and the joins are
+#: between adjacent ring values rather than at them.
+#:
+#: The shape is the same argument the log curve made and the flat linear one
+#: didn't: short work has to be *visibly moving*, because nearly every turn is
+#: over inside a few minutes and a linear ring spends that entire common case in
+#: the bottom segment. This front-loads the first quarter onto the first five
+#: minutes and still leaves half the ring for the second half-hour, so a turn
+#: that is genuinely stuck keeps having somewhere to go.
+#:
+#: The first minute gets its own leg, and it is the steepest on the curve: an
+#: eighth of the ring for the first sixty seconds, so half a minute is already
+#: clear of :data:`CONTEXT_RING_FLOOR` and a turn that has only just started is
+#: visibly climbing rather than sitting on the stub. Without it the first leg ran
+#: all the way to five minutes and every short turn -- which is most of them --
+#: spent its whole life indistinguishable from a turn that hadn't begun. It costs
+#: nothing further up: the four marks the scale is read by are unmoved.
+#:
+#: Edit it and you change what every ring on the board means at once, which is
+#: the point; the entries must be sorted and both columns must end at 1.0.
+STOPWATCH_CURVE = (
+    (0.0, 0.0),
+    (1 / 60, 0.125),  # one minute of an hour, and an eighth of the ring
+    (5 / 60, 0.25),
+    (15 / 60, 0.50),
+    (30 / 60, 0.75),
+    (1.0, 1.0),
+)
+
 # --- Turn elapsed -----------------------------------------------------------
 # What the ring says while an agent is actually running.
 
@@ -586,18 +632,14 @@ GAUGE_STALE_LEVEL = 0.08
 TURN_RING = _flag("MFT_TURN_RING", True)
 
 #: A full ring. Past it the ring simply stays full, which reads correctly: the
-#: difference between twenty minutes and forty is not one you act on differently.
-TURN_RING_FULL_SECONDS = float(os.environ.get("MFT_TURN_RING_SECONDS", 900.0))
-
-#: The knee of the log curve, in seconds -- roughly, how long a turn runs before
-#: the ring is visibly off its floor.
+#: difference between an hour and two is not one you act on differently.
 #:
-#: Linear was unreadable: nearly every turn lives in the first two minutes, which
-#: on a linear ring to fifteen is the bottom eighth and indistinguishable from
-#: the floor. Log spends the first quarter of the ring on the first half-minute
-#: and the last quarter on the last ten, so short turns are legible and long ones
-#: still have somewhere to go.
-TURN_RING_KNEE_SECONDS = 20.0
+#: An hour, so :data:`STOPWATCH_CURVE` reads off the hardware as five minutes a
+#: quarter, fifteen a half, thirty at three quarters. Lower it and the whole
+#: scale compresses proportionally -- half an hour here means a quarter ring is
+#: two and a half minutes -- which is a thing you might want on a machine whose
+#: turns are all short, at the cost of a long one pinning full early.
+TURN_RING_FULL_SECONDS = float(os.environ.get("MFT_TURN_RING_SECONDS", 3600.0))
 
 # --- Terminal tab -----------------------------------------------------------
 # The same state, in the one other place you are already looking: the tab strip.
@@ -1259,15 +1301,20 @@ SUBAGENT_RING = 24
 SUBAGENT_TIME_RING = _flag("MFT_SUBAGENT_TIME_RING", True)
 #: A full ring, and past it it simply stays full.
 #:
-#: Linear, unlike :data:`TURN_RING_FULL_SECONDS`, and the difference is the point
-#: rather than an oversight. A turn's ring is log-scaled because nearly every
-#: turn is over inside two minutes; a subagent is spawned precisely for the work
-#: that isn't, and the readings you care about are spread across the whole span
-#: instead of piled at the bottom. So the scale is the one you can read off the
-#: hardware without a curve in your head: a quarter ring is ten minutes, half is
-#: twenty, full is forty. Raise it toward an hour if your fan-outs run long --
-#: the cost is that everything short lives in the first two segments again.
-SUBAGENT_RING_SECONDS = float(os.environ.get("MFT_SUBAGENT_RING_SECONDS", 2400.0))
+#: The same hour and the same :data:`STOPWATCH_CURVE` as a session's turn ring --
+#: a quarter is five minutes out, half is fifteen, three quarters is thirty --
+#: and the sameness is the feature. A stopwatch that meant one thing on a violet
+#: dot and another on the encoder under it is a scale you have to remember which
+#: of two you are looking at, and the dots sit *on* the board beside the sessions.
+#: One reading, everywhere.
+#:
+#: This used to be linear to forty minutes on the argument that a subagent is
+#: spawned for exactly the work that doesn't finish quickly, so its readings are
+#: spread across the whole span rather than piled at the bottom. True, and not
+#: worth two scales: the front-loaded curve still separates the first five
+#: minutes from the first thirty, which is the reading that matters -- one dot
+#: most of the way round beside fresh ones.
+SUBAGENT_RING_SECONDS = float(os.environ.get("MFT_SUBAGENT_RING_SECONDS", 3600.0))
 #: Where a just-spawned dot starts. Same job as :data:`CONTEXT_RING_FLOOR` and
 #: the same value: below this the ring is too short to read as anything, and a
 #: dot with no ring at all reads as an unclaimed encoder. Deliberately far below

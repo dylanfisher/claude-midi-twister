@@ -204,7 +204,7 @@
       <button data-gesture="spawn">spawn strike</button>
       <button data-gesture="done">done flash + fade</button>
       <button data-gesture="working">working shimmer</button>
-      <button data-gesture="turn">turn stopwatch (60s in 6s)</button>
+      <button data-gesture="turn">turn stopwatch (60min in 6s)</button>
     </div>
     <table id="trace"><thead><tr>
       <th>t</th><th>ring pos</th><th>ring lvl</th><th>ch6</th><th>rgb lvl</th><th>ch3</th>
@@ -664,10 +664,16 @@ function playGesture(kind) {
       const level = lerp(0.35, ACTIVE_BRIGHTNESS, kick);
       cell = { color: COLORS.orange, rgbAnim: 0, ring: Math.round(127 * (t / duration)),
                brightness: level, ringLevel: Math.min(level, RING_CEILING) };
-    } else { // turn: the log-scaled stopwatch
-      const elapsed = (t / duration) * 60;
-      const knee = 30, span = Math.log1p(900 / knee);
-      const f = Math.min(1, Math.log1p(elapsed / knee) / span);
+    } else { // turn: the stopwatch, a quarter ring per 5min/15min/30min/60min
+      // config.STOPWATCH_CURVE, interpolated straight through its four points.
+      const CURVE = [[0, 0], [1 / 60, 0.125], [5 / 60, 0.25],
+                     [15 / 60, 0.5], [30 / 60, 0.75], [1, 1]];
+      const x = Math.min(1, t / duration);  // one hour compressed into the run
+      let f = 1;
+      for (let i = 1; i < CURVE.length; i++) {
+        const [x0, y0] = CURVE[i - 1], [x1, y1] = CURVE[i];
+        if (x <= x1) { f = y0 + (y1 - y0) * (x - x0) / (x1 - x0); break; }
+      }
       cell = { color: COLORS.orange, rgbAnim: 0, ring: Math.max(2, Math.round(127 * f)),
                brightness: ACTIVE_BRIGHTNESS, ringLevel: RING_CEILING };
     }

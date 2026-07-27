@@ -1174,7 +1174,7 @@ class Rendering(unittest.TestCase):
         tool; neither of them is "this one has been going for twenty minutes"."""
         self.session.state = "working"
         self.session.turn_started_at = 0.0
-        rings = [render(self.session, t).ring for t in (0.0, 30.0, 120.0, 600.0)]
+        rings = [render(self.session, t).ring for t in (0.0, 30.0, 120.0, 600.0, 1800.0)]
         self.assertEqual(rings, sorted(rings), "a longer turn is a fuller ring")
         self.assertEqual(len(set(rings)), len(rings), "and a distinguishable one")
         self.assertGreaterEqual(rings[0], config.CONTEXT_RING_FLOOR)
@@ -1188,13 +1188,31 @@ class Rendering(unittest.TestCase):
         self.assertEqual(render(self.session, full).ring, 127)
         self.assertEqual(render(self.session, full * 10).ring, 127)
 
-    def test_the_stopwatch_spends_its_first_quarter_on_the_first_half_minute(self):
-        """Turn lengths are log-distributed and the ring has to show both ends.
-        Linear put every ordinary turn in the bottom eighth."""
+    def test_the_stopwatch_reads_five_fifteen_thirty_sixty(self):
+        """The scale the whole board is read by, and the reason it isn't linear:
+        a flat hour would put every ordinary turn in the bottom segment, so the
+        first quarter of the ring buys the first five minutes and the last
+        quarter still has half an hour left in it."""
         self.session.state = "working"
         self.session.turn_started_at = 0.0
-        self.assertGreater(render(self.session, 30.0).ring, 127 * 0.2)
-        self.assertLess(render(self.session, 30.0).ring, 127 * 0.5)
+        for minutes, want in ((5, 0.25), (15, 0.5), (30, 0.75), (60, 1.0)):
+            with self.subTest(minutes=minutes):
+                ring = render(self.session, minutes * 60.0).ring
+                self.assertAlmostEqual(ring / 127, want, delta=0.01)
+
+    def test_a_turn_that_just_started_is_visibly_climbing(self):
+        """Most turns are short, and the first leg of the curve is the steepest
+        so that they aren't all indistinguishable from a turn that hasn't begun.
+        Half a minute has to be clear of the floor, not sitting on it."""
+        self.session.state = "working"
+        self.session.turn_started_at = 0.0
+        floor = config.CONTEXT_RING_FLOOR
+        self.assertGreater(render(self.session, 30.0).ring, floor)
+        self.assertAlmostEqual(render(self.session, 60.0).ring / 127, 0.125, delta=0.01)
+        # And the first minute climbs faster than any minute after it.
+        first = render(self.session, 60.0).ring - render(self.session, 0.0).ring
+        later = render(self.session, 300.0).ring - render(self.session, 240.0).ring
+        self.assertGreater(first, later)
 
     def test_a_turn_adopted_mid_flight_still_runs_its_stopwatch(self):
         """`mft.discover` hands over sessions that predate the daemon, and they
@@ -1720,17 +1738,28 @@ class Board(unittest.TestCase):
             )
 
     def test_the_ring_is_a_stopwatch_on_how_long_the_subagent_has_been_out(self):
-        """The scale you can read off the hardware without a curve in your head:
-        a quarter ring is ten minutes, half is twenty, all the way round is
-        forty. Linear, unlike a session's turn ring, because a subagent is
-        spawned for exactly the work that doesn't finish in two minutes."""
-        full = config.SUBAGENT_RING_SECONDS
-        # From an eighth up; below that the floor holds the ring off zero, which
-        # `test_a_just_spawned_dot_still_shows_a_ring` is about.
-        for elapsed, want in ((full / 8, 0.125), (full / 4, 0.25), (full / 2, 0.5)):
-            with self.subTest(elapsed=elapsed):
-                ring = board.subagent_ring(1000.0 - elapsed, 1000.0)
-                self.assertAlmostEqual(ring / 127, want, delta=0.02)
+        """The scale the whole board is read by: a quarter ring is five minutes
+        out, half is fifteen, three quarters is thirty, all the way round is an
+        hour. The same curve a session's turn ring wears, which is the point --
+        a dot at half and an encoder at half are the same fifteen minutes."""
+        for minutes, want in ((5, 0.25), (15, 0.5), (30, 0.75), (60, 1.0)):
+            with self.subTest(minutes=minutes):
+                ring = board.subagent_ring(1000.0 - minutes * 60, 1000.0)
+                self.assertAlmostEqual(ring / 127, want, delta=0.01)
+
+    def test_a_dot_and_an_encoder_at_the_same_age_read_the_same(self):
+        """One scale, or it is a scale you have to look twice to read. The dots
+        sit on the same board as the sessions they were spawned from."""
+        self.assertEqual(config.SUBAGENT_RING_SECONDS, config.TURN_RING_FULL_SECONDS)
+        for minutes in (1, 5, 15, 30, 90):
+            with self.subTest(minutes=minutes):
+                session = SessionTable().ensure("s", {})
+                session.state = "working"
+                session.turn_started_at = 1000.0 - minutes * 60
+                self.assertEqual(
+                    board.subagent_ring(1000.0 - minutes * 60, 1000.0),
+                    render_mod._turn_ring(session, 1000.0),
+                )
 
     def test_a_just_spawned_dot_still_shows_a_ring(self):
         """An empty ring reads as an unclaimed encoder, which is the one thing
@@ -1773,9 +1802,7 @@ class Board(unittest.TestCase):
         now = 1000.0
         parent = self.table.ensure("a", "/tmp/p")
         parent.state = "working"
-        parent.subagents_in_flight = {
-            "agent:x": Subagent(now - config.SUBAGENT_RING_SECONDS / 2, now)
-        }
+        parent.subagents_in_flight = {"agent:x": Subagent(now - 15 * 60, now)}
         cells = board.blank_board()
         board.stack_subagents(cells, [parent], {parent.slot}, now)
         dot = next(c for c in cells if c.color == config.SUBAGENT_COLOR)

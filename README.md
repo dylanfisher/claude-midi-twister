@@ -451,12 +451,20 @@ invisible until you turn your head. So motion is a budget.
   been running, which is the one thing about a live agent nothing else on the
   board says: hue is what it's doing, brightness is how recently it called a tool
   and sags when it stops, and neither of them is *this one has been grinding for
-  twenty minutes*. Log-scaled, because turn lengths are — the first quarter of
-  the ring covers the first half-minute, so an ordinary turn is visibly moving,
-  and a long one still has somewhere to go. It saturates at fifteen minutes
-  rather than wrapping: a wrapped ring is indistinguishable from a turn that just
-  started, and there's nothing you do differently at forty minutes than at
-  twenty. `MFT_TURN_RING=0` puts the old rotating tool-call arc back, which this
+  twenty minutes*. **A quarter ring is five minutes, half is fifteen, three
+  quarters is thirty, all the way round is an hour** — one scale, shared with the
+  [subagent dots](#subagents), so half a ring means the same fifteen minutes
+  wherever on the board you find it. Front-loaded rather than linear, because
+  turn lengths are: a flat hour would bury every ordinary turn in the bottom
+  segment, so the first quarter buys the first five minutes and the last quarter
+  still has half an hour left in it. The very first minute is steeper still — an
+  eighth of the ring — because most turns live and die inside it, and a turn
+  parked on the floor stub for its whole life is indistinguishable from one that
+  hasn't started. It saturates rather than wrapping — a wrapped ring is
+  indistinguishable from a turn that just started, and there's nothing you do
+  differently at two hours than at one. The points are interpolated straight
+  through (`config.STOPWATCH_CURVE`), exact everywhere you'd actually read it.
+  `MFT_TURN_RING=0` puts the old rotating tool-call arc back, which this
   replaced — the arc is a fine thing to watch and a redundant one to spend the
   ring on, since its spin rate is tool-call frequency and so is the shimmer.
 
@@ -791,16 +799,21 @@ what identifies a subagent, and the hue never moves, so a level and a stopwatch
 next to it are still unmistakable.
 
 The **ring fills with how long that subagent has been out**: a quarter round is
-ten minutes, half is twenty, all the way round is forty
-(`MFT_SUBAGENT_RING_SECONDS`, raise it toward an hour if your fan-outs run long).
-Past full it stays full, because a wrap would be ambiguous with a fresh spawn and
-there is nothing you do at ninety minutes you didn't already do at forty.
+five minutes, half is fifteen, three quarters is thirty, all the way round is an
+hour, with the first minute worth an eighth on its own
+(`MFT_SUBAGENT_RING_SECONDS`). Past full it stays full, because a wrap would
+be ambiguous with a fresh spawn and there is nothing you do at two hours you
+didn't already do at one.
 
-Linear, deliberately, where a session's turn ring is log-scaled. A turn's ring is
-a curve because nearly every turn is over inside two minutes and a linear scale
-buries all of them at the floor; a subagent is spawned for precisely the work
-that isn't, so its readings are spread across the whole span and the scale can be
-one you read off the hardware without a curve in your head.
+The same scale a session's turn ring wears, off the same `config.STOPWATCH_CURVE`,
+and the sameness is the feature: the dots sit *on* the same board as the encoders,
+so a stopwatch that meant one thing on a violet dot and another on the encoder
+beside it would be a scale you have to look twice to read. This used to be linear
+to forty minutes on the argument that a subagent is spawned for exactly the work
+that doesn't finish quickly, so its readings are spread across the whole span
+rather than piled at the bottom. True, and not worth two scales — the shared
+curve still separates five minutes out from thirty, which is the reading that
+matters.
 
 This is the reading you cannot get anywhere else. The parent's terminal shows one
 line of `Task` output whether the subagent is thinking or wedged, and the pile
@@ -1250,7 +1263,7 @@ What's on it, in the order the panels appear:
 5. **Gestures** — the real envelopes from `overlays.py` and `render.py`, ported
    to JS and played at 30fps: the focus pulse (and a ×4-slow version, for when
    half a second is too fast to tell what you're looking at), the spawn strike,
-   the done flash and fade, the working shimmer, the log-scaled turn stopwatch.
+   the done flash and fade, the working shimmer, the turn stopwatch.
    Each one prints the value stream it just sent, so what you saw and what went
    on the wire are side by side.
 6. **The state vocabulary** — all ten session states painted across encoders
