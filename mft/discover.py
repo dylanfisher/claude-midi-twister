@@ -763,10 +763,12 @@ def activity(lines: list[str], sidechain: bool = False) -> str:
     end of its file. The last conversational entry is therefore a live reading,
     and it is the only one available for a session that started before we did.
 
-    Four shapes, and only the first three are worth anything:
+    Five shapes, and only the first four are worth anything:
 
     *   An assistant message ending in a `tool_use` -- a call is out and nothing
         has come back.
+    *   An assistant message with no `stop_reason` at all -- it is still being
+        written, so the agent has the floor with no call out.
     *   A user message carrying a `tool_result` -- the call came back and the
         agent has the floor again.
     *   A user message carrying prose -- a prompt was submitted and nothing has
@@ -822,6 +824,18 @@ def activity(lines: list[str], sidechain: bool = False) -> str:
             # in-flight case this exists to catch -- so the block is enough.
             if message.get("stop_reason") == "tool_use" or "tool_use" in blocks:
                 return "working"
+            # Still no `stop_reason` and no call out yet: a message being
+            # streamed right now that has only got as far as its thinking. The
+            # missing reason is the whole tell -- a turn that is over always
+            # names one -- and reading this shape as "over" is what dropped a
+            # live subagent out of the pile every time we looked at it
+            # mid-thought, since `subagents` uses this as a hard filter.
+            # Safe against a writer that omits the field entirely, because
+            # every caller gates on the file's mtime first: `_believable` and
+            # `subagents` both discard a reading older than
+            # DISCOVER_ACTIVE_SECONDS, so a stale tail cannot hold a knob lit.
+            if not message.get("stop_reason"):
+                return "thinking"
             return ""
         if "tool_result" in blocks:
             return "working"

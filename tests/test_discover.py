@@ -207,6 +207,20 @@ class Activity(unittest.TestCase):
         lines = conversation(user_turn(), assistant("thinking", "tool_use", stop=""))
         self.assertEqual(discover.activity(lines), "working")
 
+    def test_a_half_written_message_is_thinking_not_a_finished_turn(self):
+        """The shape that dropped live subagents out of the pile: a message
+        still being streamed, far enough to have thought and not yet far enough
+        to have called anything. No `stop_reason` is the tell -- a turn that is
+        over always names one -- and reading it as over made an agent invisible
+        for exactly as long as it stayed in its own head."""
+        lines = conversation(user_turn(), assistant("thinking", stop=None))
+        self.assertEqual(discover.activity(lines), "thinking")
+
+    def test_a_half_written_message_counts_for_a_subagent_too(self):
+        lines = conversation(sidechain(user_turn()),
+                             sidechain(assistant("thinking", stop=None)))
+        self.assertEqual(discover.activity(lines, sidechain=True), "thinking")
+
     def test_an_unanswered_prompt_is_thinking(self):
         self.assertEqual(discover.activity(conversation(user_turn())), "thinking")
 
@@ -352,6 +366,14 @@ class Subagents(unittest.TestCase):
         self._agent("a1", sidechain(assistant("tool_use")), age=120)
         idle_for, out_for = discover.subagents(str(self.parent))["agent:a1"]
         self.assertGreaterEqual(out_for, idle_for)
+
+    def test_a_subagent_caught_mid_thought_still_counts(self):
+        """`subagents` filters on `activity`, so a shape that reads as a
+        finished turn is a dot that is simply not there. A fan-out where every
+        agent thinks between tool calls otherwise flickers a hole in the pile
+        for as long as any of them stays in its own head."""
+        self._agent("a1", sidechain(assistant("thinking", stop=None)))
+        self.assertIn("agent:a1", discover.subagents(str(self.parent)))
 
     def test_a_session_that_spawned_nobody_has_no_directory(self):
         self.assertEqual(discover.subagents(str(self.parent)), {})
