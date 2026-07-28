@@ -22,8 +22,8 @@
  * white the same as the real hardware.
  */
 
-import * as C from "./config.js?v=58";
-import { hex } from "./config.js?v=58";
+import * as C from "./config.js?v=59";
+import { hex } from "./config.js?v=59";
 
 const SEGMENTS = 11;
 const ARC_START = 216;    // degrees, clockwise from 12 o'clock; the lower left

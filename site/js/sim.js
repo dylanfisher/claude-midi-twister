@@ -12,12 +12,12 @@
  * seam. The pure half ports; the impure half has nothing to port to.
  */
 
-import * as C from "./config.js?v=58";
-import { render, Cell, arbitrateMotion, subagentCell, ambient, markFocus, capRings, spawnOrder } from "./board.js?v=58";
+import * as C from "./config.js?v=59";
+import { render, Cell, arbitrateMotion, subagentCell, ambient, markFocus, capRings, spawnOrder } from "./board.js?v=59";
 import {
   SpawnOverlay, ClearOverlay, CompactOverlay, DismissOverlay, FocusOverlay,
   TextOverlay, UnwrapOverlay, ShutdownOverlay, WaitingOverlay, SleepOverlay,
-} from "./overlays.js?v=58";
+} from "./overlays.js?v=59";
 
 let nextId = 1;
 

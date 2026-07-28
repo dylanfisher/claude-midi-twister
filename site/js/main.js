@@ -3,13 +3,13 @@
  * daemon minus its outside world, so two of them cost nothing but two clocks.
  */
 
-import * as C from "./config.js?v=58";
-import { hex } from "./config.js?v=58";
-import { Sim } from "./sim.js?v=58";
-import { makeBoard } from "./twister.js?v=58";
-import { Console } from "./console.js?v=58";
-import { Director, freePlay } from "./scenarios.js?v=58";
-import { Cell } from "./board.js?v=58";
+import * as C from "./config.js?v=59";
+import { hex } from "./config.js?v=59";
+import { Sim } from "./sim.js?v=59";
+import { makeBoard } from "./twister.js?v=59";
+import { Console } from "./console.js?v=59";
+import { Director, freePlay } from "./scenarios.js?v=59";
+import { Cell } from "./board.js?v=59";
 import { animate } from "https://cdn.jsdelivr.net/npm/motion@12.42.2/+esm";
 
 // ─── motion ───────────────────────────────────────────────────────────────
