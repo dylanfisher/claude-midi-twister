@@ -1,0 +1,582 @@
+/* The page. Flat, quiet, system fonts only — no webfont is downloaded, which
+ * means nothing on this page can reflow late or fail to arrive. Prose is the
+ * platform sans; monospace is reserved for the things that are actually
+ * monospace: code, keys, labels, and the device's own readouts.
+ *
+ * The previous version of this file was a CRT pastiche — scanlines, vignette,
+ * phosphor glow on everything. It fought the one thing on the page worth
+ * looking at, which is the sixteen lit encoders. The only glow left is theirs.
+ *
+ * The page is off-white; the *device* is not, and neither is anything that
+ * stands in for a screen — the console, the readout, the terminal blocks. The
+ * split is the same one the whole project rests on: printed things are printed,
+ * emitted things are emitted, and paper behind a lit lens makes it brighter.
+ * See the dark-island block below, which is the only place those tokens differ.
+ */
+
+:root {
+  --bg:      #f0eee6;
+  --bg-2:    #e8e4d9;
+  --panel:   #e3ded0;
+  --panel-2: #dad3c3;
+  --line:    #d9d2c0;
+  --line-2:  #c2b8a3;
+  --ink:     #141413;
+  --dim:     #6b6a63;
+  --faint:   #83827d;
+  --accent:  #d97757;
+  --warn:    #a86612;
+  --hot:     #cc2b21;
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --gut: clamp(1rem, 4vw, 2.5rem);
+  --r: 8px;
+
+  /* How big a drawn device is allowed to get. The chassis is square, so one
+   * number caps both dimensions and the vh term is what makes a board fit a
+   * short laptop screen without the page turning into scrolling. The floor
+   * matters more than the ceiling: below about 300px the eleven indicator LEDs
+   * stop resolving as separate dots and the board stops being readable, which
+   * is the whole point of the drawing.
+   *
+   * 62vh, not more: the board is not alone in its column — the readout and the
+   * hint under it are another ~90px — and not less, because at a desk-sized
+   * window the vh term should be doing nothing at all and the 620px ceiling
+   * should be what you see. The ceiling is the width the hero's board already
+   * had at the widest the page ever gets. */
+  --board-cap: clamp(300px, 62vh, 620px);
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.6 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.006em;
+  padding-bottom: 2.4rem;
+}
+
+/* The dark islands. These are the surfaces that stand for something emitting
+ * light — a terminal, the device's own readout — and the tokens are custom
+ * properties precisely so one declaration flips a whole subtree back to the
+ * old palette without a second copy of every rule. */
+.console, .readout, pre.term, .chassis {
+  --bg-2:    #101012;
+  --panel:   #17171a;
+  --panel-2: #1d1d21;
+  --line:    #2a2a2f;
+  --line-2:  #3a3a41;
+  --ink:     #ededed;
+  --dim:     #a5a29c;
+  --faint:   #6f6c67;
+  --accent:  #e0916d;
+}
+
+a { color: var(--ink); text-decoration: none; }
+a:hover { color: #000; }
+p a, li a, footer a { color: var(--dim); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-2); }
+p a:hover, li a:hover, footer a:hover { color: var(--ink); text-decoration-color: var(--dim); }
+
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 var(--gut); }
+.wide { max-width: 1360px; margin: 0 auto; padding: 0 var(--gut); }
+
+/* ── nav ─────────────────────────────────────────────────────────────────── */
+.nav {
+  position: sticky; top: 0; z-index: 50;
+  background: rgba(240,238,230,0.78);
+  backdrop-filter: saturate(180%) blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+/* Never wraps. A sticky bar with a fixed height that wraps puts its second row
+ * on top of the page; narrow viewports scroll it sideways instead. */
+.nav .wide {
+  display: flex; gap: 1.4rem; align-items: center; height: 56px;
+  flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none; white-space: nowrap;
+}
+.nav .wide::-webkit-scrollbar { display: none; }
+.nav a, .nav b { flex: none; }
+.nav b { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+.nav a { color: var(--dim); font-size: 13.5px; }
+.nav a:hover { color: var(--ink); }
+.nav .spacer { margin-left: auto; }
+
+/* ── section furniture ───────────────────────────────────────────────────── */
+section { padding: clamp(3.5rem, 8vw, 6rem) 0; border-top: 1px solid var(--line); }
+section:first-of-type { border-top: 0; padding-top: clamp(2.5rem, 5vw, 4rem); }
+
+.eyebrow {
+  font: 500 11.5px/1 var(--mono);
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--faint); margin: 0 0 1.1rem;
+}
+
+h1, h2, h3 { letter-spacing: -0.025em; line-height: 1.15; font-weight: 600; }
+h1 { font-size: clamp(2rem, 5vw, 3.25rem); margin: 0 0 1rem; }
+h2 { font-size: clamp(1.5rem, 3.2vw, 2.1rem); margin: 0 0 0.7rem; }
+h3 { font-size: 1rem; margin: 0 0 0.4rem; color: var(--ink); }
+p { max-width: 68ch; color: var(--dim); margin: 0 0 1rem; }
+p.lede { font-size: clamp(1rem, 1.5vw, 1.1rem); color: var(--dim); }
+.dim { color: var(--dim); }
+.small { font-size: 13.5px; }
+
+/* ── wordmark ────────────────────────────────────────────────────────────── */
+/* Three lines of full blocks, one <pre> per word so each hugs its own width
+ * and the lockup stays ragged-right like the Midi Fighter logo. The size is a
+ * clamp on vw rather than a fixed px because the art has a fixed *character*
+ * width (94 at its widest) — the only way it can never overflow the gutter is
+ * to be measured in the viewport. line-height is exactly 1: any more and a
+ * hairline of background shows between the rows of a letter. */
+.logo {
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: 0.5em; margin: 0 0 2.2rem;
+}
+.logo pre {
+  margin: 0; padding: 0; background: none;
+  font: 400 clamp(4.6px, 1.05vw, 8px)/1 var(--mono);
+  letter-spacing: 0; color: var(--ink);
+  white-space: pre;
+}
+.logo .mk { color: var(--accent); }
+
+/* ── hero ────────────────────────────────────────────────────────────────── */
+.hero .pitch { font-size: clamp(1.05rem, 1.9vw, 1.3rem); line-height: 1.5; max-width: 62ch; color: var(--dim); }
+.hero .pitch b { color: var(--ink); font-weight: 600; }
+.hero-meta {
+  display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 1.4rem 0 0;
+  font: 12px/1 var(--mono); color: var(--dim);
+}
+.hero-meta span {
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 6px 11px; background: var(--bg-2);
+}
+
+/* ── code blocks ─────────────────────────────────────────────────────────── */
+pre.term {
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 1rem 1.15rem; overflow-x: auto;
+  font: 13px/1.75 var(--mono); letter-spacing: 0;
+  color: var(--ink); margin: 1.2rem 0;
+}
+pre.term .c { color: var(--faint); }
+pre.term .p { color: var(--accent); }
+code.inl {
+  font: 0.9em/1 var(--mono);
+  background: var(--panel); border: 1px solid var(--line);
+  padding: 0.15em 0.4em; border-radius: 4px; color: var(--ink);
+}
+
+/* ── the device ──────────────────────────────────────────────────────────── */
+/* A square of black anodised aluminium with a chamfered edge, lit from above
+ * and slightly in front — the angle every photograph of one is taken at. The
+ * face is nearly black on purpose: everything that matters on this page is
+ * emitted, not printed, and a face with any lightness in it steals from the
+ * sixteen lenses. */
+.twister { display: block; max-width: var(--board-cap); }
+/* The solid 10px ring below is a box-shadow, not a border, so it paints
+ * outside the chassis's own box without changing its size — which left it
+ * bleeding past #device and the height the replica's ResizeObserver measures
+ * there (js/main.js). Insetting the chassis by --ring on every side puts the
+ * ring's outer edge, not the flat panel under it, at #device's true bounds. */
+.chassis {
+  --ring: 10px;
+  position: relative;
+  width: calc(100% - var(--ring) * 2);
+  height: calc(100% - var(--ring) * 2);
+  margin: var(--ring);
+  aspect-ratio: 1;
+  border-radius: clamp(14px, 3vw, 26px);
+  padding: clamp(9px, 2vw, 18px);
+  background:
+    radial-gradient(130% 100% at 50% -12%, rgba(255,255,255,0.11), transparent 58%),
+    #1c1c1c;
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,0.055),
+    inset 0 1px 0 rgba(255,255,255,0.13),
+    inset 0 -1px 0 rgba(0,0,0,0.9),
+    0 0 0 var(--ring) rgba(0,0,0,1),
+    0 1px 0 rgba(255,255,255,0.05),
+    0 18px 40px -20px rgba(0,0,0,0.5),
+    0 2px 8px -4px rgba(0,0,0,0.3);
+}
+/* The chamfer: a second lip just inside the edge, which is the one detail that
+ * stops the panel reading as a flat rounded rectangle. */
+.chassis::before {
+  content: ""; position: absolute; inset: 3px; border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.035);
+  pointer-events: none;
+}
+
+/* The bordered plastic bezel set into the aluminium face: same material and
+ * color as the chassis. The grid of encoders sits inside it. */
+.panel {
+  border-radius: clamp(9px, 2vw, 18px);
+}
+
+.grid {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: clamp(1px, 0.3vw, 3px);
+}
+/* One encoder. There is no box around it — on the hardware the collar sits
+ * straight on the face, and a border here draws sixteen squares nobody is
+ * looking for. Hover and focus therefore land on the knob, not on a frame. */
+.enc {
+  position: relative; aspect-ratio: 1;
+  display: grid; place-items: center; cursor: pointer;
+  outline: none;
+}
+.enc svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.enc:focus-visible { border-radius: 50%; box-shadow: 0 0 0 2px rgba(255,255,255,0.55); }
+
+.enc .shade { fill: #000; opacity: 0.55; }
+.enc .collar { fill: url(#mft-collar); }
+.enc .collar-rim { fill: none; stroke: rgba(255,255,255,0.07); stroke-width: 1; }
+/* Two numbers describe everything lit on an encoder, and they are registered so
+ * the animation bands can be a *multiplier* on them rather than a replacement:
+ * an unregistered custom property can't be multiplied in calc(), and animating
+ * opacity directly would blink a dim encoder at full strength. */
+@property --glow-a { syntax: "<number>"; inherits: true; initial-value: 0; }
+@property --pulse  { syntax: "<number>"; inherits: true; initial-value: 1; }
+.enc { --glow: transparent; }
+
+/* The eleven indicator LEDs. White plastic lenses: visible unlit, and pure
+ * white when driven — the ring on this device has no color of its own, which
+ * is the whole reason position and state can be read at the same time. */
+.enc .dot-off { fill: #b9b9b9; opacity: 0.16; }
+.enc .dot { fill: #fff; opacity: 0; stroke: #fff; stroke-opacity: 0.22; stroke-width: 2.6; }
+
+/* The RGB LED, which is the curved lens in the ring's gap and nothing else. A
+ * lit lens never goes fully dark at low brightness — the real one is a diffuser
+ * with a floor — so the color survives at the bottom of the ramp. */
+.enc .lens-off { fill: none; stroke: #191919; stroke-width: 9.6; stroke-linecap: round; }
+.enc .lens {
+  fill: none; stroke: var(--glow); stroke-width: 9.4; stroke-linecap: round;
+  opacity: calc(min(1, 0.42 + var(--glow-a) * 0.58) * var(--pulse));
+}
+/* The bloom is a screen-only halo, not a hardware feature, so it is kept to a
+ * minimal, near-uniform strength across states rather than tracking brightness
+ * one-for-one -- `thinking`'s sweep (glow-a 0.3) is the reference: barely there. */
+.enc .lens-bloom {
+  fill: none; stroke: var(--glow); stroke-width: 15; stroke-linecap: round;
+  opacity: calc(var(--glow-a) * 0.15 * var(--pulse)); filter: blur(3.2px);
+}
+
+/* The knob: knurled skirt, smooth top, black under every state. */
+.enc .cap { fill: url(#mft-cap); }
+.enc .knurl { stroke: #000; stroke-opacity: 0.55; stroke-width: 1.1; }
+.enc .cap-top { fill: url(#mft-cap-top); stroke: rgba(255,255,255,0.06); stroke-width: 1; }
+
+.enc:hover .cap-top { stroke: rgba(255,255,255,0.2); filter: brightness(1.22); }
+
+/* The light the lens throws onto the face under the knob. Purely a screen
+ * affordance — the real thing is an LED behind frosted plastic — but it is the
+ * part that carries hue at the edge of your vision, so it is the one glow left
+ * on this page. It sits at six o'clock because that is where the LED is. */
+.enc::after {
+  content: ""; position: absolute; left: 24%; right: 24%; top: 56%; height: 42%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--glow) 0%, transparent 78%);
+  opacity: calc(var(--glow-a) * 0.15 * var(--pulse)); filter: blur(4px); pointer-events: none;
+}
+
+/* The hardware's two animation bands, as keyframes at the same beat divisions.
+ * gate is hard on/off; pulse is a soft breath. On the device both are driven by
+ * the MIDI clock the daemon supplies, which is why all sixteen breathe in step.
+ * They ride the RGB lens and its spill, never the white ring: channels 3 and 6
+ * animate separately on the real thing, and only channel 3 is in play here. */
+.enc[data-anim="gate"] { animation: gate var(--anim-period, 1s) steps(1) infinite; }
+.enc[data-anim="pulse"] { animation: pulse var(--anim-period, 1s) ease-in-out infinite; }
+@keyframes gate { 0%, 49% { --pulse: 1; } 50%, 100% { --pulse: 0.12; } }
+@keyframes pulse { 0%, 100% { --pulse: 0.3; } 50% { --pulse: 1; } }
+@keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0.15; } }
+
+/* Motion can be turned off two ways, and the corner toggle wins over the OS in
+ * both directions: `full` overrides a system preference for less motion, and
+ * `reduced` applies without one. The media query is therefore written to stand
+ * down whenever the toggle has been touched. */
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion="full"]) { scroll-behavior: auto; }
+  :root:not([data-motion="full"]) .enc[data-anim],
+  :root:not([data-motion="full"]) .cursor.blink { animation: none !important; }
+}
+:root[data-motion="reduced"] { scroll-behavior: auto; }
+:root[data-motion="reduced"] .enc[data-anim],
+:root[data-motion="reduced"] .cursor.blink { animation: none !important; }
+
+/* ── the console pane ────────────────────────────────────────────────────── */
+.console {
+  display: flex; flex-direction: column;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r);
+  overflow: hidden; min-height: 0;
+}
+.console-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 9px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
+  font: 11.5px/1 var(--mono); color: var(--dim); flex: none;
+}
+.console-bar .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.dot.r { background: #ff5f57; } .dot.y { background: #febc2e; } .dot.g { background: #28c840; }
+.console-title { margin-left: 8px; }
+.console-body {
+  flex: 1 1 auto; overflow-y: auto; padding: 12px 14px;
+  font: 13px/1.65 var(--mono); letter-spacing: 0; min-height: 0;
+  scrollbar-width: thin; scrollbar-color: #333 transparent;
+}
+.console-empty { color: var(--faint); font-style: italic; }
+.console .line { display: flex; gap: 8px; padding: 1px 0; }
+.console .line .glyph { flex: none; width: 1ch; color: var(--faint); }
+.console .line .text { white-space: pre-wrap; word-break: break-word; }
+.console .line.user .text { color: var(--ink); font-weight: 700; }
+.console .line.user .glyph { color: var(--accent); }
+.console .line.thought .text, .console .line.thought .glyph { color: #3fe0e0; font-style: italic; }
+.console .line.tool .text { color: var(--dim); }
+.console .line.tool .glyph { color: #f5762a; }
+.console .line.assistant .text { color: var(--ink); }
+.console .line.assistant .glyph { color: #4ade4a; }
+.console .line.sub .text, .console .line.sub .glyph { color: #a08cf5; }
+.console .line.system .text { color: var(--faint); }
+.console .line.error .text, .console .line.error .glyph { color: #f0655a; }
+.console .line.gate { background: rgba(240,50,42,0.10); border-left: 2px solid var(--hot); padding-left: 8px; margin: 3px -8px 3px -10px; }
+.console .line.gate .text { color: #ffb0a8; font-weight: 700; }
+.console .line.gate .glyph { color: var(--hot); }
+.cursor { color: var(--accent); }
+.cursor.blink { animation: blink 1s steps(1) infinite; }
+
+.console-input {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  border-top: 1px solid var(--line); background: var(--panel); padding: 9px 12px;
+}
+.console-input .prompt { font-family: var(--mono); color: var(--accent); }
+.console-input input {
+  flex: 1; background: none; border: 0; outline: none;
+  font: 13px/1.5 var(--mono); color: var(--ink);
+}
+.console-input input::placeholder { color: var(--faint); }
+
+/* ── the replica layout ──────────────────────────────────────────────────── */
+/* The board reports, the terminal is where you decide — but the terminal is
+ * where the reading happens, so it gets the slightly bigger half. */
+/* Flex and not grid, because the board column has a ceiling and the terminal
+ * width does not. On a wide, short screen --board-cap is the smaller number
+ * and the left column gives back what it doesn't use; on a tall one the 48%
+ * takes over and the split is the 0.92:1 it always was. A grid with an fr
+ * ratio can't do that — the column keeps its share and the board sits in a
+ * hole. */
+.replica { display: flex; gap: 1.25rem; align-items: stretch; }
+/* The readout and the hint are captions on the board, so they end where it
+ * ends — a caption running wider than the thing it describes reads as a second
+ * column. The console, though, is capped at the *board's* height, not the
+ * whole left column's (which runs taller once the readout and hint are under
+ * it) — --device-h is written by main.js's ResizeObserver on #device, because
+ * a square div sized off its own width has no height a CSS percentage here
+ * could reach: percentages on height resolve against the containing block's
+ * height, never a sibling's rendered width. Without that number the terminal
+ * would grow past the board on a long transcript instead of scrolling
+ * (console-body's own overflow-y), and the two columns would stop reading as
+ * one replica. --device-h starts at --board-cap for the frame before layout
+ * runs, so nothing flashes unsized before the observer's first callback. */
+.replica-left {
+  display: flex; flex-direction: column; gap: 0.8rem;
+  flex: 0 1 auto; width: min(var(--board-cap), 48%); min-width: 0;
+}
+.replica-right { display: flex; flex: 1 1 0; min-width: 0; height: var(--device-h, var(--board-cap)); }
+.replica-right .console { flex: 1; }
+
+.scenarios-label {
+  font: 500 11px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--faint); margin: 0 0 0.6rem;
+}
+.scenarios { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 1.1rem; }
+.btn {
+  font: 13px/1 var(--sans); cursor: pointer;
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line-2); border-radius: 6px;
+  padding: 8px 12px;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+.btn:hover { background: var(--panel-2); border-color: var(--faint); }
+.btn:active { transform: translateY(1px); }
+.btn.ghost { background: none; color: var(--dim); border-color: var(--line); }
+/* The demo pressing its own buttons: a ping, not a hold. Once the board is
+ * carrying knob-state pings of its own, a button that stayed lit for a whole
+ * scenario's run would be the busiest thing on the page — so this fires once,
+ * at the moment the scenario starts, and decays on its own. The animation is
+ * driven from JS (motion.dev, in main.js's pingButton), not a CSS keyframe,
+ * because it has to read the *current* theme's accent/panel/line colors at
+ * the moment it fires and interpolate between them — var() substitution can
+ * give a keyframe a static value, not one it animates toward. `.playing` here
+ * is just the marker `holdScenario`/`releaseScenario` set on the button that
+ * is currently pinged or mid-fade; it carries no styling of its own. */
+.btn.playing { }
+
+.readout {
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg-2);
+  padding: 9px 12px; font: 12px/1.7 var(--mono); letter-spacing: 0; color: var(--dim);
+  display: flex; flex-direction: column; gap: 2px;
+}
+/* The readout and the hint used to be captions stacked under the device, so
+ * their width followed replica-left. Freed from that column they run the
+ * full width of the section instead — a wide readout wraps its board tally
+ * onto fewer lines, and the hint reads as a caption for the whole replica,
+ * not just the device half of it. */
+.readout-full { width: 100%; margin-top: 0.8rem; }
+.hint-full { margin-top: 1.4rem; }
+/* Two fixed rows instead of one flex-wrapping line: the board tally's length
+ * swings with how many states are on screen, and left to wrap freely it would
+ * reflow onto the row above and shove the readout's height around every
+ * repaint. Splitting it onto its own row means only that row's *contents*
+ * shift, never the layout. */
+.readout-row {
+  display: flex; flex-wrap: wrap; gap: 0 1.2rem;
+}
+.readout b { color: var(--ink); font-weight: 600; }
+.readout .k { color: var(--faint); }
+/* The demo's own status line: green and "auto" while it is driving itself,
+ * amber and "paused" the moment a click, keypress or prompt takes it over —
+ * the same read as the motion toggle's led, so the page has one vocabulary
+ * for "this is live" instead of two. */
+.demo-status {
+  font-size: 12.5px; color: var(--faint); margin: 0;
+  display: flex; align-items: center; gap: 7px;
+}
+.demo-status .led { width: 6px; height: 6px; border-radius: 50%; flex: none; background: #12833a; }
+.demo-status[data-live="paused"] .led { background: var(--warn); }
+.hint { font-size: 12.5px; color: var(--faint); margin: 0; }
+.hint kbd {
+  font: 11px/1 var(--mono);
+  background: var(--panel); border: 1px solid var(--line-2);
+  border-radius: 4px; padding: 3px 5px; color: var(--dim);
+}
+
+/* ── legend ──────────────────────────────────────────────────────────────── */
+/* Same split as the hero's replica — the board column slightly smaller than
+ * the column reading it, so two drawings of the same device don't read as
+ * two competing boards. */
+.legend-wrap { display: flex; gap: 2rem; align-items: flex-start; }
+.legend-wrap > #legend-board { flex: 0 1 auto; width: min(var(--board-cap), 48%); }
+.legend-wrap > .legend { flex: 1 1 0; min-width: 0; }
+
+.legend { list-style: none; margin: 0; padding: 0; }
+.legend li {
+  display: flex; align-items: baseline; gap: 0.8rem; padding: 8px 10px;
+  border-left: 2px solid transparent; cursor: default; border-radius: 4px;
+  transition: background 120ms, border-color 120ms;
+}
+.legend li:hover, .legend li.solo { background: var(--panel); border-left-color: var(--sw, var(--ink)); }
+.legend .swatch { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--sw); box-shadow: 0 0 10px var(--sw); }
+.legend .name { flex: none; width: 13ch; color: var(--ink); font: 500 13px/1.6 var(--mono); letter-spacing: 0; }
+.legend .desc { color: var(--dim); font-size: 13.5px; }
+
+.buy { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 1.5rem; }
+.buy a.tile {
+  display: block; border: 1px solid var(--line); border-radius: var(--r);
+  padding: 1.2rem 1.3rem; background: var(--bg-2); color: var(--ink);
+  transition: border-color 140ms, background 140ms;
+}
+.buy a.tile:hover { border-color: var(--line-2); background: var(--panel); }
+.buy .tile .k { display: block; font: 500 11px/1 var(--mono); letter-spacing: 0.12em; color: var(--faint); margin-bottom: 0.6rem; }
+.buy .tile .t { display: block; color: var(--ink); font-weight: 600; letter-spacing: -0.015em; }
+.buy .tile .d { display: block; color: var(--dim); font-size: 13.5px; margin-top: 0.4rem; }
+
+/* ── the status bar ──────────────────────────────────────────────────────── */
+.statusbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+  background: rgba(240,238,230,0.88); backdrop-filter: saturate(180%) blur(12px);
+  border-top: 1px solid var(--line);
+  font: 11.5px/1.6 var(--mono); letter-spacing: 0; color: var(--dim);
+  padding: 6px var(--gut); display: flex; align-items: center; gap: 1.2rem;
+  flex-wrap: nowrap; white-space: nowrap; overflow-x: auto; scrollbar-width: none;
+}
+.statusbar::-webkit-scrollbar { display: none; }
+.statusbar > * { flex: none; }
+.statusbar .live { color: #12833a; }
+.statusbar .k { color: var(--faint); }
+.statusbar .spacer { margin-left: auto; }
+
+/* The one control down here, and the only place on the page where a preference
+ * is settable: motion, on or off, whatever the OS was asked for. */
+.motion-btn {
+  font: inherit; color: var(--dim); cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 5px;
+  padding: 3px 9px; display: inline-flex; align-items: center; gap: 6px;
+  transition: color 120ms, border-color 120ms, background 120ms;
+}
+.motion-btn:hover { color: var(--ink); border-color: var(--faint); background: var(--panel-2); }
+.motion-btn .led { width: 6px; height: 6px; border-radius: 50%; background: #12833a; }
+.motion-btn[aria-pressed="true"] .led { background: var(--warn); }
+
+footer { border-top: 1px solid var(--line); padding: 2.5rem 0 1.5rem; color: var(--faint); font-size: 13px; }
+footer p { color: var(--faint); }
+
+/* ── the page turning over ───────────────────────────────────────────────── */
+/* Two halves of one rotation, either side of a real navigation: this page turns
+ * to -90°, the next one arrives at +90° and finishes. See js/flip.js for why a
+ * View Transition cannot do this, and why the easings differ between halves.
+ *
+ * The perspective goes on <html> and the rotation on <body>, both about the
+ * middle of the *viewport* — `--flip-origin` is a document-space pixel offset
+ * that flip.js writes at the moment of the click. On a page four screens tall,
+ * turning about the middle of the document reads as the page being flung. */
+:root.flip-out, :root.flip-in {
+  perspective: 1600px;
+  perspective-origin: 50% var(--flip-origin, 50%);
+  scroll-behavior: auto;
+}
+:root.flip-out body, :root.flip-in body {
+  transform-origin: 50% var(--flip-origin, 50%);
+  will-change: transform;
+}
+:root.flip-out body { animation: flip-out 260ms cubic-bezier(0.55, 0, 0.85, 0.35) both; }
+:root.flip-in  body { animation: flip-in  340ms cubic-bezier(0.15, 0.7, 0.3, 1) both; }
+
+@keyframes flip-out {
+  from { transform: rotateY(0deg) translateZ(0); }
+  to   { transform: rotateY(-90deg) translateZ(-120px); }
+}
+@keyframes flip-in {
+  from { transform: rotateY(90deg) translateZ(-120px); }
+  to   { transform: rotateY(0deg) translateZ(0); }
+}
+
+/* The shading that makes it a sheet rather than a spinning picture: the face
+ * loses its light as it goes edge-on. It is absolutely positioned inside the
+ * transformed body — which is its own containing block, being transformed — so
+ * it covers the document and turns with it. */
+:root.flip-out body::after, :root.flip-in body::after {
+  content: ""; position: absolute; inset: 0; z-index: 999;
+  pointer-events: none; background: #000;
+}
+:root.flip-out body::after { animation: flip-shade-out 260ms cubic-bezier(0.55, 0, 0.85, 0.35) both; }
+:root.flip-in  body::after { animation: flip-shade-in  340ms cubic-bezier(0.15, 0.7, 0.3, 1) both; }
+@keyframes flip-shade-out { from { opacity: 0; } to { opacity: 0.6; } }
+@keyframes flip-shade-in  { from { opacity: 0.6; } to { opacity: 0; } }
+
+/* A perspective on <html> makes it the containing block for anything fixed, so
+ * the status bar would snap to the foot of the *document* the instant the turn
+ * starts. Pinned to the foot of the viewport in document coordinates instead,
+ * which is where it already looks like it is. */
+:root.flip-out .statusbar, :root.flip-in .statusbar {
+  position: absolute; bottom: auto;
+  top: calc(var(--flip-origin, 50%) + 50vh);
+  transform: translateY(-100%);
+}
+
+/* ── responsive ──────────────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .replica { flex-direction: column; }
+  .replica-left { width: auto; }
+  .replica-right { height: var(--device-h, var(--board-cap)); }
+  .legend-wrap { flex-direction: column; }
+  .legend-wrap > #legend-board { width: auto; }
+  .nav a.hide-sm { display: none; }
+}
+@media (max-width: 560px) {
+  .statusbar .hide-xs { display: none; }
+}

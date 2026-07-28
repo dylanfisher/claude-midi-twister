@@ -1,4 +1,26 @@
+```
+██████████  ██          ██████████  ██      ██  ████████    ██████████
+██          ██          ██      ██  ██      ██  ██      ██  ██
+██          ██          ██████████  ██      ██  ██      ██  ██████████
+██          ██          ██      ██  ██      ██  ██      ██  ██
+██████████  ██████████  ██      ██  ██████████  ████████    ██████████
+
+██      ██  ██████████  ████████    ██████████
+████  ████      ██      ██      ██      ██
+██  ██  ██      ██      ██      ██      ██
+██      ██      ██      ██      ██      ██
+██      ██  ██████████  ████████    ██████████
+
+██████████  ██      ██  ██████████  ██████████  ██████████  ██████████  ████████     ▄▄▄▄▄▄▄▄
+    ██      ██      ██      ██      ██              ██      ██          ██      ██   ██ ██ ██
+    ██      ██  ██  ██      ██      ██████████      ██      ██████████  ████████    ██████████
+    ██      ██████████      ██              ██      ██      ██          ██    ██     █▀█▀▀█▀█
+    ██      ████  ████  ██████████  ██████████      ██      ██████████  ██      ██   ▀ ▀  ▀ ▀
+```
+
 # claude-midi-twister
+
+**[Try the browser demo →](https://dylanfisher.github.io/claude-midi-twister/)**
 
 Your running Claude Code sessions, one per encoder, on a DJTT Midi Fighter Twister.
 Each session claims an encoder: the RGB under the knob says what state it's in,
@@ -17,7 +39,7 @@ terminal tab to the front**.
 │    │    │ ◦  │ ◦  │   ● dim green     idle — the ring is its context window
 └────┴────┴────┴────┘   ● magenta       running unsupervised
   press → focus that tab       ◦ violet        subagents, stacked from the corner,
-  hold  → peek at its history                  ring = how long it has been out
+  hold  → clear it off the board               ring = how long it has been out
 ```
 
 Nothing on the device can answer a prompt, approve a tool call, or block a
@@ -49,6 +71,17 @@ That painting is off by default; see
 
 Then, in the Midi Fighter Utility, set the encoders to accept host LED control —
 otherwise the device drives its own LEDs and ignores you.
+
+While you are in there, turn the device's own sleep timer off. It counts knob
+movement, not incoming MIDI, and this board is meant to be looked at rather than
+touched — so left alone long enough it goes dark on its own, mid-session, and
+waits for a hand on a knob. Nothing the daemon sends will wake it: it is already
+sending a MIDI clock and restating every ring several times a second, and the
+device sleeps through all of it. Nor can the daemon tell you that is what
+happened. The LED path is write-only, so a dozing device looks exactly like a
+board the daemon is keeping dark on purpose — `--status` reports a healthy port,
+the log is clean, and the encoders are black. If the board is dark and everything
+else insists it shouldn't be, suspect this before you suspect the code.
 
 ## Run
 
@@ -421,7 +454,7 @@ or that hour.
 ## What the lights are saying
 
 The design rests on one fact: **you are not looking at this device.** Peripheral
-vision catches *movement* and *hue change*; arc position and static colour are
+vision catches *movement* and *hue change*; arc position and static color are
 invisible until you turn your head. So motion is a budget.
 
 - **At most one encoder moves fast at a time.** The fast animation goes to the
@@ -582,7 +615,7 @@ escalated rate only ever appears when the plan is the loudest thing there.
 | Gesture | Does |
 |---|---|
 | press | focus that terminal tab, and forgive its attention debt |
-| hold | peek: the rest of the bank becomes that session's last 15 tool calls |
+| hold | clear that encoder off the board |
 | turn | nothing, beyond waking a sleeping board |
 
 That's the whole input surface, and it's meant to be. Both gestures affect the
@@ -606,9 +639,9 @@ This is the one thing the daemon writes to the device for a reason other than
 painting, and it's the closest anything here comes to acting on its own — so it's
 braked three ways. It won't move within 30s of the last move, so two prompts on
 two banks can't bounce the view between them and a bank you picked by hand stays
-picked. It won't move during a peek, which is a modal view of one session's
-history that another bank's encoders would silently replace. And it won't move
-while the boot word or the waiting animation still owns the board.
+picked. It won't move while a knob is being held, which would swap the encoder
+under your finger for a different session's. And it won't move
+while the boot gesture or the waiting animation still owns the board.
 
 It follows only the states where a human is the thing in the way —
 `permission`, `plan`, `waiting` — and only unattended ones. Not `error`: a rate
@@ -627,48 +660,53 @@ alert. The bank-select CCs are documented by DJTT and unverified per unit; run
 `python -m mft.calibrate banks`, and if nothing moves, set `MFT_FOLLOW_ALERTS=0`
 and leave the banks alone on that unit.
 
-### Peek
+### Clearing a knob by hand
 
-Hold a knob for **0.6 seconds** and its 15 neighbours re-render as that
-session's recent tool calls, oldest to newest, hue by tool kind. Release and the
-board snaps back — a spring-loaded modal view, not a mode you can get stuck in.
-"This agent has done nothing but grep for four minutes" is legible from across
-the room, and there's no other way to learn it without opening the tab.
+Hold a knob for **0.8 seconds** and its ring drains to empty, and when it gets
+there the session comes off the board: encoder freed, tab glyph handed back,
+everything below squeezed up. Let go before the ring empties and nothing
+happens — you can watch the clear coming and change your mind, which is what
+makes a destructive gesture safe to hang on the same knob as the harmless one.
 
 ```
-┌────┬────┬────┬────┐   the held knob is purple; the rest of its bank is
-│    │    │    │ ●  │   history, oldest first, filling from the far corner
-├────┼────┼────┼────┤   backwards — so an agent that has only just started
-│ ●  │ ●  │ ●  │ ●  │   shows a short run in the bottom-right and dark
-├────┼────┼────┼────┤   encoders where it hasn't been yet
-│ ●  │ ●  │ ●  │ ●  │
-├────┼────┼────┼────┤   ██ read   ██ edit    ██ bash   ██ search
-│ ●  │ ●  │ ██ │ ●  │   ██ web    ██ subagent   ██ everything else
-└────┴────┴────┴────┘
+press ──────────────── 0.2s ──────────────── 0.8s ────────→
+
+  ◕  the knob you're          ◕ → ◑ → ◔ → ○          the session
+     holding, untouched       the fuse burns down    is off the board
+
+  white over a dark switch — boot's vocabulary, not a status: the board
+  is talking about itself, and what it's saying is "this one is about to
+  stop existing"
 ```
 
-| Hue | Tools |
-|---|---|
-| blue | `Read` |
-| orange | `Edit`, `Write`, `NotebookEdit` |
-| magenta | `Bash`, `BashOutput` |
-| cyan | `Grep`, `Glob` |
-| spring | `WebFetch`, `WebSearch` |
-| violet | `Task`, `Agent` |
-| azure | anything else, MCP tools included |
+It exists because a record can outlive the agent it describes and nothing will
+ever come along to say so. A terminal killed from the window manager, a machine
+woken up somewhere else, a pid the census can't resolve — the daemon's own
+sweeps catch most of that, and what they miss sits there as a knob that lies,
+which invariant 6 says is the worst thing on this board. The alternatives were
+waiting out the session TTL or restarting the daemon. This is a hand saying
+"that one is gone", which is a fact only the hand has.
 
-Under 0.6s, releasing focuses the tab; at or over it, releasing does nothing —
-the hold *was* the gesture, and you held the knob precisely to avoid opening the
-tab. The history is the last 15 *completed* calls, a rolling window over the
-whole session rather than the current turn, so you can hold an idle agent's knob
-and still read what it spent the last turn doing. `/clear` wipes it. There is no
-peek on an unclaimed encoder.
+**Nothing is sent to the agent.** It's a display (invariant 1), and a hold is a
+statement about the board, not about a session: clear an encoder whose Claude is
+in fact alive and its very next hook event claims a fresh one, with a spawn
+strike on it, exactly as if it had just started. The cost of getting it wrong is
+a few seconds of missing knob.
+
+Under 0.8s, releasing focuses the tab; at or over it, releasing does nothing —
+the hold *was* the gesture, and by then the encoder is already gone. The drain
+only starts 0.2s in, so a tap on the way to focusing a tab never flashes it.
+There's nothing to clear on an unclaimed encoder, and a hold on a subagent's
+violet dot clears nothing either: a press on one raises the parent's tab because
+that's the only window there is, but taking the parent's encoder away over a dot
+that isn't the parent's encoder has no honest reading. `MFT_DISMISS_ON_HOLD=0`
+turns the gesture off; `MFT_HOLD_SECONDS` is how long the fuse is.
 
 ## Sleep
 
 Half an hour with no hook event from anywhere and no hand on any knob, and the
 whole board fades over 20 seconds to 10% — dim enough to read as asleep from
-across the room, bright enough that every colour and ring position survives. At
+across the room, bright enough that every color and ring position survives. At
 an hour it fades the rest of the way to actual dark.
 
 Nothing on the board can wake it, because an agent doing anything at all is
@@ -854,8 +892,7 @@ A tool call whose `agent_id` names a subagent the daemon never saw start is
 hold a pip for the rest of the turn — invariant 6, and the same reasoning as the
 unreadable `tool_use_id` below.
 
-Pressing one raises the **parent's** tab, and holding one peeks at the parent —
-the same two gestures the parent's own encoder answers. There is nothing finer
+Pressing one raises the **parent's** tab. There is nothing finer
 to aim at and there never will be: a subagent's whole identity here is an opaque
 key on the parent, no subagent hook event carries a terminal, and it would not
 matter if one did, because a subagent runs inside the parent's terminal. The
@@ -967,8 +1004,8 @@ because the dim end is where an encoder stops reading as claimed at all, and a
 board of pips too faint to see is the failure mode that costs you a session
 (invariant 6). Ring position is untouched by it; a gauge three-quarters full
 still reads three-quarters full, under a lower roof. Overlays are painted after
-the cap and ignore it, so the swell on arrival, a spawn strike and the boot word
-all still reach full.
+the cap and ignore it, so the swell on arrival, a spawn strike and the boot
+unwrap all still reach full.
 
 Arriving in a tab also does what a press does — forgives the attention debt,
 clears the alert, resets the sleep clock. That's the line the debt section has
@@ -1067,7 +1104,7 @@ mostly doesn't run.
 
 An encoder tells you a session wants you. It does not tell you *which window*,
 once you have eight of them tiled — and the thing that does is already on
-screen. So `mft/tab.py` puts a coloured glyph in front of each session's
+screen. So `mft/tab.py` puts a colored glyph in front of each session's
 terminal tab title:
 
 | | State |
@@ -1137,6 +1174,7 @@ likely want at runtime:
 | `MFT_CONTEXT_RING_IDLE` | `0` keeps the gauge off the resting states |
 | `MFT_CONTEXT_SETTINGS_MODEL` | `0` reads the context window off the transcript alone, never `settings.json` |
 | `MFT_FOLLOW_ALERTS` | `0` stops the board following a block onto its bank |
+| `MFT_DISMISS_ON_HOLD`, `MFT_HOLD_SECONDS` | clearing a knob by hand, and how long the fuse burns |
 | `MFT_ATTENTION_FOLLOW` | `0` stops the board marking the tab you're looking at |
 | `MFT_ATTENTION_PULSE` | `0` keeps the standing ring marker but drops the swell on arrival |
 | `MFT_ATTENTION_ATTENDS` | `0` leaves forgiving the debt to the encoder press alone |
@@ -1146,9 +1184,8 @@ likely want at runtime:
 | `MFT_TAB_TITLE`, `MFT_TAB_TITLE_MAX` | the glyph in the terminal tab strip |
 | `MFT_CLOCK_BPM` | MIDI clock; `0` stops sending it |
 | `MFT_BOOT_ANIMATION`, `MFT_CLEAR_ANIMATION`, `MFT_SPAWN_ANIMATION`, `MFT_AMBIENT` | the decorative layers |
-| `MFT_BOOT_UNWRAP` | `0` drops the unwrap, leaving whatever follows it alone |
-| `MFT_BOOT_WORD` | `1` spells CLAUDE after the unwrap; off by default |
-| `MFT_WHITE`, `MFT_DARK_COLOR`, `MFT_DARK_VALUE`, `MFT_RING_DARK_VALUE` | per-unit colour calibration |
+| `MFT_BOOT_UNWRAP` | `0` drops the unwrap, which is the whole of boot |
+| `MFT_WHITE`, `MFT_DARK_COLOR`, `MFT_DARK_VALUE`, `MFT_RING_DARK_VALUE` | per-unit color calibration |
 | `MFT_RING_BRIGHTNESS_MIN`, `MFT_RING_BRIGHTNESS_MAX`, `MFT_RING_ANIM_OFFSET` | channel 6's brightness band, if your firmware moved it |
 | `MFT_HOST`, `MFT_PORT` | where the daemon listens |
 | `MFT_DISCOVER` | `0` is the same as `--no-discover` |
@@ -1161,7 +1198,7 @@ The channel layout is DJTT's documented default and stable:
 | Channel | Carries |
 |---|---|
 | 1 | encoder value / LED ring position |
-| 2 | switch RGB colour, and switch press input |
+| 2 | switch RGB color, and switch press input |
 | 3 | RGB animation *or* RGB brightness |
 | 4 | banks, side buttons |
 | 6 | ring animation *or* ring brightness |
@@ -1170,7 +1207,7 @@ Note the *or*: on channels 3 and 6 the low value band is rate-based animations
 and the band above it is a plain brightness ramp, so a lit encoder can animate
 or dim, not both.
 
-The value→colour and value→animation numbers drift between firmware revisions,
+The value→color and value→animation numbers drift between firmware revisions,
 so `config.py` ships anchors rather than gospel. Sweep your own:
 
 ```sh
@@ -1186,8 +1223,8 @@ so `config.py` ships anchors rather than gospel. Sweep your own:
 `banks` is the odd one out: it varies the CC *number* rather than the value,
 because a bank select is one message per bank all at the same value, and you read
 the answer on the front panel rather than in the lights. It paints each bank a
-different colour first, so a board that changes colour is a bank that moved, and
-the colour says which one it moved to.
+different color first, so a board that changes color is a bank that moved, and
+the color says which one it moved to.
 
 **Off is a specific number and it is not the obvious one.** Channel 2 is hue all
 the way down (0 is bright blue, not dark), so the RGB is only switched off on
@@ -1267,7 +1304,7 @@ What's on it, in the order the panels appear:
 3. **Target encoder** — which of the 64 everything else talks to, plus the bank
    select. Slot is also the CC number on every channel, and the pad shows both.
 4. **The four channels** — a slider each for ring position, hue, ch3 and ch6,
-   with the named colours from `config.COLORS` as buttons and the animation
+   with the named colors from `config.COLORS` as buttons and the animation
    tables as dropdowns with their raw values spelled out.
 5. **Gestures** — the real envelopes from `overlays.py` and `render.py`, ported
    to JS and played at 30fps: the focus pulse (and a ×4-slow version, for when
@@ -1286,6 +1323,31 @@ What's on it, in the order the panels appear:
 The value tables in the page are a **mirror** of `config.py`, not a second
 source of truth. A number that turns out to be wrong for your unit gets fixed in
 `config.py` (or an `MFT_*` env var) and then copied back into the page.
+
+### The site
+
+`site/` is a showcase page, published to GitHub Pages by
+`.github/workflows/pages.yml` on every push to `main` that touches it. Hand-
+written static files, no build step — `python3 -m http.server -d site 8080` is
+the real thing.
+
+Its centrepiece is a simulator: a Twister drawn in SVG next to a fake Claude
+Code console, wired together by a JS port of `config`, `font`, `render`,
+`board` and `overlays` — which is to say, exactly the pure half of this
+codebase and not a coincidence. The impure half has nothing to port to, so the
+page reimplements no daemon, no hooks and no wire; `site/js/twister.js` is the
+only file that lies, and it lies about the MIDI port and nothing else.
+
+Same rule as the bench: `site/js/config.js` is a **mirror** of `config.py`. It
+keeps each color's channel-2 value next to the CSS hex so the drift is visible,
+and the hexes are eyeballed approximations of the wheel — there are no hex
+values in this repo, because what the wheel emits is a property of the LEDs.
+Two numbers there are knowingly not the real ones and both say so in a comment.
+
+`site/bench.html` is a copy of `demo/index.html` with the daemon-detection probe
+removed: an HTTPS origin may not fetch `http://127.0.0.1:7654/status`, and the
+browser blocks it as mixed content. Everything else about that page works fine
+served over TLS.
 
 ## Tests
 

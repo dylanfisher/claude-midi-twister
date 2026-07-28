@@ -1,8 +1,8 @@
 """Transient gestures painted over the steady-state board.
 
-An overlay is how this board says something that is not a status: a word spelled
-out at boot, a strike when a session claims an encoder, the drain and refill of
-a compaction, a modal detail view while you hold a knob. They are separate from
+An overlay is how this board says something that is not a status: the board
+unwrapping itself at boot, a strike when a session claims an encoder, the drain
+and refill of a compaction, a fuse burning down under a held knob. They are separate from
 :mod:`mft.render` because they are not about one session\'s state, and separate
 from :mod:`mft.board` because the board is what they cover.
 
@@ -29,7 +29,6 @@ from .board import (
     Overlay,
     clamp01,
     smoothstep,
-    bank_of,
     bank_slots,
     spiral_path,
 )
@@ -42,10 +41,10 @@ def _handover(under: Cell, ring: float, settle: float, color: str | int | None) 
 
     Brightness and ring travel from wherever the gesture had them to whatever
     the steady state underneath is showing, so the encoder is seen *becoming*
-    its own state rather than the gesture switching off and a colour appearing
+    its own state rather than the gesture switching off and a color appearing
     separately. The hue crosses at the halfway point rather than being
     interpolated -- there is no meaningful blend between two points on a hue
-    wheel -- so the last thing you see is the session's own colour arriving.
+    wheel -- so the last thing you see is the session's own color arriving.
 
     Shared by the spawn strike and the ``/clear`` wipe, which are the same
     gesture in different vocabularies and were the same eight lines twice.
@@ -61,8 +60,10 @@ def _handover(under: Cell, ring: float, settle: float, color: str | int | None) 
 class TextOverlay(Overlay):
     """Spell a word across a bank, one 4x4 glyph at a time.
 
-    Used for the boot animation (CLAUDE), for shouting a short reason at you
-    (RATE when a turn dies on a rate limit) and for showing a count.
+    Used for shouting a short reason at you (RATE when a turn dies on a rate
+    limit) and for showing a count. Boot used to spell CLAUDE with this and no
+    longer does -- a word you have read on every previous run is the part of an
+    arrival you stop watching first.
 
     Each letter **strikes in at full brightness and then decays** before the
     next one strikes, so what separates two letters is a fade rather than a
@@ -75,19 +76,19 @@ class TextOverlay(Overlay):
     out and another coming up in the same place -- so the board never blinks
     fully black between letters that overlap.
 
-    ``color`` of ``None`` is the boot default and means the white LED ring
-    alone, with the RGB switch underneath switched off -- the one thing on this
-    device that is a colour rather than a hue.
+    ``color`` of ``None`` is the default and means the white LED ring alone,
+    with the RGB switch underneath switched off -- the one thing on this device
+    that is a color rather than a hue.
     """
 
     def __init__(
         self,
         text: str,
         started_at: float,
-        color: str | int | None = config.BOOT_COLOR,
+        color: str | int | None = config.TEXT_COLOR,
         bank: int = 0,
-        fade: float = config.BOOT_FADE_SECONDS,
-        hold: float = config.BOOT_HOLD_SECONDS,
+        fade: float = config.TEXT_FADE_SECONDS,
+        hold: float = config.TEXT_HOLD_SECONDS,
         reverse: bool = False,
     ) -> None:
         self.text = (text[::-1] if reverse else text) or " "
@@ -257,8 +258,8 @@ class WaitingOverlay(Overlay):
             # into a crossfade back to the idle board rather than a blackout.
             if level <= board[slot].brightness:
                 continue
-            # Colourless, like the word it follows: the ring carries the whole
-            # thing and the RGB stays dark. Boot is the one stretch where the
+            # Colorless, like the boot gesture it follows: the ring carries the
+            # whole thing and the RGB stays dark. This is the one stretch where the
             # board is saying nothing, and the hue channel is how it says
             # things -- so it has no business being lit here.
             board[slot] = Cell(None, config.ANIM_NONE, int(127 * level), level)
@@ -275,11 +276,11 @@ class ShutdownOverlay(Overlay):
       reads as somewhere the gesture arrived rather than a frame on the way
       down;
     * the **fade** dims the whole board out uniformly -- one hue throughout, no
-      hue travel: the colour is not doing anything on the way out, the lamp is
+      hue travel: the color is not doing anything on the way out, the lamp is
       simply going down. All sixteen go together, which is the load-bearing
       part, since every other animation here is per-encoder. And it goes all the
       way *off* rather than down to the hardware's minimum brightness, which is
-      still a lit encoder wearing a colour.
+      still a lit encoder wearing a color.
 
     Unwinding the spiral backwards would be a fourth gesture arguing with the
     first; letting go everywhere at once is what a clean exit is. Seeing this at
@@ -337,7 +338,7 @@ class ShutdownOverlay(Overlay):
             if not 0 <= slot < len(board):
                 continue
             level = smoothstep((t - arrival) / self.rise) * gain
-            # Colour-free below the floor, not merely dim: an encoder still
+            # Color-free below the floor, not merely dim: an encoder still
             # holding a hue at brightness zero is an encoder still lit.
             if level <= config.SHUTDOWN_DARK_LEVEL:
                 board[slot] = BLANK
@@ -346,7 +347,7 @@ class ShutdownOverlay(Overlay):
 
 
 class UnwrapOverlay(Overlay):
-    """The daemon arriving: the exit gesture played backwards, before the word.
+    """The daemon arriving: the exit gesture played backwards.
 
     :class:`ShutdownOverlay` is a spiral in and a fade out in unison. This is
     that read right-to-left, and it is the same three movements in the opposite
@@ -364,8 +365,8 @@ class UnwrapOverlay(Overlay):
     Reversing the path rather than reusing it forward is the whole point: the
     board ends dark in the corner where the exit's head began, and the pair reads
     as one gesture the daemon undoes on the way in and redoes on the way out. It
-    hands over to a black board -- no hue left anywhere on it, which is what
-    :class:`TextOverlay` wants under the first letter of CLAUDE.
+    hands over to a black board -- no hue left anywhere on it, which is what the
+    waiting gradients that follow want underneath them.
     """
 
     def __init__(
@@ -422,7 +423,7 @@ class UnwrapOverlay(Overlay):
             level = gain * (1.0 - smoothstep((t - departure) / self.fall))
             # The same floor the exit uses, for the same reason: a ring at the
             # bottom of a fade is still a lit encoder, and this one has to hand a
-            # genuinely black board to the first letter of the word.
+            # genuinely black board to whatever the daemon says next.
             if level <= config.SHUTDOWN_DARK_LEVEL:
                 board[slot] = BLANK
                 continue
@@ -569,53 +570,73 @@ class CompactOverlay(Overlay):
         )
 
 
-class PeekOverlay(Overlay):
-    """Hold an encoder and its bank becomes a detail view of that one session:
-    its last 15 tool calls, oldest to newest, hue by tool kind.
+class DismissOverlay(Overlay):
+    """Hold an encoder and watch it empty: the ring burns down like a fuse, and
+    when it reaches nothing the session is off the board.
 
-    A modal zoom out of a grid with no screen. "This agent has done nothing but
-    grep for four minutes" is legible from across the room, and there is no
-    other way to learn it without opening the tab.
+    The gesture answers the one thing a display cannot fix by itself. A record
+    can outlive the agent it describes -- a terminal killed from the window
+    manager, a machine that woke somewhere else, a pid the census cannot
+    resolve -- and invariant 6 says a knob that lies is worse than a knob that
+    is missing. Retiring one otherwise means waiting out the TTL or restarting
+    the daemon; this is a hand saying "that one is gone", which is a thing only
+    the hand knows.
+
+    It is still not a control surface (invariant 1): nothing here reaches the
+    agent. Clearing a session that is in fact alive costs nothing and repairs
+    itself -- its next hook event claims an encoder again, with a spawn strike
+    on it, exactly as if it had just started.
+
+    **The countdown is the point.** The drain arms a fraction of a second in, so
+    a tap on the way to focusing a tab never flashes it, and then empties so
+    that it reaches zero at the instant the hold matures. You can see the clear
+    coming and let go, which is what makes a destructive gesture safe to hang on
+    the same knob as the harmless one. White over a dark RGB, the same
+    vocabulary as boot and the ``/clear`` wipe: this is the board talking about
+    itself rather than reporting a state.
+
+    Pure paint like every overlay (invariant 5) -- :meth:`matured` only reports
+    that the fuse has burned down, and :mod:`mft.daemon` is what drops the
+    session.
     """
 
     def __init__(
         self,
         session: Session,
         started_at: float,
-        delay: float = config.HOLD_SECONDS,
+        arm: float = config.DISMISS_ARM_SECONDS,
+        duration: float = config.HOLD_SECONDS,
     ) -> None:
+        #: The session, not its slot: the board compacts under everything that
+        #: leaves it, so a slot is not a handle that survives a frame.
         self.session = session
-        #: The overlay goes up on press-down but only paints once the press has
-        #: lasted long enough to be a hold, so a quick tap to focus a tab does
-        #: not flash the detail view on its way past.
-        self.started_at = started_at + delay
+        self.started_at = started_at
+        self.armed_at = started_at + min(arm, duration)
+        self.matures_at = started_at + duration
         self._released = False
 
     def release(self) -> None:
+        """The finger came off before the fuse ran out."""
         self._released = True
 
+    def matured(self, now: float) -> bool:
+        return not self._released and now >= self.matures_at
+
     def done(self, now: float) -> bool:
-        return self._released
+        # Done at maturity as well as on release: the daemon retires it there,
+        # and this is the backstop that stops a burnt-down fuse from painting a
+        # slot the session it names no longer owns.
+        return self._released or now >= self.matures_at
 
     def apply(self, board: list[Cell], now: float, claimed=frozenset()) -> None:
-        if now < self.started_at:
+        if now < self.armed_at:
             return
-        held = self.session.slot
-        if not 0 <= held < len(board):
+        slot = self.session.slot
+        if not 0 <= slot < len(board):
             return
-        history = list(self.session.tool_history)
-        others = [s for s in bank_slots(bank_of(held)) if s != held and s < len(board)]
-        # Newest lands on the slot nearest the held knob, so the history reads
-        # outward from the thing you are holding.
-        recent = history[-len(others) :]
-        padding = [None] * (len(others) - len(recent))
-        for slot, tool in zip(others, padding + recent):
-            if tool is None:
-                board[slot] = BLANK
-                continue
-            color = config.TOOL_COLORS.get(tool, config.TOOL_COLOR_DEFAULT)
-            board[slot] = Cell(color, config.ANIM_NONE, 127, 0.7)
-        board[held] = Cell("purple", config.ANIM_NONE, 127, 1.0)
+        span = max(0.01, self.matures_at - self.armed_at)
+        fill = 1.0 - clamp01((now - self.armed_at) / span)
+        board[slot] = Cell(None, config.ANIM_NONE, int(127 * fill), 1.0)
 
 
 class FocusOverlay(Overlay):
@@ -623,7 +644,7 @@ class FocusOverlay(Overlay):
 
     The counterpart to :class:`SpawnOverlay`, and deliberately the opposite
     gesture. A spawn is news the board is telling *you*, so it strikes in a
-    colour of its own; this is the board acknowledging something you already
+    color of its own; this is the board acknowledging something you already
     know, so it says nothing new -- it lifts the session's own hue and its own
     ring to full and lets them fall back to whatever they were. You should be
     able to watch it out of the corner of your eye and learn only *which of the

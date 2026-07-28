@@ -130,13 +130,13 @@ class Visualizer:
         #: Per-slot, not a single overlay: pressing a second encoder before
         #: releasing the first would otherwise strand the first one on the
         #: board with nothing left to release it.
-        self._peeks: dict[int, overlays_mod.PeekOverlay] = {}
+        self._holds: dict[int, overlays_mod.DismissOverlay] = {}
         #: The waiting animation, held onto so the render loop can retire it the
         #: moment there is a live session to retire it for.
         self._waiting: overlays_mod.WaitingOverlay | None = None
         #: When to start it, or `None` once that decision has been made. The
-        #: render loop holds off for a couple of frames after the boot word and
-        #: only starts the animation if the board is still genuinely empty; see
+        #: render loop holds off for a couple of frames after boot and only
+        #: starts the animation if the board is still genuinely empty; see
         #: :meth:`_check_waiting`.
         self._waiting_due: float | None = None
         self._lock = threading.Lock()
@@ -383,21 +383,14 @@ class Visualizer:
             self._press_started[slot] = now
             if session is not None:
                 self._press_targets[slot] = session
-                # Hold to peek. The overlay goes up now but only paints once the
-                # press has lasted HOLD_SECONDS, and it comes down on release --
-                # a spring-loaded modal view, not a mode you can get stuck in.
-                # Held on a subagent's knob it paints the *parent's* bank, which
-                # is the honest answer to what you were asking by holding it.
-                peek = overlays_mod.PeekOverlay(session, now)
-                self._peeks[slot] = peek
-                self.push_overlay(peek)
+                self._arm_dismiss(slot, now)
             return
 
         session = self._press_targets.pop(slot, None)
         started = self._press_started.pop(slot, None)
-        peek = self._peeks.pop(slot, None)
-        if peek is not None:
-            peek.release()
+        hold = self._holds.pop(slot, None)
+        if hold is not None:
+            hold.release()
         if started is None:
             return
         held = now - started
@@ -406,9 +399,67 @@ class Visualizer:
             return
 
         if held >= config.HOLD_SECONDS:
-            return  # the hold was the gesture; releasing just ends the peek
+            # The hold was the gesture. Either the render loop already cleared
+            # the encoder or the machine was too busy to notice the fuse burn
+            # down, and in neither case does releasing raise a tab you spent
+            # most of a second telling the board you did not want.
+            return
         session.attended()
         self.focus_session(session)
+
+    def _arm_dismiss(self, slot: int, now: float) -> None:
+        """Start the fuse under a held encoder.
+
+        Only the session that actually *owns* the slot can be cleared off it. A
+        subagent's dot answers a press by raising its parent's tab, because a
+        subagent has no window of its own -- but "clear the knob you are
+        holding" has no such honest translation: it would take the parent's
+        encoder away over a dot that is not the parent's encoder. So the pile is
+        deliberately inert here, and a hold on one is a press that went on too
+        long.
+        """
+        if not config.DISMISS_ON_HOLD:
+            return
+        session = self.table.by_slot(slot)
+        if session is None:
+            return
+        overlay = overlays_mod.DismissOverlay(session, now)
+        self._holds[slot] = overlay
+        self.push_overlay(overlay)
+
+    def _check_holds(self, now: float) -> None:
+        """Clear the sessions whose fuse has burned all the way down.
+
+        In the render loop rather than on the release, so the encoder goes out
+        under your finger at the moment the ring empties: the drain is a promise
+        about when it happens, and a gesture that only completed once you let go
+        would be making that promise and then waiting.
+        """
+        for slot, overlay in list(self._holds.items()):
+            if not overlay.matured(now):
+                continue
+            del self._holds[slot]
+            # The aim taken on the way down is spent: whatever the release
+            # thinks it was holding, it must not raise the tab of a session
+            # this frame just took off the board.
+            self._press_targets.pop(slot, None)
+            self.dismiss_session(overlay.session)
+
+    def dismiss_session(self, session: Session) -> None:
+        """Take one session off the board by hand.
+
+        The record is dropped exactly as the reaper drops one -- tab handed
+        back, encoder freed, board squeezed up -- because it is the same event
+        with a different clock. Nothing is sent to the agent (invariant 1); if
+        it is still alive it will claim an encoder again with its next hook, and
+        if it was not, that was the whole point.
+        """
+        dropped = self.table.release_all([session])
+        if not dropped:  # already gone: reaped, merged, or held twice
+            return
+        log.info("cleared %s off the board by hand", session.label)
+        self.tabs.restore(dropped)
+        self._wake.set()
 
     # -- press to focus -----------------------------------------------------
 
@@ -497,9 +548,9 @@ class Visualizer:
         """Start the waiting animation, or retire it once a Claude shows up.
 
         The start is deferred by a couple of frames and re-checked every frame
-        until it fires. Discovery has already run by the time the boot word
-        ends, but a session that started *during* the word has only a hook in
-        flight to announce it -- and a waiting animation that appears for two
+        until it fires. Discovery has already run by the time boot ends, but a
+        session that started *during* the unwrap has only a hook in flight to
+        announce it -- and a waiting animation that appears for two
         frames on a board that was never empty reads as a glitch, where a tenth
         of a second of black reads as nothing at all.
         """
@@ -818,38 +869,33 @@ class Visualizer:
         self.device.clear_all()
         self.device.listen(self.on_midi)
         self.device.start_clock()
-        # Before anything that blocks: the boot word takes a couple of seconds
-        # and a lid closed during it would otherwise leave that word lit on the
-        # desk until morning. Failing to attach costs the sleep half only -- the
-        # clock fallback in the loop still catches the wake.
+        # Before anything that blocks: the unwrap takes a couple of seconds and
+        # a lid closed during it would otherwise leave it lit on the desk until
+        # morning. Failing to attach costs the sleep half only -- the clock
+        # fallback in the loop still catches the wake.
         if not self._power.start():
             log.info("no sleep notifications; wake will be noticed from the clock")
-        # Before the boot word rather than after it: the waiting animation that
+        # Before the unwrap rather than after it: the waiting animation that
         # follows is for an empty board, and an encoder that lights up halfway
         # through it reads as a session that just started.
         self.adopt_running_sessions()
         if config.BOOT_ANIMATION:
-            # The exit gesture backwards, and then the word if it is switched
-            # on: the board comes up whole, unwraps itself from the centre out
-            # along the same spiral the shutdown closes on, and hands a black
-            # board to the C of CLAUDE. Both block, and both are white on a dark
-            # board. With the word off the unwrap is the whole of boot.
+            # The exit gesture backwards: the board comes up whole, unwraps
+            # itself from the centre out along the same spiral the shutdown
+            # closes on, and hands over a black board. White on dark, and it
+            # blocks.
             if config.BOOT_UNWRAP_ANIMATION:
                 self.animate(overlays_mod.UnwrapOverlay(time.monotonic()))
-            if config.BOOT_WORD_ANIMATION:
-                self.animate(
-                    overlays_mod.TextOverlay(config.BOOT_WORD, time.monotonic())
-                )
-            # The word blocks; the waiting animation does not -- and it does not
-            # start here either. It is armed, and the render loop starts it a
-            # couple of frames later if the board is still empty by then, then
+            # The unwrap blocks; the waiting animation does not -- and it does
+            # not start here either. It is armed, and the render loop starts it
+            # a couple of frames later if the board is still empty by then, then
             # keeps running it inside the normal loop, because the whole point
             # is that it yields to the first real session -- which it can only
             # do if that session is being rendered too.
             self._waiting_due = time.monotonic() + config.WAITING_START_DELAY_SECONDS
 
-        # After the boot word, not before it: the word blocks for a couple of
-        # seconds and the clock the sleep timer runs on does not stop for it.
+        # After the unwrap, not before it: it blocks for a couple of seconds and
+        # the clock the sleep timer runs on does not stop for it.
         self._sleep.touch(time.monotonic())
 
     def run(self) -> None:
@@ -889,21 +935,30 @@ class Visualizer:
             self._check_display(now)
             self._check_port(now)
             self._check_waiting(now)
+            # Before the paint: an encoder whose fuse just ran out should be
+            # gone in the frame that empties its ring, not the one after it.
+            self._check_holds(now)
             # Before the bank follow and the paint: arriving in a tab forgives
             # that session's alert, and a board that chased the bank of a prompt
             # you are already reading would be moving the view to show you the
             # thing in front of you.
             self._check_attention(now)
             # Before the paint, so a followed bank and the frame that justifies
-            # it land together rather than a frame apart. A peek is a modal view
-            # of one session and the two self-portraits own the whole board, so
-            # all three of them hold the view where it is.
+            # it land together rather than a frame apart. A hand is on a knob
+            # and the two self-portraits own the whole board, so all three of
+            # them hold the view where it is.
             self.banks.follow(
                 self.table.all(),
                 now,
-                blocked=bool(self._peeks) or self._waiting is not None,
+                blocked=bool(self._holds) or self._waiting is not None,
             )
             still = 0 if self.paint(now) else still + 1
+            # A fuse is burning: hold the loop at full rate whether or not the
+            # frame moved. The first fifth of a second of a hold paints nothing
+            # at all, and a board that dropped to its idle rate through it would
+            # fire the clear most of a second after the ring said it had.
+            if self._holds:
+                still = 0
             # Before the reap, so an ended session's tab is handed back while
             # the record that knows which tty it was on still exists.
             self.tabs.paint(now)

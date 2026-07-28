@@ -2,7 +2,7 @@
 
 Everything a different firmware revision or personal taste might change lives
 here. The MIDI channel layout is DJTT's documented default; the *values* inside
-the animation and colour tables vary a little between units, so use
+the animation and color tables vary a little between units, so use
 ``python -m mft.calibrate`` to sweep them on your own hardware and paste the
 numbers you like back in.
 """
@@ -159,7 +159,7 @@ SLEEP_DIM_SECONDS = float(os.environ.get("MFT_SLEEP_SECONDS", 30 * 60))
 SLEEP_DARK_SECONDS = 60.0 * 60
 
 #: Where the first stage lands. Low enough to read as asleep across the room,
-#: high enough that the colours and ring positions all survive it, because the
+#: high enough that the colors and ring positions all survive it, because the
 #: point of stopping here rather than going straight out is that a dimmed board
 #: is still a board.
 SLEEP_DIM_LEVEL = 0.10
@@ -184,7 +184,7 @@ SLEEP_DARK_LEVEL = 0.02
 # --- MIDI channel layout (0-indexed, as mido wants) -------------------------
 
 CH_ENCODER = 0  # ch1: encoder value / LED ring position
-CH_SWITCH = 1  # ch2: switch RGB colour, and switch press input
+CH_SWITCH = 1  # ch2: switch RGB color, and switch press input
 CH_SWITCH_ANIM = 2  # ch3: RGB animation + RGB brightness
 CH_SYSTEM = 3  # ch4: banks, side buttons
 CH_SHIFT = 4  # ch5: shift-encoder
@@ -199,9 +199,9 @@ SLOT_COUNT = ENCODERS_PER_BANK * BANKS
 GRID_COLS = 4
 GRID_ROWS = 4
 
-# --- Colour table (channel 2 value) -----------------------------------------
+# --- Color table (channel 2 value) -----------------------------------------
 # The Twister maps the whole 0..127 range onto a hue wheel that starts in the
-# blues, so there is *no* off value here -- 0 is bright blue. A colour-free
+# blues, so there is *no* off value here -- 0 is bright blue. A color-free
 # encoder is switched off on the animation channel instead
 # (:meth:`mft.twister.Twister.rgb_off`). These are good-enough anchors; run the
 # calibrator to taste.
@@ -210,17 +210,17 @@ GRID_ROWS = 4
 COLOR_OFF = 0
 
 #: The top of the wheel, where the hues run out and the LED goes achromatic.
-#: Used for the boot word and as the resting hue of an encoder with nothing to
-#: say -- the two places where the board should read as *lit* or *unlit* rather
-#: than as any particular colour. Which value is actually white varies by unit:
+#: Used for boot's white rings and as the resting hue of an encoder with
+#: nothing to say -- the two places where the board should read as *lit* or *unlit* rather
+#: than as any particular color. Which value is actually white varies by unit:
 #: run ``python -m mft.calibrate white`` and set ``MFT_WHITE`` to the one that
-#: looks least like a colour.
+#: looks least like a color.
 #:
 #: Judge it at full brightness. The wheel is only achromatic at one end, if at
 #: all, and a dim RGB LED reads blue whatever hue you send it -- so a value
-#: picked off a dark board is a blue that will announce itself the moment the
-#: boot word lights it at full. This one is worth getting right twice: it is
-#: both the word and the resting state of every unclaimed encoder, so an error
+#: picked off a dark board is a blue that will announce itself the moment a
+#: gesture lights it at full. This one is worth getting right twice: it is both
+#: those gestures and the resting state of every unclaimed encoder, so an error
 #: here is not one wrong pixel, it is a tint on the entire device.
 WHITE = int(os.environ.get("MFT_WHITE", 127))
 
@@ -324,9 +324,9 @@ BRIGHTNESS_MAX = int(os.environ.get("MFT_RING_BRIGHTNESS_MAX", 95))
 #: This board used to send 17 to mean off, which is why an idle encoder was
 #: never actually dark: it was breathing, on a clock the daemon itself supplies,
 #: so all sixteen of them started their cycle together the moment the daemon
-#: came up and swelled and faded in unison behind the boot word. A dim RGB reads
+#: came up and swelled and faded in unison behind the boot gesture. A dim RGB reads
 #: blue whatever hue you send it, so what that looked like was a blue glow that
-#: starts bright and dims. Not a colour bug: a value one below the one that
+#: starts bright and dims. Not a color bug: a value one below the one that
 #: means off.
 #:
 #: 18 is off. Sourced from the Midi Fighter Twister user guide's animation
@@ -339,7 +339,7 @@ RGB_BRIGHTNESS_MAX = int(os.environ.get("MFT_RGB_BRIGHTNESS_MAX", 47))
 #: What "off" is on the RGB: genuinely off, the bottom of the ramp above.
 #:
 #: Not ``ANIM_NONE``: value 0 on that channel means *no animation*, which stops
-#: overriding the device and lets it show its own inactive colour -- the blue a
+#: overriding the device and lets it show its own inactive color -- the blue a
 #: stopped daemon used to leave glowing on the desk. And not 17, for the whole
 #: reason above.
 DARK_VALUE = int(os.environ.get("MFT_DARK_VALUE", RGB_BRIGHTNESS_MIN))
@@ -356,7 +356,7 @@ DARK_VALUE = int(os.environ.get("MFT_DARK_VALUE", RGB_BRIGHTNESS_MIN))
 RING_DARK_VALUE = int(os.environ.get("MFT_RING_DARK_VALUE", BRIGHTNESS_MIN))
 
 #: The hue a dark encoder wears. Moot while :data:`DARK_VALUE` is a real off --
-#: an unlit LED has no colour -- but it is what the encoder wears for the one
+#: an unlit LED has no color -- but it is what the encoder wears for the one
 #: message between the hue and the brightness landing, and if a unit turns out
 #: to have no true off after all it is the difference between sixteen faint
 #: white pips (a device at rest) and sixteen faint blue ones (a device still
@@ -372,7 +372,7 @@ CLOCK_BPM = float(os.environ.get("MFT_CLOCK_BPM", "120"))
 
 # --- Visual language --------------------------------------------------------
 # One rule underpins all of it: you are not looking at this device. Peripheral
-# vision catches *movement* and *hue change*; arc position and static colour are
+# vision catches *movement* and *hue change*; arc position and static color are
 # invisible until you turn your head. So motion is a budget, and it is spent on
 # "a human is blocking progress" before anything else.
 
@@ -384,7 +384,7 @@ CLOCK_BPM = float(os.environ.get("MFT_CLOCK_BPM", "120"))
 #: One list rather than several, because the states are deliberately *different*
 #: from each other -- four flavours of blinking red trains you to ignore blinking
 #: red -- and a second copy of the vocabulary is how one of them ends up with a
-#: colour and no rank, which sorts it silently last.
+#: color and no rank, which sorts it silently last.
 STATE_PRIORITY = (
     "permission",
     "plan",
@@ -401,7 +401,7 @@ STATE_PRIORITY = (
 STATE_COLORS = {
     # Green is the "this session is yours again" hue, and it runs one continuous
     # ramp: solid bright at the end of a turn, fading down, resting dim. Idle and
-    # done are the same colour on purpose -- the fade *is* the transition, so
+    # done are the same color on purpose -- the fade *is* the transition, so
     # there is no moment where the encoder changes hue and pulls your eye for
     # nothing.
     "idle": "green",
@@ -626,7 +626,7 @@ STOPWATCH_CURVE = (
 #: How long this turn has been going, as a ring that fills.
 #:
 #: This is the one thing about a running agent you cannot see from anywhere else.
-#: Colour says what it is doing, brightness says how recently it called a tool
+#: Color says what it is doing, brightness says how recently it called a tool
 #: and sags when it stops -- but nothing said *how long*, and "which of these six
 #: has been grinding for twenty minutes" is the question you are actually asking
 #: when you look at a board full of orange.
@@ -678,7 +678,7 @@ TAB_GLYPHS = {
     "working": "\N{LARGE BLUE CIRCLE}",
     "streaming": "\N{LARGE BLUE CIRCLE}",
     "done": "\N{LARGE GREEN CIRCLE}",
-    # Not green: `done` and `idle` are one colour on the board because the fade
+    # Not green: `done` and `idle` are one color on the board because the fade
     # between them *is* the transition, and a tab strip has no fade. Here they
     # have to be two glyphs or the distinction is lost -- and "finished
     # something you haven't looked at" is most of why you'd glance at the tab.
@@ -922,7 +922,7 @@ ATTENTION_BACKOFF_SECONDS = 30.0
 #: stand out against; 1.0 exactly restores the old behaviour.
 #:
 #: Overlays are painted after the cap and are not subject to it (`board.compose`)
-#: -- a spawn strike, a boot word or the focus swell itself is a gesture, and a
+#: -- a spawn strike, the boot unwrap or the focus swell itself is a gesture, and a
 #: gesture that could not reach full would be a gesture you might miss.
 RING_CEILING = float(os.environ.get("MFT_RING_CEILING", 0.5))
 
@@ -951,93 +951,52 @@ ATTENTION_ATTENDS = _flag("MFT_ATTENTION_ATTENDS", True)
 
 # --- Input ------------------------------------------------------------------
 
-#: A press held longer than this peeks at the session instead of focusing it.
-HOLD_SECONDS = 0.6
+#: A press held longer than this clears the session off the board instead of
+#: focusing its tab. Longer than the hold this replaced, deliberately: it is
+#: the one gesture on the device that takes something away, and the cost of an
+#: accidental one (an encoder gone until the session's next event, or for good
+#: if it had none coming) is paid for with a fifth of a second of extra hold.
+HOLD_SECONDS = float(os.environ.get("MFT_HOLD_SECONDS", 0.8))
 
-# --- Peek -------------------------------------------------------------------
+# --- Dismiss ----------------------------------------------------------------
 
-#: Holding an encoder re-renders the rest of its bank as that session's recent
-#: tool calls, oldest to newest, hue by tool kind.
-PEEK_HISTORY = ENCODERS_PER_BANK - 1
-TOOL_COLORS = {
-    "Read": "blue",
-    "NotebookEdit": "orange",
-    "Edit": "orange",
-    "Write": "orange",
-    "Bash": "magenta",
-    "BashOutput": "magenta",
-    "Grep": "cyan",
-    "Glob": "cyan",
-    "WebFetch": "spring",
-    "WebSearch": "spring",
-    # Same hue subagents themselves get on the live board; a Task call in the
-    # history and a subagent on the board are the same event seen twice.
-    "Task": "violet",
-    "Agent": "violet",
-}
-TOOL_COLOR_DEFAULT = "azure"
+#: How long a press waits before the fuse starts burning. A tap that focuses a
+#: tab is over well inside this, so the countdown never flashes on its way past
+#: -- and the drain then has the rest of `HOLD_SECONDS` to reach empty, which is
+#: what makes an unfinished fuse readable as "not yet".
+DISMISS_ARM_SECONDS = float(os.environ.get("MFT_DISMISS_ARM_SECONDS", 0.2))
+#: Whether the gesture exists at all. Off, a hold is simply a press that has
+#: gone on too long, and orphans wait for the TTL as they always did.
+DISMISS_ON_HOLD = _flag("MFT_DISMISS_ON_HOLD", True)
 
 # --- Boot / shutdown --------------------------------------------------------
-# 4x4 is a 16-pixel display and ring brightness is real grayscale per pixel, so
-# a letter can strike at full and decay to black instead of hard-cutting off.
-# The gap that leaves is what separates one letter from the next. Shutdown does
-# not spell anything -- a colour wipe off both corners is how you know the
-# daemon exited cleanly rather than died, and it costs a fraction of the time a
-# legible word does.
+# Boot is a gesture and nothing else. It used to spell CLAUDE first -- 4x4 is a
+# 16-pixel display, so a word is possible -- and the word was the slowest part
+# of boot and the only part identical on every run, which made it the part you
+# stopped watching first. The unwrap already says a daemon just arrived, in a
+# second and a half of shape instead of six seconds of letters. Shutdown never
+# spelled anything either: a color wipe off both corners is how you know the
+# daemon exited cleanly rather than died.
 #
-# The word lights no RGB, nor do the waiting gradients after it or the ambient
-# layer underneath both: white light moving on a dark board. Colour is how this
-# device means things, and the stretch where it has nothing to say is the
-# stretch where the hue channel has no business being on. The two bookend
-# gestures -- the unwrap on the way in, the spiral on the way out -- are the
-# exception, and they are one on purpose: each wears a single hue for its whole
-# length, blue in and violet out, which is how you tell a daemon starting from a
-# daemon leaving across the room.
+# Boot lights no RGB, nor do the waiting gradients after it or the ambient layer
+# underneath both: white light moving on a dark board. Color is how this device
+# means things, and the stretch where it has nothing to say is the stretch where
+# the hue channel has no business being on. The two bookend gestures -- the
+# unwrap on the way in, the spiral on the way out -- are the exception, and they
+# are one on purpose: each wears a single hue for its whole length, blue in and
+# violet out, which is how you tell a daemon starting from a daemon leaving
+# across the room.
 
-BOOT_WORD = "CLAUDE"
-#: Whether the word is spelled at all. Off by default: the unwrap before it
-#: already says a daemon just arrived, and it says so in a second and a half of
-#: shape rather than in six seconds of letters you have read every previous time
-#: you started this thing. The word is the slowest part of boot and the only
-#: part that is the same every run, which makes it the part you stop watching
-#: first. Turn it back on (`MFT_BOOT_WORD=1`) when you want the device to
-#: introduce itself -- a demo, a new desk, a photo. Nothing downstream depends
-#: on it: with this off the board goes unwrap -> black -> waiting gradients, and
-#: `WAITING_START_DELAY_SECONDS` still buys the same couple of frames.
-BOOT_WORD_ANIMATION = _flag("MFT_BOOT_WORD", False)
-#: Deliberately unhurried. The boot animation is the only time the device says
-#: anything in words, and a 0.3s-per-letter version reads as a flicker you catch
-#: the tail of rather than as CLAUDE: by the time you look up it is over. Each
-#: letter strikes in at full brightness and then decays to black over a full
-#: second before the next one strikes, which is both what makes 16 pixels
-#: resolve into a glyph and what separates one letter from the next.
-BOOT_FADE_SECONDS = 0.75
-#: Time at full before the decay starts. Zero: the strike *is* the punctuation,
-#: and a plateau on top of it only makes the word longer, not more legible.
-BOOT_HOLD_SECONDS = 0.0
-#: ``None`` is not "no colour" here, it is white -- and it is the only way to
-#: ask for white on this hardware. Channel 2 is a hue wheel with no achromatic
-#: value anywhere on it: it wraps, 48 and 127 both land on green, so the top of
-#: the range is not "the hues run out", it is just more hues. Every value you
-#: can send it is a colour, and a letter wearing one reads as a status rather
-#: than as text.
-#:
-#: The ring is not a hue. A ring at full with the RGB switched off is a white
-#: block, which is exactly the glyph pixel this wants -- so the word is spelled
-#: in light rather than in colour. Set this to a name from COLORS to tint it.
-BOOT_COLOR = None
-
-#: Before the word: the exit gesture, run backwards. The board fades up whole in
-#: white, holds, and then unwraps from the centre outward along the shutdown
-#: spiral reversed, so the daemon arrives by undoing exactly the shape it leaves
-#: on. It is the same argument as the word being unhurried -- this is the one
-#: moment the device is allowed to be a thing rather than a status -- and it is
-#: the reason the two gestures share `spiral_path` rather than each having a
-#: path of their own.
+#: Boot's whole shape: the exit gesture, run backwards. The board fades up
+#: whole in white, holds, and then unwraps from the centre outward along the
+#: shutdown spiral reversed, so the daemon arrives by undoing exactly the shape
+#: it leaves on. This is the one moment the device is allowed to be a thing
+#: rather than a status -- and sharing `spiral_path` with the exit is why it is
+#: legible as the same shape rather than merely a similar one.
 BOOT_UNWRAP_ANIMATION = _flag("MFT_BOOT_UNWRAP", True)
 #: The whole board coming up in unison -- the inverse of `SHUTDOWN_FADE_SECONDS`
 #: and shorter than it, because arriving is allowed to be brisker than leaving:
-#: the word is still to come and the total is what you actually wait through.
+#: this is time you wait through before the board can say anything.
 BOOT_UNWRAP_RISE_SECONDS = 1.0
 #: The full board, whole and still, before it starts coming apart. Mirrors
 #: `SHUTDOWN_HOLD_SECONDS`: without it the rise runs straight into the unwrap and
@@ -1053,7 +1012,7 @@ BOOT_UNWRAP_FALL_SECONDS = 0.3
 #: The one hue the arrival wears, the way `SHUTDOWN_COLOR` is the one hue the
 #: exit wears -- blue against the exit's violet, so the two ends of a run are
 #: told apart at a glance rather than only by which direction the spiral went.
-#: This is the exception to boot being colourless: the rule is about the *word*
+#: This is the exception to boot being colorless: the rule is about the *word*
 #: and the field after it, which say nothing and so light no RGB. The bookend
 #: gestures are not statuses either, but they are the device announcing itself,
 #: and both are over before the first letter strikes. The rings still carry the
@@ -1061,16 +1020,16 @@ BOOT_UNWRAP_FALL_SECONDS = 0.3
 BOOT_UNWRAP_COLOR = "blue"
 
 # --- Waiting ----------------------------------------------------------------
-# What the board does after the word, while no Claude is running. It used to be
-# a lamp test -- an arc that lit every ring on all 16 encoders at full, then
+# What the board does after boot, while no Claude is running. It used to be a
+# lamp test -- an arc that lit every ring on all 16 encoders at full, then
 # dissolved into a generative interference field at the same level. It read as a
 # state: sixteen bright knobs is what this device looks like when it has a great
 # deal to tell you, and it was saying that about an empty board. The replacement
 # says the opposite thing on purpose: broad white gradients drifting across the
 # grid, nothing near full, nothing sharp enough to be an event. A room tone.
 #
-# Colourless, like the word before it. Boot lights no RGB from start to finish
-# -- colour is how this device means things and here it has nothing to mean.
+# Colorless, like the white rings of the unwrap before it -- color is how this
+# device means things and here it has nothing to mean.
 
 #: Ceiling on the whole thing, before the fade envelope. Roughly a lit-but-idle
 #: encoder, and deliberately under `ACTIVE_BRIGHTNESS`: the first real session to
@@ -1099,9 +1058,9 @@ WAITING_SECONDS = 180.0
 #: frames rather than by hard-cutting, so the first encoder to light reads as
 #: emerging from the field rather than as the field glitching.
 WAITING_DISMISS_SECONDS = 0.8
-#: Frames of render loop between the boot word ending and the gradients starting.
+#: Frames of render loop between boot ending and the gradients starting.
 #: Discovery has already run by then, but a hook from a session that started
-#: while the word was on screen has not necessarily landed -- and the waiting
+#: while the unwrap was on screen has not necessarily landed -- and the waiting
 #: animation appearing for two frames on a board that was never empty reads as a
 #: glitch. Cheap insurance: nobody notices a tenth of a second of black, and the
 #: check is repeated every frame until it fires, so a slow hook only delays it.
@@ -1132,7 +1091,7 @@ SPAWN_FLASHES = 3
 #: the session's own steady state.
 SPAWN_SETTLE = 0.55
 
-#: Shutdown is a colour wipe, not a word. One head leaves the top-left corner
+#: Shutdown is a color wipe, not a word. One head leaves the top-left corner
 #: and spirals inward to the centre, filling the board in the device's own
 #: violet; the full board holds a beat, then dims in unison to genuine darkness.
 #: It says "closed deliberately" without spending the four seconds a legible
@@ -1148,24 +1107,50 @@ SHUTDOWN_RISE_SECONDS = 0.3
 #: enough to read as a state the board arrived at rather than a frame it passed
 #: through on the way down.
 SHUTDOWN_HOLD_SECONDS = 0.9
-#: Uniform dim to black -- one hue throughout, no hue travel: the colour is not
+#: Uniform dim to black -- one hue throughout, no hue travel: the color is not
 #: doing anything on the way out, the lamp is simply going down. And all the way
 #: *off*, not to the hardware's minimum brightness, which is still a lit encoder
-#: wearing a colour.
+#: wearing a color.
 SHUTDOWN_FADE_SECONDS = 1.4
 #: Below this the encoder is switched off (:data:`DARK_VALUE`) rather than
 #: dimmed further -- an encoder at the bottom of the fade is still an encoder
 #: wearing a hue, and the board has to end with nothing on it at all.
 SHUTDOWN_DARK_LEVEL = 0.02
-#: The one hue the whole gesture wears, start to finish. The boot word is white
-#: and has no hue to inherit, so the device's own violet is named here -- it is
-#: also where the idle field's hue band ends up.
+#: The one hue the whole gesture wears, start to finish. There is no session
+#: hue to inherit at that point, so the device's own violet is named here -- it
+#: is also where the idle field's hue band ends up.
 SHUTDOWN_COLOR = "violet"
 
-#: Banner colour for transient words pushed onto the board later (RATE on a
-#: rate-limited turn, a two-digit count, ...).
+# --- Words ------------------------------------------------------------------
+# A bank is a 4x4 display and ring brightness is real grayscale per pixel, so a
+# letter can strike at full and decay to black instead of hard-cutting off. The
+# gap that leaves is what separates one letter from the next. Nothing routine
+# spells anything -- these are for the rare word the board has to shout (RATE on
+# a rate-limited turn, a two-digit count).
+
+#: Banner color for transient words pushed onto the board.
 BANNER_COLOR = "red"
 BANNER_SECONDS = 2.4
+#: How long one letter takes to decay from full to dark. Unhurried on purpose:
+#: a 0.3s-per-letter version reads as a flicker you catch the tail of rather
+#: than as a word -- by the time you look up it is over. The strike-then-decay
+#: is both what makes 16 pixels resolve into a glyph and what separates one
+#: letter from the next.
+TEXT_FADE_SECONDS = 0.75
+#: Time at full before the decay starts. Zero: the strike *is* the punctuation,
+#: and a plateau on top of it only makes the word longer, not more legible.
+TEXT_HOLD_SECONDS = 0.0
+#: ``None`` is not "no color" here, it is white -- and it is the only way to
+#: ask for white on this hardware. Channel 2 is a hue wheel with no achromatic
+#: value anywhere on it: it wraps, 48 and 127 both land on green, so the top of
+#: the range is not "the hues run out", it is just more hues. Every value you
+#: can send it is a color, and a letter wearing one reads as a status rather
+#: than as text.
+#:
+#: The ring is not a hue. A ring at full with the RGB switched off is a white
+#: block, which is exactly the glyph pixel this wants -- so a word spelled with
+#: this default is spelled in light rather than in color.
+TEXT_COLOR = None
 
 # --- Compaction -------------------------------------------------------------
 # PreCompact/PostCompact bracket something completely opaque in the terminal
@@ -1232,18 +1217,19 @@ HANDOFF_ADOPT_SECONDS = 90.0
 
 SUBAGENT_STACK = _flag("MFT_SUBAGENT_STACK", True)
 #: Whether a press on a violet dot does what a press on its parent would: raise
-#: the parent's tab, hold to peek at the parent. There is nothing finer to aim
-#: at -- a subagent runs inside its parent's terminal -- so the choice is only
-#: between a live target and a dead knob. Off, the pile is inert paint again.
+#: the parent's tab. There is nothing finer to aim at -- a subagent runs inside
+#: its parent's terminal -- so the choice is only between a live target and a
+#: dead knob. Off, the pile is inert paint again. A *hold* on a dot is inert
+#: either way: clearing the parent's encoder over a knob that is not the
+#: parent's encoder has no honest reading.
 SUBAGENT_PRESS = _flag("MFT_SUBAGENT_PRESS", True)
 #: Tools whose call *is* a subagent, so a PreToolUse for one counts as a spawn.
 #: SubagentStart says the same thing more directly, but it is a recent hook and
 #: a settings file installed before it exists reports no subagents whatsoever --
-#: this is the signal that has been on the wire since the beginning. Same two
-#: names the peek palette paints violet, for the same reason.
+#: this is the signal that has been on the wire since the beginning.
 SUBAGENT_TOOLS = frozenset({"Task", "Agent"})
 #: A hue used for nothing else on the board, so a lit encoder that isn't any of
-#: the state colours is unambiguously a subagent.
+#: the state colors is unambiguously a subagent.
 SUBAGENT_COLOR = "violet"
 #: Held steady, and that is the whole point: channel 3 carries an animation *or*
 #: a brightness level, so anything pulsing here is at the hardware's own levels
@@ -1333,8 +1319,8 @@ SUBAGENT_RING_FLOOR = 4
 #: With nothing running the board doesn't go dark, it breathes -- it stops being
 #: a dashboard and becomes an object that lives on your desk.
 AMBIENT = _flag("MFT_AMBIENT", True)
-#: No hue: the ring breathes and the RGB stays dark, same as the boot word.
-#: This layer sits under everything, so any colour here leaks through the gaps
+#: No hue: the ring breathes and the RGB stays dark, same as the waiting field.
+#: This layer sits under everything, so any color here leaks through the gaps
 #: in whatever is painted on top of it -- and it was leaking blue through the
 #: waiting animation, which is what the boot animation's blue flash actually
 #: was. An

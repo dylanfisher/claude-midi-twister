@@ -239,7 +239,6 @@ def clear_session(session: Session, now: float) -> list[str]:
     session.tool_calls = 0
     session.turn_started_at = None
     session.subagents_in_flight.clear()
-    session.tool_history.clear()
     session.arc = 0
     session.failure_heat = 0.0
     session.failed_tool_use = ""
@@ -290,7 +289,7 @@ def still_working(session: Session) -> None:
 
     The count is deliberately *not* guarded: a straggling subagent still adds
     and removes its violet pip, so the board keeps saying something is running.
-    Only the parent's own colour is protected.
+    Only the parent's own color is protected.
     """
     if session.turn_started_at is None:
         return
@@ -377,7 +376,6 @@ def apply_event(session: Session, event: dict[str, Any]) -> list[str]:
         # The arc is the activity signal: one segment per completed call, so
         # spin rate is tool-call frequency and a ring that stops is a stall.
         session.arc = (session.arc + 1) % config.ARC_SEGMENTS
-        session.tool_history.append(tool)
         # ...and this is the other half of the same fact: how *well* it is
         # going. Failures warm the working hue toward red and successes cool it
         # back, so a session grinding through the same failing edit stops

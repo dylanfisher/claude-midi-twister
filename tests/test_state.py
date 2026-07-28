@@ -680,7 +680,6 @@ class StateMachine(unittest.TestCase):
             event("PostToolUse", tool_name="Bash"),
         )
         self.assertEqual(self.session.arc, 2)
-        self.assertEqual(list(self.session.tool_history), ["Read", "Bash"])
 
     def working(self):
         """A session mid-turn, which is the only state the heat is painted in."""
@@ -775,10 +774,6 @@ class StateMachine(unittest.TestCase):
             self.feed(event("PostToolUseFailure", tool_name="Edit", tool_use_id=str(n)))
         self.feed(event("Stop"))
         self.assertEqual(render(session, time.monotonic()).color, "green")
-
-    def test_tool_history_is_bounded(self):
-        self.feed(*[event("PostToolUse", tool_name="Grep")] * 50)
-        self.assertEqual(len(self.session.tool_history), config.PEEK_HISTORY)
 
     def test_subagents_are_counted_by_agent_id(self):
         self.feed(
@@ -1022,14 +1017,12 @@ class Clearing(unittest.TestCase):
         vis = self.visualizer()
         self.start(vis, "old")
         session = vis.table.get("old")
-        session.tool_history.extend(["Read", "Bash"])
         session.arc, session.tool_calls, session.context_tokens = 5, 9, 120_000
         session.subagents_in_flight["agent:x"] = Subagent(0.0, 0.0)
         session.alert = True
         session.attention_since = 0.0
 
         self.end(vis, "old", "clear")
-        self.assertEqual(list(session.tool_history), [])
         self.assertEqual((session.arc, session.tool_calls), (0, 0))
         self.assertEqual(session.subagents, 0)
         self.assertEqual(session.context_tokens, 0, "the gauge is not the tab's")
@@ -1108,7 +1101,7 @@ class Rendering(unittest.TestCase):
             self.assertTrue(0.0 <= cell.brightness <= 1.0, state)
 
     def test_every_state_has_a_rank(self):
-        """One vocabulary, not three. A state with a colour but no rank sorts
+        """One vocabulary, not three. A state with a color but no rank sorts
         silently last and quietly loses every motion arbitration it enters."""
         self.assertEqual(set(config.STATE_COLORS), set(config.STATE_PRIORITY))
         for state in config.STATE_ANIM:
@@ -1170,7 +1163,7 @@ class Rendering(unittest.TestCase):
 
     def test_a_working_ring_is_a_stopwatch(self):
         """The one thing about a running agent nothing else on the board says.
-        Colour is what it is doing and brightness is how recently it called a
+        Color is what it is doing and brightness is how recently it called a
         tool; neither of them is "this one has been going for twenty minutes"."""
         self.session.state = "working"
         self.session.turn_started_at = 0.0
@@ -1414,7 +1407,7 @@ class Rendering(unittest.TestCase):
             config.STATE_ANIM["permission"],
         )
 
-    def test_unsupervised_sessions_get_their_own_colour(self):
+    def test_unsupervised_sessions_get_their_own_color(self):
         self.session.permission_mode = "bypassPermissions"
         for state in ("working", "idle", "permission"):
             self.session.state = state
@@ -2035,7 +2028,6 @@ class Overlays(unittest.TestCase):
         compaction = overlays.CompactOverlay(session, t0)
         compaction.finish(t0 + 1.0)
         return [
-            overlays.TextOverlay(config.BOOT_WORD, t0),
             overlays.TextOverlay("RATE", t0, color=config.BANNER_COLOR),
             waiting,
             overlays.ShutdownOverlay(t0),
@@ -2043,7 +2035,7 @@ class Overlays(unittest.TestCase):
             overlays.SpawnOverlay(session, t0),
             overlays.ClearOverlay(session, t0),
             compaction,
-            overlays.PeekOverlay(session, t0),
+            overlays.DismissOverlay(session, t0),
         ]
 
     def test_no_overlay_ever_paints_outside_the_hardware(self):
@@ -2053,7 +2045,6 @@ class Overlays(unittest.TestCase):
         ramp -- not compute a negative fill and hand it to the wire."""
         table = SessionTable()
         session = table.ensure("s", "/tmp/p")
-        session.tool_history.extend(["Read", "Bash", "Grep"])
         set_subagents(session, 2)
         overlays = self._every_overlay(session, 10.0)
         for state in config.STATE_PRIORITY:
@@ -2067,7 +2058,6 @@ class Overlays(unittest.TestCase):
         """Overlays index by slot, and a board is not always 64 long."""
         table = SessionTable()
         session = table.ensure("s", "/tmp/p")
-        session.tool_history.append("Read")
         overlays = self._every_overlay(session, 0.0)
         for step in range(200):
             board.compose(
@@ -2077,25 +2067,25 @@ class Overlays(unittest.TestCase):
                 slot_count=config.ENCODERS_PER_BANK,
             )
 
-    def test_boot_animation_spells_something_then_ends(self):
-        overlay = overlays.TextOverlay("CLAUDE", 0.0)
+    def test_a_word_spells_something_then_ends(self):
+        overlay = overlays.TextOverlay("RATE", 0.0)
         mid = board.compose([], overlay.duration / 2, [overlay])
         self.assertTrue(any(c.brightness > 0 for c in mid[: config.ENCODERS_PER_BANK]))
         self.assertFalse(overlay.done(overlay.duration - 0.01))
         self.assertTrue(overlay.done(overlay.duration))
 
-    def test_the_boot_word_is_colourless_all_the_way_through(self):
-        # The word is the one thing on this device that is text rather than
-        # status. Colour is how everything else here means something, so the
-        # letters stay out of that vocabulary entirely -- and on this hardware
-        # that means no hue at all rather than a white one. The RGB channel is a
-        # wheel with no achromatic value anywhere on it (it wraps; 48 and 127
-        # are both green), so a colour of None is the only white there is: the
-        # ring draws the glyph and the RGB stays dark.
+    def test_an_untinted_word_is_colorless_all_the_way_through(self):
+        # A word with no color asked for is text rather than status. Color is
+        # how everything else here means something, so those letters stay out of
+        # that vocabulary entirely -- and on this hardware that means no hue at
+        # all rather than a white one. The RGB channel is a wheel with no
+        # achromatic value anywhere on it (it wraps; 48 and 127 are both green),
+        # so a color of None is the only white there is: the ring draws the
+        # glyph and the RGB stays dark.
         #
         # Brightness is the letter's own decay and is not asserted here; that is
-        # test_each_boot_letter_strikes_full_then_decays_to_dark's business.
-        overlay = overlays.TextOverlay(config.BOOT_WORD, 0.0)
+        # test_each_letter_strikes_full_then_decays_to_its_successor's business.
+        overlay = overlays.TextOverlay("CLAUDE", 0.0)
         t = 0.0
         while t < overlay.duration:
             frame = board.compose([], t, [overlay])[: config.ENCODERS_PER_BANK]
@@ -2107,7 +2097,7 @@ class Overlays(unittest.TestCase):
                 self.assertEqual({c.ring for c in lit}, {127}, t)
             t += 1.0 / config.FPS
 
-    def test_a_colourless_letter_still_lights_the_ring_and_only_the_ring(self):
+    def test_a_colorless_letter_still_lights_the_ring_and_only_the_ring(self):
         # The pixel that carries the glyph, as the hardware sees it: ring at
         # full, RGB extinguished. Both halves matter -- a lit ring is the white
         # block, and any hue underneath it would tint the letter.
@@ -2123,8 +2113,8 @@ class Overlays(unittest.TestCase):
             self.assertIsNone(cell.color)
             self.assertEqual(cell.ring, 0)
 
-    def test_a_banner_still_gets_to_be_a_colour(self):
-        # Colourless is the boot word's choice, not a property of TextOverlay:
+    def test_a_banner_still_gets_to_be_a_color(self):
+        # Colorless is a default, not a property of TextOverlay:
         # a banner shouting RATE at you is status, and status is a hue.
         overlay = overlays.TextOverlay("RATE", 0.0, color="red")
         frame = board.compose([], 0.0, [overlay])[: config.ENCODERS_PER_BANK]
@@ -2132,19 +2122,18 @@ class Overlays(unittest.TestCase):
         self.assertTrue(lit)
         self.assertEqual({c.color for c in lit}, {"red"})
 
-    def test_nothing_in_the_boot_sequence_lights_the_rgb(self):
+    def test_nothing_in_the_quiet_stretch_lights_the_rgb(self):
         # The invariant, rather than the three places that happened to break it.
-        # Boot is the word, then the waiting gradients -- and underneath both,
+        # After boot the board is the waiting gradients -- and underneath them,
         # ambient, which only shows through where whatever is on top is dimmer.
         # That last one is how the blue got out: it is painted by compose() and
         # not by any overlay, so testing the overlays alone would miss it.
         # Every frame, every slot, all the way through: no hue.
-        word = overlays.TextOverlay(config.BOOT_WORD, 0.0)
-        waiting = overlays.WaitingOverlay(word.duration)
+        waiting = overlays.WaitingOverlay(0.0)
         t = 0.0
-        end = word.duration + waiting.duration
+        end = waiting.duration
         while t < end:
-            showing = [word] if t < word.duration else [waiting]
+            showing = [waiting]
             for cell in board.compose([], t, showing):
                 self.assertIsNone(cell.color, t)
             t += 0.25
@@ -2153,10 +2142,10 @@ class Overlays(unittest.TestCase):
         for cell in board.compose([], end + 1.0, []):
             self.assertIsNone(cell.color)
 
-    def test_the_boot_sequence_switches_the_rgb_off_on_the_wire(self):
-        # The board saying "no colour" is only half of it. This is the other
+    def test_the_quiet_stretch_switches_the_rgb_off_on_the_wire(self):
+        # The board saying "no color" is only half of it. This is the other
         # half: what channel 3 actually carries for all 64 encoders, every
-        # frame, from clear_all through the word and the waiting gradients.
+        # frame, from clear_all through the waiting gradients.
         #
         # It is a separate test because the bug it exists for was invisible from
         # the Cell side. Every cell said color=None all the way through, and the
@@ -2167,12 +2156,10 @@ class Overlays(unittest.TestCase):
         # wrong, so only a test at this level catches it coming back.
         recorder = _RecordingTwister()
         recorder.clear_all()
-        word = overlays.TextOverlay(config.BOOT_WORD, 0.0)
-        waiting = overlays.WaitingOverlay(word.duration)
+        waiting = overlays.WaitingOverlay(0.0)
         t = 0.0
-        while t < word.duration + 5.0:
-            showing = [word] if t < word.duration else [waiting]
-            for slot, cell in enumerate(board.compose([], t, showing)):
+        while t < 5.0:
+            for slot, cell in enumerate(board.compose([], t, [waiting])):
                 recorder.write(slot, cell)
             t += 1.0 / config.FPS
 
@@ -2184,7 +2171,7 @@ class Overlays(unittest.TestCase):
         self.assertGreater(config.DARK_VALUE, max(config.ANIM_PULSE.values()))
         self.assertNotIn(config.DARK_VALUE, set(config.ANIM_GATE.values()))
 
-    def test_switching_the_rgb_off_dims_before_it_recolours(self):
+    def test_switching_the_rgb_off_dims_before_it_recolors(self):
         # At startup channel 3 is at whatever it was before we opened the port,
         # so a hue sent first lands on a lit LED and flashes it. The off has to
         # go first.
@@ -2218,13 +2205,14 @@ class Overlays(unittest.TestCase):
         self.assertLessEqual(peak, config.WAITING_BRIGHTNESS + 1e-9)
         self.assertLess(peak, config.ACTIVE_BRIGHTNESS)
 
-    def test_each_boot_letter_strikes_full_then_decays_to_its_successor(self):
+    def test_each_letter_strikes_full_then_decays_to_its_successor(self):
         # A letter is at full the instant it appears, and by the time the next
         # one strikes the only pixels still lit are the ones that letter is
         # about to light anyway -- those hold rather than blinking off and
         # straight back on. Everything else is gone.
-        overlay = overlays.TextOverlay(config.BOOT_WORD, 0.0)
-        for index, char in enumerate(config.BOOT_WORD):
+        word = "CLAUDE"
+        overlay = overlays.TextOverlay(word, 0.0)
+        for index, char in enumerate(word):
             start = board.compose([], index * overlay.step + 0.001, [overlay])
             end = board.compose([], (index + 1) * overlay.step - 0.001, [overlay])
             lit = [c.brightness for c in start[: config.ENCODERS_PER_BANK] if c.brightness > 0]
@@ -2233,8 +2221,8 @@ class Overlays(unittest.TestCase):
 
             glyph = font.pixels(char)
             nxt = (
-                font.pixels(config.BOOT_WORD[index + 1])
-                if index + 1 < len(config.BOOT_WORD)
+                font.pixels(word[index + 1])
+                if index + 1 < len(word)
                 else (0.0,) * config.ENCODERS_PER_BANK
             )
             for offset, cell in enumerate(end[: config.ENCODERS_PER_BANK]):
@@ -2252,7 +2240,7 @@ class Overlays(unittest.TestCase):
 
     def test_the_board_never_goes_black_between_overlapping_letters(self):
         # The bug this guards: every letter decayed all the way to nothing, so
-        # CLAUDE flickered through full darkness five times on the way past.
+        # a word flickered through full darkness between every pair of letters.
         overlay = overlays.TextOverlay("CLAUDE", 0.0)
         for index in range(len(overlay.text) - 1):
             boundary = (index + 1) * overlay.step - 0.001
@@ -2262,24 +2250,24 @@ class Overlays(unittest.TestCase):
                 f"board went black between letter {index} and {index + 1}",
             )
 
-    def test_boot_letters_are_white(self):
+    def test_untinted_letters_are_white(self):
         # No hue at all: the RGB switch is left off and the word is spelled in
         # the encoder rings, which are the only white light on the device.
-        overlay = overlays.TextOverlay(config.BOOT_WORD, 0.0)
+        overlay = overlays.TextOverlay("CLAUDE", 0.0)
         frame = board.compose([], overlay.step * 0.1, [overlay])
         lit = [c for c in frame[: config.ENCODERS_PER_BANK] if c.brightness > 0]
         self.assertTrue(lit)
         self.assertTrue(all(c.color is None and c.ring == 127 for c in lit))
 
-    def test_boot_is_unhurried_and_shutdown_is_not(self):
-        # Boot is the only time the device speaks in words, and a word you can
-        # only catch the tail of may as well not be spelled. Shutdown has
-        # something waiting on it (`--stop` gives the daemon five seconds), so
-        # it says "on purpose" without spelling anything.
-        boot = overlays.TextOverlay(config.BOOT_WORD, 0.0)
+    def test_a_word_is_unhurried_and_shutdown_is_not(self):
+        # A word you can only catch the tail of may as well not be spelled, so
+        # the default letter time is deliberately slow. Shutdown has something
+        # waiting on it (`--stop` gives the daemon five seconds), so it says
+        # "on purpose" without spelling anything.
+        word = overlays.TextOverlay("CLAUDE", 0.0)
         shutdown = overlays.ShutdownOverlay(0.0)
-        self.assertGreater(boot.duration, 4.0, "CLAUDE should be legible, not a blink")
-        self.assertLess(shutdown.duration, boot.duration)
+        self.assertGreater(word.duration, 4.0, "a word should be legible, not a blink")
+        self.assertLess(shutdown.duration, word.duration)
 
     def test_shutdown_spirals_from_the_top_left_corner_into_the_centre(self):
         path = board.spiral_path(0)
@@ -2314,7 +2302,7 @@ class Overlays(unittest.TestCase):
             seen.add(cells[0].color)
             levels.append(cells[0].brightness)
             t += 0.05
-        # The colour does nothing on the way out -- only the lamp goes down.
+        # The color does nothing on the way out -- only the lamp goes down.
         self.assertEqual(seen, {overlay.hue, None}, seen)
         self.assertAlmostEqual(levels[0], 1.0, places=2)
         # Held whole, then monotonically dimmer: no swell, no flicker back up.
@@ -2365,7 +2353,7 @@ class Overlays(unittest.TestCase):
         self.assertGreater(early[path[0]].brightness, 0.9, "the corner goes last")
 
         # The hue leaves with the light, not after it: the word gets a board
-        # with nothing on it, colour included.
+        # with nothing on it, color included.
         last = board.compose([], overlay.duration - 0.01, [overlay])
         self.assertTrue(all(c.brightness == 0.0 for c in last[:16]), last[0])
         self.assertTrue(all(c.color is None for c in last[:16]), last[0])
@@ -2377,13 +2365,12 @@ class Overlays(unittest.TestCase):
         # legible if you caught the start.
         self.assertNotEqual(overlays.UnwrapOverlay(0.0).hue, overlays.ShutdownOverlay(0.0).hue)
 
-    def test_the_unwrap_is_over_before_the_word_starts(self):
-        # It is a preamble, not a co-star: the board is genuinely black when the
-        # C of CLAUDE strikes, and the pair together is still boot-length.
+    def test_the_unwrap_is_the_whole_of_boot_and_is_brief(self):
+        # It is all there is between launching the daemon and a board that can
+        # report, so it has to be a gesture you catch rather than one you wait
+        # out. The word that used to follow it is gone for the same reason.
         unwrap = overlays.UnwrapOverlay(0.0)
-        word = overlays.TextOverlay(config.BOOT_WORD, 0.0)
-        self.assertLess(unwrap.duration, word.duration)
-        self.assertLess(unwrap.duration + word.duration, 10.0)
+        self.assertLess(unwrap.duration, 4.0)
 
     def test_shutdown_is_slower_than_before_but_still_beats_the_stop_timeout(self):
         # `--stop` gives the daemon five seconds to clear the LEDs and let go of
@@ -2463,9 +2450,9 @@ class Overlays(unittest.TestCase):
         self.assertEqual(bare, over)
 
     def test_waiting_waits_a_couple_of_frames_before_it_starts(self):
-        # The board is empty at the instant the boot word ends whether or not
-        # anything is running: a session that started during the word has only a
-        # hook in flight to say so. So the decision is deferred and re-taken
+        # The board is empty at the instant boot ends whether or not anything
+        # is running: a session that started during the unwrap has only a hook
+        # in flight to say so. So the decision is deferred and re-taken
         # every frame until it fires.
         from mft.daemon import Visualizer
         from mft.twister import NullTwister
@@ -2548,7 +2535,7 @@ class Overlays(unittest.TestCase):
         )
         self.assertEqual(edges + (1 if flashing[0].ring else 0), config.SPAWN_FLASHES)
         # Bright red RGB held across the whole strike, including the dark half
-        # of each blink: the ring blinks, the colour does not.
+        # of each blink: the ring blinks, the color does not.
         self.assertTrue(all(c.color == config.SPAWN_COLOR for c in flashing))
         self.assertTrue(all(abs(c.brightness - 1.0) < 1e-6 for c in flashing))
 
@@ -2593,8 +2580,8 @@ class Overlays(unittest.TestCase):
 
         strike = board.compose([session], 0.0, [overlay])[session.slot]
         self.assertEqual(strike.ring, 127)
-        # White, like the boot word: the RGB stays dark, because this is the
-        # board saying something rather than reporting a status.
+        # White: the RGB stays dark, because this is the board saying something
+        # rather than reporting a status.
         self.assertIsNone(strike.color)
 
         emptied = board.compose(
@@ -2621,19 +2608,32 @@ class Overlays(unittest.TestCase):
         self.assertFalse(overlay.done(config.COMPACT_TIMEOUT_SECONDS - 1))
         self.assertTrue(overlay.done(config.COMPACT_TIMEOUT_SECONDS + 1))
 
-    def test_peek_paints_tool_history_across_the_bank(self):
+    def test_a_held_knob_burns_its_ring_down_to_nothing(self):
         session = SessionTable().ensure("s", "/tmp/p")
-        session.tool_history.extend(["Read", "Bash", "Edit"])
-        overlay = overlays.PeekOverlay(session, 0.0)
-        early = board.compose([session], config.HOLD_SECONDS / 2, [overlay])
-        self.assertIsNone(early[1].color, "a tap should not flash the detail view")
-        cells = board.compose([session], config.HOLD_SECONDS + 1, [overlay])
-        lit = [c.color for c in cells[: config.ENCODERS_PER_BANK] if c.color]
-        self.assertIn(config.TOOL_COLORS["Bash"], lit)
-        self.assertIn(config.TOOL_COLORS["Edit"], lit)
-        self.assertFalse(overlay.done(1.0))
-        overlay.release()
-        self.assertTrue(overlay.done(1.0))
+        overlay = overlays.DismissOverlay(session, 0.0)
+        under = board.compose([session], config.DISMISS_ARM_SECONDS / 2, [])[0]
+        early = board.compose([session], config.DISMISS_ARM_SECONDS / 2, [overlay])[0]
+        self.assertEqual(early, under, "a tap should not flash the countdown")
+        middle = board.compose([session], config.HOLD_SECONDS / 2, [overlay])[0]
+        end = board.compose([session], config.HOLD_SECONDS * 0.99, [overlay])[0]
+        self.assertLess(end.ring, middle.ring, "the fuse burns down")
+        self.assertLess(end.ring, 10)
+        self.assertIsNone(middle.color, "white on a dark switch, like the wipe")
+
+    def test_the_fuse_ends_on_release_or_on_maturity(self):
+        session = SessionTable().ensure("s", "/tmp/p")
+        overlay = overlays.DismissOverlay(session, 0.0)
+        self.assertFalse(overlay.done(config.HOLD_SECONDS / 2))
+        self.assertFalse(overlay.matured(config.HOLD_SECONDS / 2))
+        self.assertTrue(overlay.matured(config.HOLD_SECONDS))
+        self.assertTrue(overlay.done(config.HOLD_SECONDS))
+
+        let_go = overlays.DismissOverlay(session, 0.0)
+        let_go.release()
+        self.assertTrue(let_go.done(0.0), "the gesture is spring-loaded")
+        self.assertFalse(
+            let_go.matured(config.HOLD_SECONDS * 2), "a fuse let go never fires"
+        )
 
 
 class EncoderTurns(unittest.TestCase):
@@ -2814,6 +2814,71 @@ class NothingAnswersBack(unittest.TestCase):
         self.assertFalse(hasattr(Visualizer, "handle_permission"))
 
 
+class HoldingToClear(unittest.TestCase):
+    """Hold a knob and the session on it comes off the board.
+
+    The one gesture that takes something away, and the only repair a display
+    cannot make for itself: a record whose agent is gone, with no event coming
+    to say so."""
+
+    def setUp(self):
+        from mft.daemon import Visualizer
+        from mft.twister import NullTwister
+
+        self.vis = Visualizer(NullTwister())
+        self.focused = []
+        self.vis.focus_session = self.focused.append
+        self.session = self.vis.table.ensure("a", "/tmp/p")
+        self.session.state = "idle"
+
+    def hold(self, slot: int) -> None:
+        """A press that outlasts the fuse, the way the render loop sees it."""
+        self.vis._on_switch(slot, 127)
+        self.vis._check_holds(time.monotonic() + config.HOLD_SECONDS)
+        self.vis._on_switch(slot, 0)
+
+    def test_a_hold_takes_the_session_off_the_board(self):
+        self.hold(self.session.slot)
+        self.assertEqual(self.vis.table.all(), [])
+        self.assertEqual(self.focused, [], "you held it to avoid opening it")
+
+    def test_letting_go_early_focuses_the_tab_and_keeps_the_session(self):
+        self.vis._on_switch(self.session.slot, 127)
+        self.vis._check_holds(time.monotonic())  # a frame mid-hold
+        self.vis._on_switch(self.session.slot, 0)
+        self.assertEqual(self.focused, [self.session])
+        self.assertEqual(self.vis.table.all(), [self.session])
+
+    def test_the_encoder_is_free_for_whoever_is_next(self):
+        second = self.vis.table.ensure("b", "/tmp/q")
+        self.hold(self.session.slot)
+        self.assertEqual(second.slot, 0, "the board squeezes back up")
+        self.assertIsNone(self.vis.table.get("a"))
+
+    def test_a_session_that_was_only_sleeping_comes_straight_back(self):
+        # Clearing is a statement about the board, never about the agent: an
+        # encoder taken from a session that is in fact alive is re-claimed by
+        # its very next hook event.
+        self.hold(self.session.slot)
+        self.vis.handle_event(
+            {"session_id": "a", "cwd": "/tmp/p", "hook_event_name": "UserPromptSubmit"}
+        )
+        self.assertIsNotNone(self.vis.table.get("a"))
+
+    def test_an_empty_encoder_has_nothing_to_clear(self):
+        self.hold(self.session.slot + 1)
+        self.assertEqual(self.vis.table.all(), [self.session])
+
+    def test_the_gesture_can_be_switched_off(self):
+        with mock.patch.object(config, "DISMISS_ON_HOLD", False):
+            self.hold(self.session.slot)
+        self.assertEqual(self.vis.table.all(), [self.session])
+
+    def test_the_view_does_not_move_out_from_under_a_finger(self):
+        self.vis._on_switch(self.session.slot, 127)
+        self.assertTrue(self.vis._holds, "the fuse blocks the bank follow")
+
+
 class PressingASubagent(unittest.TestCase):
     """A violet dot is a second target for its parent's tab.
 
@@ -2841,12 +2906,14 @@ class PressingASubagent(unittest.TestCase):
         self.press(self.pile)
         self.assertEqual(self.focused, [self.parent])
 
-    def test_a_hold_peeks_at_the_parent_not_the_knob_you_held(self):
+    def test_a_hold_on_the_pile_clears_nothing(self):
+        # A press on a dot raises the parent's tab because that is the only
+        # window there is. Clearing has no such translation: it would take the
+        # parent's encoder away over a knob that is not the parent's encoder.
         self.vis._on_switch(self.pile, 127)
-        peek = self.vis._peeks[self.pile]
-        self.assertIs(peek.session, self.parent)
-        self.vis._on_switch(self.pile, 0)
-        self.assertTrue(peek.done(0.0), "the peek is spring-loaded")
+        self.assertEqual(self.vis._holds, {})
+        self.vis._check_holds(config.HOLD_SECONDS * 2)
+        self.assertIsNotNone(self.vis.table.get("parent"))
 
     def test_a_subagent_that_finishes_mid_press_still_raises_the_parent(self):
         # The pile is recomputed every frame, so the dot under your finger can

@@ -42,7 +42,7 @@ class Glyphs(unittest.TestCase):
         self.assertEqual(len(busy), 1)
 
     def test_done_and_idle_differ(self):
-        """They are one colour on the board because the fade between them is
+        """They are one color on the board because the fade between them is
         the transition. A tab strip has no fade."""
         self.assertNotEqual(config.TAB_GLYPHS["done"], config.TAB_GLYPHS["idle"])
 

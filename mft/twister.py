@@ -153,7 +153,7 @@ class Twister:
         Off, not dim. Channel 2 has no dark end -- the whole 0-127 range is hue,
         and 0 is blue -- and ``ANIM_NONE`` on channel 3 is not it either: value
         0 stops overriding the device and hands the LED back to its own inactive
-        colour, which is the blue a stopped daemon used to leave glowing on the
+        color, which is the blue a stopped daemon used to leave glowing on the
         desk. The off is the bottom of channel 3's brightness ramp,
         :data:`config.DARK_VALUE`, which is one value further up than the ring's
         -- see :data:`config.RGB_BRIGHTNESS_MIN`.
@@ -162,7 +162,7 @@ class Twister:
         startup the device's channel 3 is at whatever it was before we opened
         the port, so a hue sent first lands on a fully lit LED and flashes it.
         Sending the off first means the hue arrives at an LED that is already
-        dark. Nothing is relit by it -- colour and brightness are independent on
+        dark. Nothing is relit by it -- color and brightness are independent on
         this hardware, which is why a state change that only alters the hue does
         not also reset the encoder to full.
         """
@@ -188,7 +188,7 @@ class Twister:
         both at once. Animation wins where there is one.
         """
         if cell.color is None:
-            # Unclaimed/ended: colour-free, which on this hardware means off
+            # Unclaimed/ended: color-free, which on this hardware means off
             # rather than "hue 0" -- see :meth:`rgb_off`.
             self.rgb_off(slot)
         else:

@@ -480,7 +480,7 @@ class Pulsing(unittest.TestCase):
         self.assertAlmostEqual(peak.ring_light, 0.4, places=2)
 
     def test_it_keeps_the_session_hue(self):
-        """A spawn strike is news and wears its own colour. This is an
+        """A spawn strike is news and wears its own color. This is an
         acknowledgement, so it says nothing you did not already know."""
         self.assertEqual(self.paint(0.1).color, "green")
 

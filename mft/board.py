@@ -370,7 +370,7 @@ class Sleep:
     ever reaches these timings is an unattended desk.
 
     Two stages, because they answer two different questions. Dim answers "is
-    anything waiting for me?" from the doorway and keeps every colour and ring
+    anything waiting for me?" from the doorway and keeps every color and ring
     position intact to answer it with. Off answers "is this thing still on?" at
     three in the morning, and the only right answer then is no light at all.
 
@@ -446,7 +446,7 @@ def dim(board: list[Cell], gain: float, spared: frozenset[int] = frozenset()) ->
         if slot in spared or cell is BLANK:
             continue
         level = cell.brightness * gain
-        # Colour-free below the floor rather than merely dim, as in
+        # Color-free below the floor rather than merely dim, as in
         # ShutdownOverlay: brightness zero on a hue is still a lit encoder.
         if level <= config.SLEEP_DARK_LEVEL:
             board[slot] = BLANK
@@ -465,8 +465,8 @@ def ambient(board: list[Cell], now: float) -> None:
 
     It lies *underneath* everything, including the boot sequence -- the waiting
     gradients only write a cell they would light more than what is already
-    there, so whatever colour this is shows through the gaps in them. Which is
-    why it is no colour at all: a blue breathing through the waiting animation
+    there, so whatever color this is shows through the gaps in them. Which is
+    why it is no color at all: a blue breathing through the waiting animation
     was the blue on the board at boot, and an idle board has by definition
     nothing to say.
     """
@@ -573,7 +573,7 @@ def compose(
         mark_focus(board, focused)
 
     # Under the overlays, not among them. Every overlay is a gesture -- a spawn
-    # strike, a banner, a `/clear` wipe, a press-and-hold peek -- and every one
+    # strike, a banner, a `/clear` wipe, a hold burning down -- and every one
     # of those is itself the activity that wakes the board, so dimming them
     # would be the sleep arguing with its own wake. It also means quitting a
     # dark daemon still plays the shutdown spiral at full brightness.

@@ -19,7 +19,6 @@ import logging
 import os
 import threading
 import time
-from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional, Sequence
 
@@ -135,10 +134,6 @@ class Session:
     tab_title_turn: int = -1
     tab_title_at: float = 0.0
     tab_painted: str = ""
-    #: Recent tool names, oldest first, for the press-and-hold detail view.
-    tool_history: deque[str] = field(
-        default_factory=lambda: deque(maxlen=config.PEEK_HISTORY)
-    )
     #: Identifiers of the subagents currently in flight, each mapped to a
     #: :class:`Subagent` record of when it started and when it was last seen
     #: doing something. Two independent signals feed this --

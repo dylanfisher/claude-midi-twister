@@ -66,11 +66,11 @@ class BankFollower:
 
         * a cooldown, so two prompts on two banks cannot bounce the view between
           them, and so a bank you picked by hand stays picked;
-        * ``blocked``, which the daemon raises during a peek -- a modal view of
-          one session's history that would be silently replaced by another
-          bank's encoders -- and while the boot word or the waiting animation
+        * ``blocked``, which the daemon raises while a knob is being held --
+          moving the panel out from under a finger would swap the encoder the
+          hold is about -- and while the boot unwrap or the waiting animation
           still owns the board, the two moments the daemon is talking about
-          itself rather than reporting. A bank select mid-word truncates it.
+          itself rather than reporting. A bank select mid-gesture truncates it.
         """
         if not config.FOLLOW_ALERTS or blocked:
             return

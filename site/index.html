@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-midi-twister — Claude Code sessions on a Midi Fighter Twister</title>
+<meta name="description" content="A daemon that shows running Claude Code sessions on a DJTT Midi Fighter Twister: one encoder per session, press to focus that terminal tab. The page includes a browser simulator.">
+<meta property="og:title" content="claude-midi-twister">
+<meta property="og:description" content="Running Claude Code sessions on a Midi Fighter Twister, one encoder each. Color is the state, the ring is turn length, press to focus the terminal tab.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#f0eee6">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='34' fill='none' stroke='%23d97757' stroke-width='14'/></svg>">
+<link rel="stylesheet" href="css/site.css?v=58">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wide">
+    <b>claude-midi-twister</b>
+    <a href="#try">Try It</a>
+    <a href="#board">The Board</a>
+    <a href="#get">Get It</a>
+    <span class="spacer"></span>
+    <a href="bench.html" data-flip>Midi Bench</a>
+    <a href="https://github.com/dylanfisher/claude-midi-twister">GitHub</a>
+  </div>
+</nav>
+
+<!-- ────────────────────────────────────── try it (and the whole pitch) ───── -->
+<section id="try" class="hero">
+  <div class="wide">
+
+    <!-- The wordmark, in the Midi Fighter house style: 5×5 stencil letters
+         knocked out of black, no curves anywhere. It is literal text — full
+         blocks in a <pre> — so it costs no image, no webfont, and no request,
+         and it is the same trick as font.py: an alphabet on a pixel grid. The
+         mark on the end is the Claude critter, and it is the only thing in
+         accent. The letters are one pixel per "██" per row; the mark is finer,
+         a 10×10 grid of half-blocks — a character is half as wide as it is
+         tall, so a half-row-tall, one-character-wide pixel comes out square,
+         and ten of them stack to exactly the five rows of a letter. Eyes and
+         the gaps between the legs are knocked out the same way the letters
+         are: they are the background, not a second color. -->
+    <div class="logo" role="img" aria-label="CLAUDE MIDI TWISTER">
+  <pre aria-hidden="true">██████████  ██          ██████████  ██      ██  ████████    ██████████
+██          ██          ██      ██  ██      ██  ██      ██  ██
+██          ██          ██████████  ██      ██  ██      ██  ██████████
+██          ██          ██      ██  ██      ██  ██      ██  ██
+██████████  ██████████  ██      ██  ██████████  ████████    ██████████</pre>
+  <pre aria-hidden="true">██      ██  ██████████  ████████    ██████████
+████  ████      ██      ██      ██      ██
+██  ██  ██      ██      ██      ██      ██
+██      ██      ██      ██      ██      ██
+██      ██  ██████████  ████████    ██████████</pre>
+  <pre aria-hidden="true">██████████  ██      ██  ██████████  ██████████  ██████████  ██████████  ████████    <span class="mk"> ▄▄▄▄▄▄▄▄ </span>
+    ██      ██      ██      ██      ██              ██      ██          ██      ██  <span class="mk"> ██ ██ ██ </span>
+    ██      ██  ██  ██      ██      ██████████      ██      ██████████  ████████    <span class="mk">██████████</span>
+    ██      ██████████      ██              ██      ██      ██          ██    ██    <span class="mk"> █▀█▀▀█▀█ </span>
+    ██      ████  ████  ██████████  ██████████      ██      ██████████  ██      ██  <span class="mk"> ▀ ▀  ▀ ▀ </span></pre>
+    </div>
+    <br>
+
+    <h1>Visual overview of your Claude sessions</h1>
+
+    <p class="pitch">A daemon that shows every running Claude Code session on a
+    DJTT Midi Fighter Twister, one encoder per session. The color is the
+    session's state, the LED ring is how long the current turn has run, and
+    <b>pressing an encoder brings that session's terminal tab to the front</b>.
+    <b>The device is display-only</b>: it cannot answer a prompt or approve a
+    tool call.</p>
+
+    <div class="hero-meta">
+      <span>4 banks × 16 encoders = 64 sessions</span>
+      <span>Python 3.14, stdlib + mido</span>
+      <span>macOS</span>
+      <span>MIT</span>
+    </div>
+
+    <p class="lede" style="margin:3.5rem 0 1.1rem">Below is that render loop —
+    <code class="inl">render.py</code>, <code class="inl">board.py</code>,
+    <code class="inl">overlays.py</code>, <code class="inl">font.py</code> —
+    ported line for line, running against a simulated terminal instead of a MIDI
+    port. It runs one scenario at a time on its own, and the scenario it is
+    running stays lit in the row below. Click an encoder, press a scenario, or
+    type a prompt to drive it yourself.</p>
+
+    <p class="scenarios-label">scenarios</p>
+    <div class="scenarios" id="scenarios"></div>
+
+    <div class="replica">
+      <div class="replica-left">
+        <div id="device"></div>
+        <p class="demo-status" id="demoStatus" data-live="auto">
+          <span class="led"></span>
+          <span id="demoStatusText">running scenarios automatically — interact to take over</span>
+        </p>
+      </div>
+      <div class="replica-right">
+        <div id="console"></div>
+      </div>
+    </div>
+
+    <div class="readout readout-full" id="readout"></div>
+
+    <p class="hint hint-full">
+      <kbd>click</kbd> an encoder to focus its session ·
+      <kbd>hold</kbd> 0.8s to clear it off the board ·
+      <kbd>tab</kbd> then <kbd>enter</kbd> does the same
+    </p>
+  </div>
+</section>
+
+<!-- ──────────────────────────────────────────────────────── the board ───── -->
+<section id="board">
+  <div class="wide">
+    <p class="eyebrow">The board</p>
+    <h2>What the colors mean</h2>
+    <p class="lede">Ten states, one color each. Hover a row to play that state
+    alone. The colors, animation rates and ring rules below come from the same
+    tables the daemon uses — <code class="inl">mft/config.py</code>, ported line
+    for line.</p>
+
+    <div class="legend-wrap" style="margin-top:2rem">
+      <div id="legend-board"></div>
+      <ul class="legend" id="legend"></ul>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────────────────────── get it ───── -->
+<section id="get">
+  <div class="wide">
+    <p class="eyebrow">Get it</p>
+    <h2>Installing</h2>
+
+    <div class="buy">
+      <a class="tile" href="https://store.djtechtools.com/products/midi-fighter-twister" target="_blank" rel="noopener">
+        <span class="k">THE HARDWARE</span>
+        <span class="t">DJ TechTools — Midi Fighter Twister →</span>
+        <span class="d">16 RGB-lit rotary encoders with LED rings, 4 banks, USB class-compliant. The device this daemon drives.</span>
+      </a>
+      <a class="tile" href="https://www.midifighter.com/" target="_blank" rel="noopener">
+        <span class="k">THE FAMILY</span>
+        <span class="t">midifighter.com →</span>
+        <span class="d">Twister, Spectra, 3D, Classic: the utility, the firmware, and the rest of the Midi Fighter line.</span>
+      </a>
+      <a class="tile" href="https://github.com/dylanfisher/claude-midi-twister" target="_blank" rel="noopener">
+        <span class="k">THE SOFTWARE</span>
+        <span class="t">github.com/dylanfisher/claude-midi-twister →</span>
+        <span class="d">Python 3.14, stdlib only except mido + python-rtmidi. The README is the design document.</span>
+      </a>
+    </div>
+
+<pre class="term"><span class="c"># install. it backs up your settings first and tags its own entries,</span>
+<span class="c"># so --uninstall removes exactly what it added</span>
+<span class="p">$</span> python3 -m venv .venv &amp;&amp; .venv/bin/pip install -r requirements.txt
+<span class="p">$</span> .venv/bin/python install_hooks.py --print   <span class="c"># look at what it will add</span>
+<span class="p">$</span> .venv/bin/python install_hooks.py           <span class="c"># merge into ~/.claude/settings.json</span>
+
+<span class="c"># run it and leave it running. any Claude Code session claims an encoder.</span>
+<span class="p">$</span> .venv/bin/python -m mft.daemon
+
+<span class="c"># or build the app bundle, which starts and stops the daemon</span>
+<span class="p">$</span> .venv/bin/python app/make_app.py            <span class="c"># -> ~/Applications/Claude Twister.app</span>
+
+<span class="c"># without hardware, everything except the wire still runs</span>
+<span class="p">$</span> .venv/bin/python -m mft.daemon --no-device
+<span class="p">$</span> .venv/bin/python -m mft.simulate --sessions 6</pre>
+
+    <p class="small">One more step: in the <b>Midi Fighter Utility</b>, set the
+    encoders to accept host LED control. Otherwise the device drives its own
+    LEDs and ignores everything the daemon sends.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wide">
+    <p class="small">Built for the <a href="https://store.djtechtools.com/products/midi-fighter-twister" target="_blank" rel="noopener">DJ TechTools Midi Fighter Twister</a>.
+    Not affiliated with DJ TechTools or Anthropic. The simulator above is a port of the
+    daemon's pure modules. Its colors are approximations of the device's hue wheel: the
+    wheel is a property of the LEDs, and there are no hex values anywhere in the repo.</p>
+  </div>
+</footer>
+
+<div class="statusbar" id="statusbar"></div>
+
+<script type="module" src="js/flip.js?v=58"></script>
+<script type="module" src="js/main.js?v=58"></script>
+</body>
+</html>

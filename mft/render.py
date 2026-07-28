@@ -250,7 +250,7 @@ def _gauge_level(session: Session, now: float, base: float) -> float:
 
 
 def _hue(color: str | int | None) -> int:
-    """A colour name or a raw wheel value, as a wheel value."""
+    """A color name or a raw wheel value, as a wheel value."""
     if isinstance(color, str):
         return config.COLORS[color]
     return config.COLOR_OFF if color is None else int(color)
@@ -267,7 +267,7 @@ def working_color(session: Session, base: str | int | None) -> str | int | None:
     the second one is the one you want to be interrupted about.
 
     Hue and nothing else, deliberately. It stays out of `arbitrate_motion` for
-    the same reason the subagent shimmer does: a level (or here a colour) is not
+    the same reason the subagent shimmer does: a level (or here a color) is not
     a rate, so this cannot compete for the one fast animation the board allows
     itself, which belongs to an encoder where a human is actually blocking. A
     failing agent is still working. It has not become an alert and must not be
@@ -333,7 +333,7 @@ def render(session: Session, now: float) -> Cell:
         ring = _turn_ring(session, now) if config.TURN_RING else _arc_ring(session)
         brightness = _working_brightness(session, now)
         # ...and the hue says how well it is going. The shimmer above is
-        # untouched: same rate, same decay, same stall sag -- only the colour
+        # untouched: same rate, same decay, same stall sag -- only the color
         # under it moves. See :func:`working_color`.
         color = working_color(session, color)
 

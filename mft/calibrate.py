@@ -1,6 +1,6 @@
 """Find the right numbers for your unit.
 
-The channel layout is documented and stable; the exact value -> colour and
+The channel layout is documented and stable; the exact value -> color and
 value -> animation mappings drift between firmware revisions. Rather than
 trusting a table, sweep them and write down what you see.
 
@@ -22,7 +22,7 @@ is which sixteen encoders are in front of you.
 Every hue sweep here lights the RGB at *full* brightness and leaves the ring
 dark. Both halves matter. Channel 3 carries brightness, and after a `clear_all`
 it is sitting at the bottom of the ramp -- judging the wheel there means judging
-sixteen LEDs too dim to have a colour, which is how you end up picking a blue
+sixteen LEDs too dim to have a color, which is how you end up picking a blue
 and calling it white. And a lit ring next to the RGB is white by definition, so
 it drags whatever is under it towards white.
 """
@@ -71,16 +71,16 @@ def _hue_stage(device) -> None:
 
 
 def _white(device) -> None:
-    """Find the value that reads as *lit* rather than as a colour.
+    """Find the value that reads as *lit* rather than as a color.
 
-    The one hue the board needs to be sure of. It is what the boot word is
-    spelled in and what an encoder with nothing to say rests at, so if it is
-    off by a few the whole device wears a permanent tint -- and a tint is
+    The one hue the board needs to be sure of. It is what the boot unwrap and
+    every banner word are lit in and what an encoder with nothing to say rests
+    at, so if it is off by a few the whole device wears a permanent tint -- and a tint is
     exactly the thing this display uses to mean something.
 
     The candidates are the two ends of the wheel and nothing else: the range
     wraps, so if there is an achromatic value on this unit it is at a boundary.
-    They are shown side by side, at full, because "least like a colour" is a
+    They are shown side by side, at full, because "least like a color" is a
     comparison and not something you can judge one LED at a time.
     """
     candidates = list(range(120, 128)) + list(range(0, 8))
@@ -90,9 +90,9 @@ def _white(device) -> None:
     print("\ntop and bottom of the wheel, at full brightness, rings dark:")
     print("  " + "  ".join(f"enc{s + 1:>2}={v:>3}" for s, v in enumerate(candidates)))
     print(
-        "\npick the one that reads as a lit lamp rather than as a colour. If they\n"
+        "\npick the one that reads as a lit lamp rather than as a color. If they\n"
         "are all obviously blue or violet, this firmware has no white and the\n"
-        "least-coloured of them is the best the hardware does."
+        "least-colored of them is the best the hardware does."
     )
     try:
         answer = input("encoder number (1-16), or blank to stop > ").strip()
@@ -107,7 +107,7 @@ def _white(device) -> None:
         return
     value = candidates[int(answer) - 1]
     print(f"\n  export MFT_WHITE={value}\n")
-    print("That value is both the boot word and the resting colour of the board.")
+    print("That value is both the boot gesture and the resting color of the board.")
 
 
 def main() -> int:
@@ -115,7 +115,7 @@ def main() -> int:
     parser.add_argument(
         "mode", choices=["colors", "white", "anim", "ring", "ramp", "dark", "banks"]
     )
-    parser.add_argument("--color", default="green", help="base colour for anim sweeps")
+    parser.add_argument("--color", default="green", help="base color for anim sweeps")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -125,7 +125,7 @@ def main() -> int:
         if args.mode == "colors":
             print("each encoder shows one channel-2 value; note the ones you want")
             _hue_stage(device)
-            _pages(device, config.CH_SWITCH, 0, 127, "colour")
+            _pages(device, config.CH_SWITCH, 0, 127, "color")
 
         elif args.mode == "white":
             _white(device)
@@ -142,7 +142,7 @@ def main() -> int:
         elif args.mode == "dark":
             # Which channel-3 value actually extinguishes the switch LED, as
             # opposed to merely dimming it or handing it back to the device's
-            # own inactive colour. Every encoder starts lit and full, so the
+            # own inactive color. Every encoder starts lit and full, so the
             # only thing that changes per page is the candidate "off" value --
             # the answer is whichever encoders you cannot see.
             for slot in range(config.ENCODERS_PER_BANK):
@@ -164,7 +164,7 @@ def main() -> int:
             # The one sweep whose answer you read on the *front panel* rather
             # than in the lights: a bank select changes which sixteen encoders
             # are there. So each candidate paints its own bank a distinct hue
-            # first -- if the board switches, the colour tells you which bank it
+            # first -- if the board switches, the color tells you which bank it
             # switched to, and if nothing happens the CC is wrong.
             hues = ("red", "green", "cyan", "violet")
             for bank in range(config.BANKS):
@@ -172,11 +172,11 @@ def main() -> int:
                     device.color(slot, hues[bank % len(hues)])
                     device.ring(slot, 32 * (bank + 1))
             print(
-                "each bank is painted a different colour: bank 1 red, 2 green,\n"
+                "each bank is painted a different color: bank 1 red, 2 green,\n"
                 "3 cyan, 4 violet. below, one candidate CC at a time on channel\n"
                 f"4 (currently BANK_SELECT_CC={config.BANK_SELECT_CC}).\n\n"
-                "watch for the board CHANGING COLOUR -- that is the bank moving,\n"
-                "and the colour says which bank it moved to. note the four CCs\n"
+                "watch for the board CHANGING COLOR -- that is the bank moving,\n"
+                "and the color says which bank it moved to. note the four CCs\n"
                 "that work and the order they came in. if nothing ever changes,\n"
                 "set MFT_FOLLOW_ALERTS=0 and leave the banks alone on this unit.\n\n"
                 "unlike the other sweeps this one varies the CC *number*, not the\n"

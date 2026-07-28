@@ -2,7 +2,7 @@
 
 An encoder tells you a session wants you; it does not tell you *which window*
 that is once you have eight of them tiled. The tab already says which window --
-so a coloured glyph in front of its title is the cheapest possible second
+so a colored glyph in front of its title is the cheapest possible second
 display, and it is the one you are looking at anyway when you alt-tab.
 
 The mechanism is one OSC 0 sequence written straight to the session's tty:

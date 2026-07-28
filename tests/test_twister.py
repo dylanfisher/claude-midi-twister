@@ -43,7 +43,7 @@ class Recorder(NullTwister):
 class GoingDark(unittest.TestCase):
     def test_off_is_zero_brightness_not_no_animation(self):
         # Value 0 on channels 3 and 6 means "stop animating", which hands the
-        # LED back to the device's own inactive colour -- a board that glows
+        # LED back to the device's own inactive color -- a board that glows
         # dark blue at you after the daemon has exited. Zero *brightness* is
         # the only value that is actually off.
         device = Recorder()
@@ -58,27 +58,27 @@ class GoingDark(unittest.TestCase):
         # pulse and 18 is 0%. Sending 17 to mean off is therefore not a dim LED,
         # it is the slowest breathe on the device -- clock-locked, so every
         # encoder does it in unison, which is what put a blue swell behind the
-        # boot word. Assert the constant is clear of the animation bands
+        # boot gesture. Assert the constant is clear of the animation bands
         # entirely; that is the property, and 18 is only today's value for it.
         animations = set(config.ANIM_GATE.values()) | set(config.ANIM_PULSE.values())
         self.assertNotIn(config.DARK_VALUE, animations)
         self.assertGreater(config.DARK_VALUE, max(animations))
         self.assertEqual(config.DARK_VALUE, config.RGB_BRIGHTNESS_MIN)
 
-    def test_a_dark_encoder_is_colourless_rather_than_blue(self):
+    def test_a_dark_encoder_is_colorless_rather_than_blue(self):
         # Belt and braces on top of a real off: the hue an extinguished encoder
-        # is left holding is the colourless one, not whichever it was wearing.
+        # is left holding is the colorless one, not whichever it was wearing.
         device = Recorder()
         device.write(0, Cell(color="red", brightness=1.0))
         device.write(0, Cell())
         self.assertEqual(device.final(config.CH_SWITCH, 0), config.DARK_COLOR)
         self.assertEqual(device.final(config.CH_SWITCH_ANIM, 0), config.DARK_VALUE)
 
-    def test_going_dark_dims_before_it_recolours(self):
+    def test_going_dark_dims_before_it_recolors(self):
         # Ordering, and it matters in one place: at startup channel 3 holds
         # whatever it held before we opened the port, so a hue sent first lands
         # on a lit LED and flashes it. Off first, then the hue, onto an encoder
-        # that is already dark. (Colour and brightness are independent here --
+        # that is already dark. (Color and brightness are independent here --
         # a state change that only alters the hue does not reset brightness --
         # so nothing is relit by arriving second.)
         device = Recorder()
@@ -95,7 +95,7 @@ class GoingDark(unittest.TestCase):
         )
 
     def test_an_unlit_cell_renders_dark_on_both_channels(self):
-        # The shutdown overlay's own last frames are colour-free cells; they go
+        # The shutdown overlay's own last frames are color-free cells; they go
         # through the same path and have to land in the same place.
         device = Recorder()
         device.write(7, Cell())
