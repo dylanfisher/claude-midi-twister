@@ -74,6 +74,7 @@ def payload(
     focused_app: str = "",
     discovery_failing: bool = False,
     stale: Sequence[str] = (),
+    usage: dict | None = None,
 ) -> dict:
     """The whole answer. ``bank`` is zero-based in; one-based out, like slots."""
     return {
@@ -110,6 +111,12 @@ def payload(
         # have already replaced on disk. Non-empty means restart, not debug.
         "discovery_failing": discovery_failing,
         "stale": list(stale),
+        # The five-hour usage window as last read out of Claude Code's own
+        # cache, and the milestone already spelled for it. Null means nothing
+        # was readable there, which is the answer to "why has the board never
+        # said 75%" -- and `announced` is the answer to "why did it only say it
+        # once". See :mod:`mft.usage`.
+        "usage": usage,
         "sessions": [
             session_payload(s, now) for s in sorted(sessions, key=lambda s: s.slot)
         ],

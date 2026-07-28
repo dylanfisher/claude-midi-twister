@@ -10,7 +10,7 @@
  * human clicking around without either knowing about the other.
  */
 
-import * as C from "./config.js?v=62";
+import * as C from "./config.js?v=65";
 
 // --- the easing vocabulary, all of it (mft/board.py:116,122, render.lerp) ---
 export const clamp01 = (t) => Math.max(0, Math.min(1, t));

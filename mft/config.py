@@ -1152,6 +1152,140 @@ TEXT_HOLD_SECONDS = 0.0
 #: this default is spelled in light rather than in color.
 TEXT_COLOR = None
 
+# --- Usage milestones -------------------------------------------------------
+# The five-hour usage window belongs to no session, so it gets no encoder: it
+# gets a word, on the way past each milestone, and nothing at all in between.
+# See :mod:`mft.usage` for where the number is read from and why a stale reading
+# is fine for this and would not be for a gauge.
+
+USAGE_BANNER = _flag("MFT_USAGE_BANNER", True)
+
+#: Claude Code's own cache of its `/usage` answer. Ours to read, never to write.
+USAGE_FILE = os.path.expanduser(os.environ.get("MFT_USAGE_FILE", "~/.claude.json"))
+
+#: How often the file is looked at. Slow on purpose: the number behind it is
+#: refreshed a few times an hour by somebody else, and every poll that finds the
+#: same mtime costs one `stat` and nothing else.
+USAGE_POLL_SECONDS = 20.0
+
+#: The percentages worth interrupting you for, and the entire feature. Sparse
+#: early because the first half of a window is not news, tight at the top
+#: because the last five points are where a plan stops being a plan. Crossing
+#: several at once spells only the highest -- see `mft.usage.crossed`.
+USAGE_MILESTONES = (25, 50, 75, 90, 95, 100)
+
+#: Milestone -> hue, first band that fits. Below the first threshold the word is
+#: spelled in plain light like any other announcement: at 25% the number is
+#: information, and a red one would be a warning about nothing.
+USAGE_COLORS = (
+    (95, "red"),
+    (90, "orange"),
+    (75, "amber"),
+)
+
+#: What the announcement opens with, because a bare number on a board that also
+#: spells counts says a number without saying what it counts. Three glyphs, and
+#: it no longer carries the number -- the rows after it do.
+USAGE_WORD = "USE"
+
+#: How long each letter is held. The word used to be "USE 100", seven glyphs,
+#: and had to hurry; three glyphs can afford to sit still, and a letter that
+#: sits still is a letter you read rather than one you catch.
+USAGE_LETTER_SECONDS = 0.85
+
+#: The gap a letter travels to dark across, which at this length is a cut, not a
+#: fade. `TextOverlay`'s envelope is hold-then-fade and its fade is floored, so
+#: "don't fade the letters" is spelled as the smallest fade the overlay will
+#: take rather than as a branch inside it. Raise this and the letters start
+#: bleeding into one another again.
+USAGE_LETTER_CUT = 0.02
+
+#: Then the number, as rows filling from the bottom of the bank: one row per
+#: quarter of the window, so 25% is the bottom row solid and 50% the bottom two.
+#: A percentage that lands between rows lights its leading row partially, and
+#: that partial row is the only thing that tells 90, 95 and 100 apart -- they
+#: all fill the top row otherwise.
+USAGE_GAUGE_FLASHES = 3
+
+#: One flash: lit for `USAGE_GAUGE_DUTY` of it, dark for the rest. Hard edges on
+#: both, for the same reason the letters have them -- this is a reading being
+#: shown, not a gesture being performed.
+USAGE_GAUGE_FLASH_SECONDS = 0.42
+USAGE_GAUGE_DUTY = 0.6
+
+#: The gauge's hue at 0% and at 100%, as raw wheel values rather than names
+#: because what matters is the ramp between them and not either end. Amber to
+#: red is a short arc and the whole of it reads as the same thing warming up.
+USAGE_GAUGE_HUE = (COLORS["amber"], COLORS["red"])
+
+#: How bright the *leading* row is, across how full it is: an untouched row is
+#: dark, a solid one is full, and the one in between is lit in proportion. Only
+#: that row -- every row under it is at full, because a filled row is a filled
+#: row and dimming it says nothing the bar's height hasn't already said.
+#:
+#: The bar used to be scaled bodily by the reading, and at low readings the two
+#: dimmings multiplied: 32% painted its solid row at 0.56 and its partial row at
+#: 0.16, which on the hardware is one dim row and reads as 25%. A gauge whose
+#: quietest readings are its least legible ones has it exactly backwards. The
+#: severity channel still exists -- it is the hue, which ramps amber to red over
+#: the whole span and is a color rather than a brightness, so it costs the bar
+#: no legibility to carry.
+#:
+#: The floor is what a barely-started row is worth. Below about this the RGB
+#: reads as off rather than as dim, and the leading edge is the one pixel row
+#: that must not disappear -- it is the entire difference between 90 and 100.
+USAGE_GAUGE_PARTIAL = (0.3, 1.0)
+
+#: How far the percentage has to fall before it is read as a new window rather
+#: than as jitter. A rollover lands as a drop to near zero, so this is nowhere
+#: near a close call; the point is only that a reading that wobbles down a point
+#: must not re-arm a milestone it already spelled.
+USAGE_ROLLOVER_DROP = 10.0
+
+# --- Asking for the usage window --------------------------------------------
+# The milestones above are the board volunteering the number. This is the other
+# direction: a turn of one knob and it says where the window is right now. It is
+# the only turn the daemon reads, and it is a display gesture -- it reads a file
+# and paints, and nothing on the other end of it is a session. See invariant 1.
+
+#: The gesture as a whole, separate from `USAGE_BANNER` so the unbidden
+#: announcements and the asked-for one can be switched off independently: the
+#: milestones are the interrupting half, and it is entirely reasonable to want
+#: only the half you asked for.
+USAGE_PEEK = _flag("MFT_USAGE_PEEK", True)
+
+#: Which encoder answers, as an offset *within a bank* rather than an absolute
+#: slot -- so it is the bottom-right knob of whichever bank the panel is on, and
+#: the gesture doesn't disappear when you switch banks. Bottom-right because it
+#: is the furthest knob from the top-left corner sessions fill from, and so the
+#: one you are least likely to already have a hand on.
+USAGE_PEEK_ENCODER = ENCODERS_PER_BANK - 1
+
+#: What the asked-for reading opens with, and the answer is nothing. `USAGE_WORD`
+#: exists because a milestone arrives unbidden and a bar that appears out of
+#: nowhere has to say what it is counting. A reading you turned a knob for was
+#: not unbidden: you know what you asked, and three letters between the question
+#: and the answer are three seconds of being told what you just did. Set this to
+#: a word and the peek spells it first, exactly like a milestone does.
+USAGE_PEEK_WORD = os.environ.get("MFT_USAGE_PEEK_WORD", "")
+
+#: The debounce, and it is a *grace* rather than a cooldown: the readout itself
+#: is what the knob is deaf for, and this is only the margin either side of it.
+#: A turn is refused while the answer to the last one is still on the board and
+#: for this long after it clears, so a flick's dozen detents are one question and
+#: a deliberate second ask, once you have seen the first answer, lands.
+#:
+#: It was a flat five seconds and that was wrong the moment the word came off the
+#: front of the peek: the readout shrank to about 1.3s and the flat number left
+#: three and a half seconds of a knob that did nothing, which is indistinguishable
+#: from a knob that is broken. Tying it to the animation instead means it can
+#: never drift out of step with it again.
+#:
+#: Long enough to span a flick (the detents of one twist arrive over a few
+#: hundred milliseconds) and short enough not to be noticed by a hand that has
+#: already read the answer and wants it again.
+USAGE_PEEK_GRACE_SECONDS = 0.5
+
 # --- Compaction -------------------------------------------------------------
 # PreCompact/PostCompact bracket something completely opaque in the terminal
 # that materially affects your agent, so it gets a real animation: arc drains to

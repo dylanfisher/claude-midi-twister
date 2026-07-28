@@ -143,6 +143,151 @@ class TextOverlay(Overlay):
             )
 
 
+class UsageOverlay(Overlay):
+    """The five-hour window, announced: the word ``USE``, then the number.
+
+    Two halves, and the split is the point. The word says *what* is being
+    reported, and it is the only thing on this board that has to be read rather
+    than glanced at -- so each letter is held still for
+    :data:`config.USAGE_LETTER_SECONDS` and then **cut** to the next. It does
+    not fade. A fading letter is legible for half the time it is on screen and
+    the tail of that fade is indistinguishable from a board doing something
+    else; three letters that simply stand there are three letters you can read
+    without waiting for them.
+
+    Then the number, and it is not spelled at all. Digits on a 4x4 grid are
+    approximations (see :mod:`mft.font` -- 5 and 6 are frank guesses), and a
+    percentage is a *quantity*, which this board has a better vocabulary for
+    than glyphs: rows filling from the bottom, one row per quarter of the
+    window. 25% is the bottom row, 50% the bottom two, 100% the whole bank. It
+    reads at a glance and from across a room, which the digits never did.
+
+    A reading between rows lights its leading row partially, and that is what
+    keeps 90, 95 and 100 from being the same picture. Only that row: every row
+    beneath it is at full whatever the reading, because a filled row is a filled
+    row. The severity is the hue instead, ramping amber to red over the whole
+    span -- so the bar says how much and the color says how much trouble that is,
+    twice, in two channels that don't fight. Redundant on purpose: this is the
+    one thing the board says that you may only get one look at, and it must be
+    at its most legible at the readings that are easiest to miss.
+
+    It flashes rather than sitting there, because a static bar over a bank of
+    sessions is indistinguishable from four encoders that happen to be red.
+
+    The word is skipped entirely when the reading was *asked* for. It is there
+    to say what an interruption is about, and a knob you just turned has already
+    said that -- spelling three letters at someone who is waiting for the answer
+    to their own question is three seconds of telling them what they did.
+
+    Pure paint like every overlay here (invariant 5): the whole bank is
+    overwritten for the duration, including the dark half of each flash, so
+    nothing underneath strobes through the gaps.
+    """
+
+    def __init__(
+        self,
+        percent: float,
+        started_at: float,
+        color: str | int | None = config.TEXT_COLOR,
+        bank: int = 0,
+        word: str = config.USAGE_WORD,
+    ) -> None:
+        self.percent = max(0.0, min(100.0, float(percent)))
+        self.bank = bank
+        self.started_at = started_at
+        #: The word half, delegated -- the letter envelope is already correct in
+        #: :class:`TextOverlay` and "held, then cut" is two of its parameters
+        #: rather than a second implementation of it. ``None`` when there is no
+        #: word: an announcement you did not ask for has to say what it is about
+        #: before it says a number, and one you turned a knob for does not --
+        #: you already know what you asked. See :data:`config.USAGE_PEEK_WORD`.
+        self.word = (
+            TextOverlay(
+                word,
+                started_at,
+                color=color,
+                bank=bank,
+                fade=config.USAGE_LETTER_CUT,
+                hold=config.USAGE_LETTER_SECONDS,
+            )
+            if word
+            else None
+        )
+        self.flash = max(0.01, config.USAGE_GAUGE_FLASH_SECONDS)
+        self.gauge = self.flash * max(1, config.USAGE_GAUGE_FLASHES)
+
+    @property
+    def word_duration(self) -> float:
+        """How long the word takes, or zero if there isn't one. Not
+        ``self.word.duration``: `TextOverlay` floors an empty string to a space
+        and would spend a whole letter's worth of time showing nothing."""
+        return self.word.duration if self.word is not None else 0.0
+
+    @property
+    def duration(self) -> float:
+        return self.word_duration + self.gauge
+
+    def done(self, now: float) -> bool:
+        return now - self.started_at >= self.duration
+
+    def rows(self) -> list[float]:
+        """How full each row is, **bottom row first**, 0.0 to 1.0 each.
+
+        Bottom-first because that is the order the bar fills in, and every
+        caller here and in the tests wants to talk about "the bottom two rows"
+        rather than about slot indices.
+        """
+        filled = self.percent / 100.0 * config.GRID_ROWS
+        return [clamp01(filled - i) for i in range(config.GRID_ROWS)]
+
+    @staticmethod
+    def level(fill: float) -> float:
+        """How bright a row that is ``fill`` full is painted.
+
+        Full at anything solid, dark at anything empty, and in between only for
+        the one row the bar's top edge lands in -- see
+        :data:`config.USAGE_GAUGE_PARTIAL` for why the whole bar is no longer
+        scaled by the reading. Height is the quantity, hue is the severity, and
+        brightness now says one thing only: where the bar stops.
+        """
+        if fill >= 1.0:
+            return 1.0
+        if fill <= 0.0:
+            return 0.0
+        return lerp(*config.USAGE_GAUGE_PARTIAL, fill)
+
+    def apply(self, board: list[Cell], now: float, claimed=frozenset()) -> None:
+        t = now - self.started_at
+        if t < 0 or t >= self.duration:
+            return
+        if self.word is not None and t < self.word.duration:
+            self.word.apply(board, now, claimed)
+            return
+
+        within = (t - self.word_duration) % self.flash
+        lit = within < self.flash * config.USAGE_GAUGE_DUTY
+        fraction = self.percent / 100.0
+        low, high = config.USAGE_GAUGE_HUE
+        # Half-up rather than `round`, which is half-to-even and lands a value
+        # below the bench's `Math.round` on exactly the .5 cases. One value on a
+        # 127-wide wheel is invisible; a mirror that disagrees with its source is
+        # not, and the bench is checked against this by eye.
+        hue = int(lerp(low, high, fraction) + 0.5)
+        rows = self.rows()
+        for offset, slot in enumerate(bank_slots(self.bank)):
+            # Slot order runs top-left to bottom-right, and the bar fills the
+            # other way up; this subtraction is the whole of the flip.
+            row = config.GRID_ROWS - 1 - offset // config.GRID_COLS
+            value = self.level(rows[row]) if lit else 0.0
+            on = value > 0.02
+            board[slot] = Cell(
+                hue if on else None,
+                config.ANIM_NONE,
+                127 if on else 0,
+                value,
+            )
+
+
 class WaitingOverlay(Overlay):
     """Slow white gradients drifting over an empty board, until Claude shows up.
 

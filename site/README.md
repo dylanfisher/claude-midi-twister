@@ -99,6 +99,14 @@ default. And the bench talks to the same hardware port the daemon holds open, so
 Otherwise the bench either fails to open the port or fights the daemon for it,
 and the board flickers between two writers.
 
+The one exception is the usage-milestone panel (09/10). It plays the
+announcement — the word `USE`, then the reading as rows filling from the bottom
+of the bank — to the device like everything else here, but it also draws it into
+a 4×4 preview on the page, so the letter envelope, the bar and the watermark
+rule can all be judged in a browser with no Twister attached and no MIDI
+permission granted. Its tables are a mirror of `mft/font.py` and the `USAGE_*`
+block of `mft/config.py`, same as every other value on this page.
+
 ## Checking a change before it ships
 
 There is no test suite for the site. The loop is: serve, look, hard-reload. Two

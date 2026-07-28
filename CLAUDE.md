@@ -79,6 +79,15 @@ Every module is one job, and the filename is the job. Start at `daemon.py` for
   file. Pure, and knows nothing about sessions.
 - `context.py` — context-window fullness and Claude's own generated title, both
   tailed out of `transcript_path`.
+- `usage.py` — the other limit: how much of the five-hour usage window is spent,
+  read out of Claude Code's own `~/.claude.json` cache. Belongs to no session,
+  so it gets no encoder — it gets the whole bank for a few seconds on
+  25/50/75/90/95/100% and nothing in between, once each per window. What that
+  looks like is `overlays.UsageOverlay`: the word `USE`, then the reading as
+  rows filling from the bottom. The same animation is also *askable* — a turn
+  of the bottom-right knob, debounced so one flick is one readout — and that
+  path is sterile by design: it reads the file and paints, and never moves the
+  watermark, so looking can't swallow a milestone.
 
 **What it looks like**
 
@@ -86,7 +95,8 @@ Every module is one job, and the filename is the job. Start at `daemon.py` for
 - `board.py` — everything only decidable across the whole board: motion
   arbitration, the subagent stack, sleep, the grid walks, `compose`. Pure.
 - `overlays.py` — the transient gestures painted over that board: boot unwrap,
-  spawn strike, `/clear` wipe, compaction, hold-to-clear fuse, shutdown spiral. A new
+  spawn strike, `/clear` wipe, compaction, hold-to-clear fuse, usage
+  announcement, shutdown spiral. A new
   animation is a class here plus one line in `Visualizer._apply_effects`. Pure.
 - `font.py` — 4×4 bitmap alphabet; a bank is a 16-pixel display.
 - `config.py` — every tunable, all env-overridable (`MFT_*`). Colors,
@@ -152,11 +162,14 @@ These are load-bearing. Breaking one is a design change, not a refactor.
    may answer a prompt, approve a tool call, or block a session. Encoder press
    raises a terminal; a hold takes that encoder's session off the *board* and
    never touches the agent, which goes on running and re-claims a knob with its
-   next event. Knob turns are ignored entirely.
-   The one write that isn't paint is the bank select in `_follow_alerts`, and it
-   is not an exception: it changes which sixteen encoders you are looking at,
-   never a session. Anything else that wants to write to the device for a
-   non-painting reason needs the same argument and the same cooldown.
+   next event. Every knob turn is ignored but one: the bottom-right encoder of
+   the current bank (`USAGE_PEEK_ENCODER`) asks for the usage window and gets
+   the announcement painted over the bank.
+   That turn and the bank select in `_follow_alerts` are the two inputs that
+   aren't a press, and neither is an exception: both change only what you are
+   looking at, never a session, and both are cooldowned so a knob leaned on
+   can't become a stream. Anything else that wants a non-painting read or write
+   of the device needs the same two arguments.
 2. **No hook can block or slow a session.** Hooks post and exit 0 whatever
    happens; the daemon answers every event with a bodiless 204 and never puts a
    body on the wire. A dead daemon costs a failed connect and nothing more.

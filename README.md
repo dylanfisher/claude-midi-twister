@@ -19,11 +19,16 @@ pressing an encoder brings that session's terminal tab to the front.
 └────┴────┴────┴────┘   magenta        running unsupervised
   press → focus that tab       ◦ violet   subagents
   hold  → clear it off the board
+  turn bottom-right → how much of the usage window is spent
 ```
 
 Nothing on the device answers a prompt, approves a tool call, or blocks a
-session — it only displays state. 4 banks × 16 encoders supports 64
-simultaneous sessions; only one bank of 16 is visible at a time.
+session — it only displays state. The one knob turn it reads is the
+bottom-right one, which spells out the five-hour usage window on the whole
+bank for a couple of seconds and then hands it back; the same word plays
+itself on the way past 25/50/75/90/95/100% without being asked. 4 banks × 16
+encoders supports 64 simultaneous sessions; only one bank of 16 is visible at
+a time.
 
 ## Requirements
 

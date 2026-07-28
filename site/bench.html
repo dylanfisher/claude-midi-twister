@@ -8,18 +8,18 @@
 <meta property="og:title" content="Twister bench — claude-midi-twister">
 <meta property="og:description" content="A hardware bench for the Midi Fighter Twister over Web MIDI. Send one CC value and watch the encoder. No daemon involved.">
 <meta property="og:type" content="website">
-<meta property="og:image" content="https://dylanfisher.github.io/claude-midi-twister/share-image.jpg?v=62">
+<meta property="og:image" content="https://dylanfisher.github.io/claude-midi-twister/share-image.jpg?v=65">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Twister bench — claude-midi-twister">
 <meta name="twitter:description" content="A hardware bench for the Midi Fighter Twister over Web MIDI. Send one CC value and watch the encoder. No daemon involved.">
-<meta name="twitter:image" content="https://dylanfisher.github.io/claude-midi-twister/share-image.jpg?v=62">
+<meta name="twitter:image" content="https://dylanfisher.github.io/claude-midi-twister/share-image.jpg?v=65">
 <meta name="theme-color" content="#141413">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='34' fill='none' stroke='%23d97757' stroke-width='14'/></svg>">
 <!-- The front page's stylesheet, then the palette turned end for end. Every
      component on this page is one of that page's; only the colors differ, and
      bench.css says why the inversion is a token swap and not a filter. -->
-<link rel="stylesheet" href="css/site.css?v=62">
-<link rel="stylesheet" href="css/bench.css?v=62">
+<link rel="stylesheet" href="css/site.css?v=65">
+<link rel="stylesheet" href="css/bench.css?v=65">
 <!--
   A hardware bench for the Midi Fighter Twister, over Web MIDI.
 
@@ -49,6 +49,7 @@
     <b>claude-midi-twister</b>
     <a href="#channels" class="hide-sm">The Channels</a>
     <a href="#gestures" class="hide-sm">Gestures</a>
+    <a href="#usage" class="hide-sm">Usage</a>
     <a href="#sweeps">Sweeps</a>
     <span class="spacer"></span>
     <a href="index.html" data-flip>← Back to the Front</a>
@@ -197,6 +198,85 @@
   </div>
 </div>
 
+<div class="cols" id="usage">
+  <div class="panel">
+    <h2>09 · <b>Usage milestones — the announcement</b></h2>
+    <p class="note">
+      The five-hour usage window belongs to no session, so it gets no encoder:
+      it gets the whole bank for a few seconds, once on the way past each
+      milestone. This is <code>mft/overlays.py</code>'s
+      <code>UsageOverlay</code> at 30 fps over the target bank — the word
+      <code>USE</code>, each letter <em>held still</em> and then cut to the next,
+      and then the reading itself as rows filling from the bottom. The preview
+      mirrors what goes on the wire, so the panel is worth something with no
+      device attached.
+    </p>
+    <div class="row">
+      <button data-milestone="25">USE · 25%</button>
+      <button data-milestone="50">USE · 50%</button>
+      <button data-milestone="75">USE · 75%</button>
+      <button data-milestone="90">USE · 90%</button>
+      <button data-milestone="95">USE · 95%</button>
+      <button data-milestone="100">USE · 100%</button>
+      <button data-word="RATE">RATE</button>
+    </div>
+    <div class="glyphs" id="glyphs"></div>
+    <div class="row">
+      <label style="margin:0">spell</label>
+      <input id="word" type="text" value="USE" size="10" style="width:8rem">
+      <label style="margin:0">fade</label>
+      <input id="word-fade" type="number" value="0.5" min="0.1" max="2" step="0.05" style="width:5rem">
+      <label style="margin:0">hold</label>
+      <input id="word-hold" type="number" value="0" min="0" max="2" step="0.05" style="width:5rem">
+      <button id="spell">spell it</button>
+    </div>
+    <p class="note">
+      The word no longer carries the number, so its three letters can afford to
+      stand still: each is held for <code>USAGE_LETTER_SECONDS</code> (0.85)
+      and cut, not faded, to the next — a fading letter is legible for half the
+      time it is on screen. <code>RATE</code> beside it is the old envelope,
+      strike-and-decay at the banner's pace, for the comparison.
+    </p>
+    <p class="note">
+      Then the bar: one row per quarter of the window, filling from the bottom,
+      flashed <code>USAGE_GAUGE_FLASHES</code> times. A reading between rows
+      lights its leading row partially, which is the only thing that tells 90,
+      95 and 100 apart — they all reach the top row. Hue and brightness ramp
+      together over the whole span, amber and dim at the bottom to full red at
+      100. Milestone → the word's hue:
+      <span class="val" id="usage-colors"></span>.
+    </p>
+  </div>
+
+  <div class="panel">
+    <h2>10 · <b>Usage milestones — the rule</b></h2>
+    <p class="note">
+      The other half, and the half that decides whether you ever see the word:
+      <code>mft/usage.py</code>'s watermark. Move the percentage and this plays
+      exactly what the daemon would have played — which is usually nothing.
+      Readings come from Claude Code's own cache
+      (<code>~/.claude.json</code>), so they arrive minutes late and in jumps.
+    </p>
+    <label>reading = <span class="val" id="pct-val">40</span>% of the five-hour window</label>
+    <input type="range" id="pct" min="0" max="100" value="40">
+    <div class="row">
+      <button id="pct-send">take this reading</button>
+      <button id="pct-roll">new window (rollover)</button>
+      <button id="pct-cold">cold start (forget everything)</button>
+    </div>
+    <table id="usage-trace"><thead><tr>
+      <th>reading</th><th>watermark</th><th>crossed</th><th>board</th>
+    </tr></thead><tbody><tr><td colspan="4">—</td></tr></tbody></table>
+    <p class="note">
+      Three silences, all deliberate: the first reading of a daemon's life is
+      <em>adopted</em>, not announced; a window that rolls over resets without
+      a word; and a percentage that wobbles back across a milestone it already
+      spelled says nothing. A jump spells only the highest milestone it passed
+      — try 20% → 96%.
+    </p>
+  </div>
+</div>
+
 <div class="cols" id="sweeps">
   <div class="panel">
     <h2>07 · <b>Sweeps</b> <span class="status">— what mft.calibrate does</span></h2>
@@ -262,7 +342,7 @@
   </div>
 </footer>
 
-<script type="module" src="js/flip.js?v=62"></script>
+<script type="module" src="js/flip.js?v=65"></script>
 <script>
 "use strict";
 
@@ -691,6 +771,298 @@ $("states").onclick = () => {
   say("painted the ten states across encoders 1-10");
 };
 $("states-stop").onclick = () => { stopRunning(); for (let s = 0; s < PER_BANK; s++) clearSlot(s); };
+
+// ---------------------------------------------------------------------------
+// 9 + 10 · Usage milestones. Mirror of mft/usage.py, mft/font.py and the
+// USAGE_* block of mft/config.py -- the same relationship every other table on
+// this page has with config.py, and the same direction: those files are the
+// source, this is the copy you can drive by hand.
+// ---------------------------------------------------------------------------
+// mft/font.py, row for row. Four pixels is not enough for a legible alphabet
+// and several of these are frank approximations -- enough to spell a word you
+// are expecting, which is the whole job.
+const GLYPHS = {
+  " ": ["....", "....", "....", "...."],
+  A: ["####", "#..#", "####", "#..#"], B: ["###.", "#..#", "###.", "###."],
+  C: ["####", "#...", "#...", "####"], D: ["###.", "#..#", "#..#", "###."],
+  E: ["####", "###.", "#...", "####"], F: ["####", "#...", "###.", "#..."],
+  G: [".###", "#...", "#..#", ".###"], H: ["#..#", "#..#", "####", "#..#"],
+  I: ["####", ".##.", ".##.", "####"], J: ["..##", "...#", "#..#", ".##."],
+  K: ["#..#", "##..", "##..", "#..#"], L: ["#...", "#...", "#...", "####"],
+  M: ["#..#", "####", "#..#", "#..#"], N: ["#..#", "##.#", "#.##", "#..#"],
+  O: [".##.", "#..#", "#..#", ".##."], P: ["###.", "#..#", "###.", "#..."],
+  Q: [".##.", "#..#", "#.##", ".###"], R: ["###.", "#..#", "###.", "#..#"],
+  S: [".###", "##..", "..##", "###."], T: ["####", ".##.", ".##.", ".##."],
+  U: ["#..#", "#..#", "#..#", "####"], V: ["#..#", "#..#", "#..#", ".##."],
+  W: ["#..#", "#..#", "####", ".##."], X: ["#..#", ".##.", ".##.", "#..#"],
+  Y: ["#..#", ".##.", ".##.", ".##."], Z: ["####", "..#.", ".#..", "####"],
+  0: [".##.", "#..#", "#..#", ".##."], 1: [".#..", "##..", ".#..", "###."],
+  2: ["###.", "..#.", ".#..", "####"], 3: ["###.", "..#.", "..#.", "###."],
+  4: ["#..#", "#..#", "####", "...#"], 5: ["####", "##..", "..##", "###."],
+  6: [".##.", "#...", "###.", ".##."], 7: ["####", "...#", "..#.", ".#.."],
+  8: [".##.", "#..#", ".##.", ".##."], 9: [".##.", "#..#", ".###", "..#."],
+};
+
+/** One glyph as sixteen intensities, in slot order. Unknown characters are blank. */
+function pixels(ch) {
+  const rows = (GLYPHS[String(ch).toUpperCase()] || GLYPHS[" "]).join("");
+  return Array.from(rows, px => (px === "#" ? 1 : 0));
+}
+
+const USAGE_MILESTONES = [25, 50, 75, 90, 95, 100];
+// config.USAGE_COLORS: first band the milestone reaches into, else plain light.
+const USAGE_COLORS = [[95, "red"], [90, "orange"], [75, "amber"]];
+const USAGE_WORD = "USE";
+// Held, then cut. The cut is a fade short enough to read as one -- the same
+// trick config.py plays, and for the same reason: the envelope already exists.
+const USAGE_LETTER_SECONDS = 0.85, USAGE_LETTER_CUT = 0.02;
+// The bar after it: rows from the bottom, flashed. Filled rows are always at
+// full and the hue carries the severity; only the leading row is dimmed, by how
+// far into it the reading is -- see USAGE_GAUGE_PARTIAL in mft/config.py.
+const USAGE_GAUGE_FLASHES = 3, USAGE_GAUGE_FLASH_SECONDS = 0.42;
+const USAGE_GAUGE_DUTY = 0.6;
+const USAGE_GAUGE_HUE = [COLORS.amber, COLORS.red];
+const USAGE_GAUGE_PARTIAL = [0.3, 1];
+const GRID_ROWS = 4, GRID_COLS = 4;
+const TEXT_FADE_SECONDS = 0.75, BANNER_SECONDS = 2.4;
+const USAGE_ROLLOVER_DROP = 10;
+// A word is spelled in *light*, not in hue: TEXT_COLOR is null, which on this
+// hardware means the ring at full with the RGB switched off. Only the top two
+// bands wear a color, and these hexes are the preview's alone -- the wire gets
+// the MIDI values in COLORS above. Mirror of js/config.js.
+const HEX = { white: "#f2f4f8", amber: "#f0a83f", orange: "#f5762a", red: "#f0322a" };
+
+function bannerColor(milestone) {
+  for (const [threshold, color] of USAGE_COLORS)
+    if (milestone >= threshold) return color;
+  return null;   // TEXT_COLOR: white ring, RGB off
+}
+
+/** mft.usage.crossed: the highest milestone in (watermark, percent]. */
+function crossed(watermark, percent) {
+  const reached = USAGE_MILESTONES.filter(m => watermark < m && m <= percent);
+  return reached.length ? Math.max(...reached) : null;
+}
+
+// The preview: sixteen cells in the device's own 4x4, lit from the same
+// intensities the wire gets. This is the part that works with no Twister
+// plugged in, which is most of the time you want to look at a word.
+const glyphCells = [];
+for (let i = 0; i < PER_BANK; i++) {
+  const cell = document.createElement("div");
+  $("glyphs").appendChild(cell);
+  glyphCells.push(cell);
+}
+/** Blend two "#rrggbb" strings. The bar's hue is a ramp, not one of the names. */
+function mixHex(a, b, t) {
+  const parse = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const [ar, ag, ab] = parse(a), [br, bg, bb] = parse(b);
+  return "#" + [[ar, br], [ag, bg], [ab, bb]]
+    .map(([lo, hi]) => Math.round(lerp(lo, hi, t)).toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function preview(lit, color) {
+  previewHex(lit, HEX[color] || HEX.white);
+}
+function previewHex(lit, hex) {
+  glyphCells.forEach((cell, i) => {
+    const level = lit[i];
+    cell.style.background = level > 0.02 ? hex : "transparent";
+    cell.style.opacity = level > 0.02 ? Math.max(0.12, level).toFixed(3) : 1;
+  });
+}
+$("usage-colors").textContent = USAGE_MILESTONES
+  .map(m => `${m}→${bannerColor(m) || "light"}`).join("  ");
+
+/**
+ * mft.overlays.TextOverlay, on the selected bank and on the page at once.
+ * `color` of null is white light rather than a hue -- see TEXT_COLOR.
+ */
+function spell(text, { color = null, fade = TEXT_FADE_SECONDS, hold = 0 } = {}) {
+  stopRunning();
+  text = (text || " ").toUpperCase();
+  const base = Math.floor(slot / PER_BANK) * PER_BANK;
+  const step = Math.max(0.01, fade + hold);
+  const duration = step * text.length;
+  const hue = color === null ? null : COLORS[color];
+  const started = performance.now();
+  for (let i = 0; i < PER_BANK; i++) clearSlot(base + i);
+
+  running = setInterval(() => {
+    const t = (performance.now() - started) / 1000;
+    if (t >= duration) {
+      stopRunning();
+      for (let i = 0; i < PER_BANK; i++) clearSlot(base + i);
+      preview(new Array(16).fill(0), color);
+      return;
+    }
+    const index = Math.min(text.length - 1, Math.floor(t / step));
+    const within = t - index * step;
+    const level = 1 - smoothstep(Math.max(0, within - hold) / fade);
+    const glyph = pixels(text[index]);
+    const next = index + 1 < text.length ? pixels(text[index + 1]) : null;
+    const lit = glyph.map((on, i) =>
+      // A pixel the next letter also lights holds instead of decaying: one lamp
+      // staying on across the boundary, not one going out and another coming up.
+      next ? Math.max(on * level, on * next[i]) : on * level);
+    lit.forEach((value, i) => {
+      const on = value > 0.02;
+      // Ring position at full is what makes a pixel a block; the ring's
+      // *brightness* is the grayscale, which is why a word can fade at all.
+      writeCell(base + i, { color: on ? (hue === null ? COLORS.white : hue) : null,
+                            rgbAnim: 0, ring: on ? 127 : 0,
+                            brightness: hue === null ? 0 : value,
+                            ringLevel: value });
+    });
+    preview(lit, color);
+  }, 1000 / FPS);
+  say(`spelling "${text}" on bank ${Math.floor(slot / PER_BANK) + 1} · ` +
+      `${text.length} glyphs · fade ${fade}s · ${duration.toFixed(2)}s total`);
+}
+
+/**
+ * mft.overlays.UsageOverlay: the word held still, then the reading as rows
+ * filling the bank from the bottom. One interval drives both halves, exactly as
+ * one `apply` does in the Python -- the branch on `t` below is that method.
+ */
+function announceUsage(percent, color) {
+  stopRunning();
+  const base = Math.floor(slot / PER_BANK) * PER_BANK;
+  const step = USAGE_LETTER_SECONDS + USAGE_LETTER_CUT;
+  const wordDuration = step * USAGE_WORD.length;
+  const duration = wordDuration + USAGE_GAUGE_FLASH_SECONDS * USAGE_GAUGE_FLASHES;
+  const fraction = clamp01(percent / 100);
+  const barHue = Math.round(lerp(USAGE_GAUGE_HUE[0], USAGE_GAUGE_HUE[1], fraction));
+  // Full if the row is solid, dark if it is empty, and in between only for the
+  // one row the bar's top edge lands in.
+  const barLevel = (fill) =>
+    fill >= 1 ? 1 : fill <= 0 ? 0 : lerp(USAGE_GAUGE_PARTIAL[0], USAGE_GAUGE_PARTIAL[1], fill);
+  const barHex = mixHex(HEX.amber, HEX.red, fraction);
+  // How full each row is, bottom row first. A reading between rows leaves its
+  // leading row partial, and that partial row is what tells 90 from 100.
+  const rows = [];
+  for (let i = 0; i < GRID_ROWS; i++) rows.push(clamp01(fraction * GRID_ROWS - i));
+  const wordHue = color === null ? null : COLORS[color];
+  const started = performance.now();
+  for (let i = 0; i < PER_BANK; i++) clearSlot(base + i);
+
+  running = setInterval(() => {
+    const t = (performance.now() - started) / 1000;
+    if (t >= duration) {
+      stopRunning();
+      for (let i = 0; i < PER_BANK; i++) clearSlot(base + i);
+      previewHex(new Array(PER_BANK).fill(0), barHex);
+      return;
+    }
+    let lit, hue, hex;
+    if (t < wordDuration) {
+      const index = Math.min(USAGE_WORD.length - 1, Math.floor(t / step));
+      const within = t - index * step;
+      // Full for the whole letter, then a cut. The subtraction is the hold;
+      // what is left to divide by is two hundredths of a second.
+      const level =
+        1 - smoothstep(Math.max(0, within - USAGE_LETTER_SECONDS) / USAGE_LETTER_CUT);
+      const glyph = pixels(USAGE_WORD[index]);
+      const next = index + 1 < USAGE_WORD.length ? pixels(USAGE_WORD[index + 1]) : null;
+      lit = glyph.map((on, i) => next ? Math.max(on * level, on * next[i]) : on * level);
+      hue = wordHue;
+      hex = HEX[color] || HEX.white;
+    } else {
+      const within = (t - wordDuration) % USAGE_GAUGE_FLASH_SECONDS;
+      const on = within < USAGE_GAUGE_FLASH_SECONDS * USAGE_GAUGE_DUTY;
+      // Slot order runs top-left to bottom-right and the bar fills the other
+      // way up; this subtraction is the whole of the flip.
+      lit = Array.from({ length: PER_BANK }, (_, i) =>
+        on ? barLevel(rows[GRID_ROWS - 1 - Math.floor(i / GRID_COLS)]) : 0);
+      hue = barHue;
+      hex = barHex;
+    }
+    lit.forEach((value, i) => {
+      const on = value > 0.02;
+      // Ring position at full is what makes a pixel a block; the ring's
+      // *brightness* is the grayscale, which is why any of this can fade.
+      writeCell(base + i, { color: on ? (hue === null ? COLORS.white : hue) : null,
+                            rgbAnim: 0, ring: on ? 127 : 0,
+                            brightness: hue === null ? 0 : value,
+                            ringLevel: value });
+    });
+    previewHex(lit, hex);
+  }, 1000 / FPS);
+}
+
+function playMilestone(milestone, percent = milestone) {
+  const color = bannerColor(milestone);
+  announceUsage(percent, color);
+  say(`usage milestone ${milestone}% · word in ` +
+      `${color || "plain light (TEXT_COLOR)"} · bar at ${percent}% · ` +
+      `${Math.ceil(percent / 25)} row(s)`);
+}
+document.querySelectorAll("[data-milestone]").forEach(
+  b => b.onclick = () => playMilestone(Number(b.dataset.milestone)));
+// The sibling word, at the banner's own pace: RATE is four glyphs and can
+// afford the slower letter. Side by side is how you judge the difference.
+document.querySelectorAll("[data-word]").forEach(b => b.onclick = () => {
+  const word = b.dataset.word;
+  spell(word, { color: "red", fade: TEXT_FADE_SECONDS,
+                hold: BANNER_SECONDS / Math.max(1, word.length) });
+});
+$("spell").onclick = () => spell($("word").value,
+  { fade: Number($("word-fade").value) || TEXT_FADE_SECONDS,
+    hold: Number($("word-hold").value) || 0 });
+
+// -- the watermark ----------------------------------------------------------
+// mft.usage.UsageWatcher, with the file and the clock taken out of it: what is
+// left is the three silences, which is the whole rule.
+let watermark = 0, seen = false;
+const traceRows = [];
+
+function traceUsage(percent, milestone, note) {
+  traceRows.unshift(
+    `<tr><td>${percent}%</td><td>${watermark}%</td>` +
+    `<td>${milestone === null ? "—" : milestone + "%"}</td><td>${note}</td></tr>`);
+  document.querySelector("#usage-trace tbody").innerHTML =
+    traceRows.slice(0, 12).join("");
+}
+
+function reading(percent) {
+  const rolled = percent + USAGE_ROLLOVER_DROP < watermark;
+  if (!seen || rolled) {
+    seen = true;
+    watermark = percent;
+    const why = rolled ? "window rolled over — silent, and re-armed"
+                       : "first reading — adopted, not announced";
+    traceUsage(percent, null, why);
+    say(`usage: ${why} at ${percent}%`);
+    return;
+  }
+  const milestone = crossed(watermark, percent);
+  // Never lowered by a dip: the watermark is what has been *said*.
+  watermark = Math.max(watermark, percent);
+  if (milestone === null) {
+    traceUsage(percent, null, "nothing crossed — the board says nothing");
+    say(`usage: ${percent}%, nothing crossed`);
+    return;
+  }
+  // The word announces the milestone that was crossed; the bar shows where
+  // the reading actually is, which is the same number or a little past it.
+  traceUsage(percent, milestone, `announces ${milestone}% · bar at ${percent}%`);
+  playMilestone(milestone, percent);
+}
+
+$("pct").oninput = () => { $("pct-val").textContent = $("pct").value; };
+$("pct-send").onclick = () => reading(Number($("pct").value));
+$("pct-roll").onclick = () => {
+  // What a rollover actually looks like from in here: a different window, and a
+  // percentage on the floor. The drop is the only evidence the bench has.
+  $("pct").value = 0; $("pct-val").textContent = "0";
+  reading(0);
+};
+$("pct-cold").onclick = () => {
+  seen = false; watermark = 0; traceRows.length = 0;
+  document.querySelector("#usage-trace tbody").innerHTML = '<tr><td colspan="4">—</td></tr>';
+  say("usage: watchers forgotten — the next reading is a cold start");
+};
 
 // ---------------------------------------------------------------------------
 // 7 · Sweeps

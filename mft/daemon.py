@@ -14,6 +14,7 @@ lives beside it and is named after its own job --
 * :mod:`mft.tab` -- the tab strip, including when to write to it
 * :mod:`mft.banks` -- which sixteen encoders the front panel is showing
 * :mod:`mft.upkeep` -- keeping the roster honest against the process table
+* :mod:`mft.usage` -- how much of the five-hour window is spent
 
 so that opening this file puts you in front of the frame, not in front of an
 argument parser.
@@ -48,6 +49,7 @@ from . import (
     tab as tab_mod,
     twister as twister_mod,
     upkeep as upkeep_mod,
+    usage as usage_mod,
 )
 from .events import (
     EFFECT_BANNER,
@@ -103,6 +105,9 @@ class Visualizer:
         self.upkeep = upkeep_mod.Upkeep(
             self.table, released=self.tabs.restore, wake=self._wake_loop
         )
+        #: The one number on this board that belongs to no encoder; see
+        #: :mod:`mft.usage`. Its clock lives in the render loop with the others.
+        self.usage = usage_mod.UsageWatcher()
         self._stop = threading.Event()
         #: What our own source looked like when we imported it, and the modules
         #: that have been written since. Checked on wake because that is both a
@@ -330,6 +335,7 @@ class Visualizer:
             focused_app=self._attention.app,
             discovery_failing=self.upkeep.discovery_failing,
             stale=self._stale,
+            usage=self.usage.payload(),
         )
 
     # -- encoder input ------------------------------------------------------
@@ -349,8 +355,31 @@ class Visualizer:
             self._on_switch(msg.control, msg.value)
         elif msg.channel == config.CH_SYSTEM:
             self.banks.chose(msg.control, msg.value, now)
-        # A turn is otherwise deliberately ignored: the board is a display, not
+        elif msg.channel == config.CH_ENCODER:
+            self._on_turn(msg.control, now)
+        # Every other turn is deliberately ignored: the board is a display, not
         # a control surface -- see :meth:`Twister.forget_rings`.
+
+    def _on_turn(self, control: int, now: float) -> None:
+        """The one knob turn this daemon reads: show me the usage window.
+
+        Still a display gesture and so still inside invariant 1 -- the far end of
+        it is a file this process reads and an overlay it paints, and there is no
+        session on the other side to answer, approve or interrupt. What makes it
+        safe is the same pair of properties the bank select has: it changes only
+        what you are looking at, and it has a cooldown, so a knob leaned on
+        cannot turn into a stream of anything.
+
+        No file is read here. This runs on the MIDI pump thread and the reading
+        costs a stat and sometimes a 90KB parse, so the turn leaves a flag and
+        :meth:`_check_usage` picks it up on the next frame.
+        """
+        if control % config.ENCODERS_PER_BANK != config.USAGE_PEEK_ENCODER:
+            return
+        if self._suspended.is_set():
+            return
+        if self.usage.request(now):
+            self._wake.set()
 
     def _press_target(self, slot: int) -> Optional[Session]:
         """The session a press on this encoder is aimed at, if any.
@@ -570,6 +599,82 @@ class Visualizer:
             self._waiting = None
         elif self._live_session():
             waiting.dismiss(now)
+
+    def _check_usage(self, now: float) -> None:
+        """Announce the five-hour window's milestone, the once it is crossed --
+        and answer a turn of the knob that asked for it out of turn.
+
+        On :attr:`banks.current` rather than on any session's bank: this number
+        is not about a session, and the bank you are looking at is the only
+        honest place to put something that is about all of them. It also means
+        the word never moves the panel -- a bank select for a percentage would
+        be a second exception to invariant 1, and this does not have the
+        argument for one.
+
+        Nothing here fires while the machine is suspended. A milestone crossed
+        while you were asleep is a number, not news, and the watcher has already
+        taken it as read by the time the board comes back.
+        """
+        if self._suspended.is_set():
+            return
+        if self.usage.take_request():
+            self._show_usage(now)
+        milestone = self.usage.poll(now)
+        if milestone is None:
+            return
+        # The word announces the milestone that was crossed; the bar shows where
+        # the reading actually is, which is the same number or a little past it.
+        # The fallback is for a watcher that announced without ever recording a
+        # percentage, which cannot currently happen and would otherwise be a
+        # blank bank if it ever did.
+        percent = self.usage.percent
+        if percent is None:
+            percent = float(milestone)
+        log.info(
+            "usage window past %d%%; announcing it (reading %.0f%%)",
+            milestone,
+            percent,
+        )
+        self.push_overlay(
+            overlays_mod.UsageOverlay(
+                percent,
+                now,
+                color=usage_mod.banner_color(milestone),
+                bank=self.banks.current,
+            )
+        )
+
+    def _show_usage(self, now: float) -> None:
+        """Answer the knob: the reading as it stands, straight to the bar.
+
+        The same overlay and the same color bands the milestones use, because an
+        asked-for 96% is the same fact as an announced one and a second dialect
+        for it would be one to learn. The one difference is the word, which is
+        skipped (`config.USAGE_PEEK_WORD`): a milestone has to introduce itself
+        and an answer does not.
+
+        Nothing is said when there is nothing to say -- an unreadable cache
+        paints no bar rather than an empty one, which would read as a window
+        barely touched (invariant 6).
+        """
+        percent = self.usage.current()
+        if percent is None:
+            log.debug("usage asked for, but nothing readable in %s", self.usage.path)
+            return
+        log.info("usage window asked for; showing %.0f%%", percent)
+        overlay = overlays_mod.UsageOverlay(
+            percent,
+            now,
+            color=usage_mod.banner_color(int(percent)),
+            bank=self.banks.current,
+            word=config.USAGE_PEEK_WORD,
+        )
+        self.push_overlay(overlay)
+        # The knob is deaf until this has finished saying what it says. Told
+        # rather than assumed: the overlay is the only thing that knows how long
+        # it runs, and it stopped being a fixed length the moment the peek
+        # dropped the word off the front of it.
+        self.usage.showing(now + overlay.duration)
 
     # -- painting -----------------------------------------------------------
 
@@ -935,6 +1040,9 @@ class Visualizer:
             self._check_display(now)
             self._check_port(now)
             self._check_waiting(now)
+            # On its own slow clock, and before the paint so the word it may
+            # push lands in this frame rather than the next.
+            self._check_usage(now)
             # Before the paint: an encoder whose fuse just ran out should be
             # gone in the frame that empties its ring, not the one after it.
             self._check_holds(now)

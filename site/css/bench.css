@@ -111,6 +111,21 @@ label { display: block; margin: 0.7rem 0 0.2rem; color: var(--faint); font: 500 
 .pad button small { color: var(--faint); font-size: 10px; }
 .pad button.on small { color: inherit; opacity: 0.7; }
 
+/* The word preview: the same 4×4 as the target pad, but read-only and lit
+ * rather than clickable. It exists so the usage panel is worth something with
+ * no device attached — which is most of the time anyone looks at a word. The
+ * cells carry no transition: the fade is the animation, thirty frames a second
+ * of it, and a CSS ease on top would smear one letter into the next. */
+.glyphs {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.4rem;
+  margin: 0.9rem 0; padding: 0.5rem;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r);
+}
+.glyphs div {
+  aspect-ratio: 1; border-radius: 50%;
+  border: 1px solid var(--line-2); background: transparent;
+}
+
 pre.log {
   background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r);
   padding: 0.7rem 0.85rem; height: 200px; overflow: auto; margin: 0.7rem 0 0;
