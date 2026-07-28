@@ -145,6 +145,15 @@ p.lede { font-size: clamp(1rem, 1.5vw, 1.1rem); color: var(--dim); }
   white-space: pre;
 }
 .logo .mk { color: var(--accent); }
+/* Below the tablet breakpoint there's no second column competing for the
+ * gutter, so the wordmark fills it edge to edge instead of sitting at the
+ * desktop's modest, ragged-right size. 58.28 is 94 (the widest line, in
+ * characters) times 0.62 (SF Mono/Menlo's measured advance width as a
+ * fraction of font-size) — solving that same "never overflow" equation for
+ * "exactly fill" instead. */
+@media (max-width: 900px) {
+  .logo pre { font-size: calc((100vw - 2 * var(--gut)) / 58.28); }
+}
 
 /* ── hero ────────────────────────────────────────────────────────────────── */
 .hero .pitch { font-size: clamp(1.05rem, 1.9vw, 1.3rem); line-height: 1.5; max-width: 62ch; color: var(--dim); }
@@ -404,20 +413,9 @@ code.inl {
 .btn:hover { background: var(--panel-2); border-color: var(--faint); }
 .btn:active { transform: translateY(1px); }
 .btn.ghost { background: none; color: var(--dim); border-color: var(--line); }
-/* The demo pressing its own buttons: a ping, not a hold. Once the board is
- * carrying knob-state pings of its own, a button that stayed lit for a whole
- * scenario's run would be the busiest thing on the page — so this fires once,
- * at the moment the scenario starts, and decays on its own. The animation is
- * driven from JS (motion.dev, in main.js's pingButton), not a CSS keyframe,
- * because it has to read the *current* theme's accent/panel/line colors at
- * the moment it fires and interpolate between them — var() substitution can
- * give a keyframe a static value, not one it animates toward. `.playing` here
- * is just the marker `holdScenario`/`releaseScenario` set on the button that
- * is currently pinged or mid-fade; it carries no styling of its own. */
-.btn.playing { }
 
 .readout {
-  border: 1px solid var(--line); border-radius: 6px; background: var(--bg-2);
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--bg-2);
   padding: 9px 12px; font: 12px/1.7 var(--mono); letter-spacing: 0; color: var(--dim);
   display: flex; flex-direction: column; gap: 2px;
 }

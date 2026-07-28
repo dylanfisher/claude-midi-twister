@@ -8,14 +8,14 @@
 <meta property="og:title" content="claude-midi-twister">
 <meta property="og:description" content="Running Claude Code sessions on a Midi Fighter Twister, one encoder each. Color is the state, the ring is turn length, press to focus the terminal tab.">
 <meta property="og:type" content="website">
-<meta property="og:image" content="https://dylanfisher.github.io/claude-midi-twister/share-image.jpg?v=59">
+<meta property="og:image" content="https://dylanfisher.github.io/claude-midi-twister/share-image.jpg?v=62">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="claude-midi-twister">
 <meta name="twitter:description" content="Running Claude Code sessions on a Midi Fighter Twister, one encoder each. Color is the state, the ring is turn length, press to focus the terminal tab.">
-<meta name="twitter:image" content="https://dylanfisher.github.io/claude-midi-twister/share-image.jpg?v=59">
+<meta name="twitter:image" content="https://dylanfisher.github.io/claude-midi-twister/share-image.jpg?v=62">
 <meta name="theme-color" content="#f0eee6">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='34' fill='none' stroke='%23d97757' stroke-width='14'/></svg>">
-<link rel="stylesheet" href="css/site.css?v=59">
+<link rel="stylesheet" href="css/site.css?v=62">
 </head>
 <body>
 
@@ -70,35 +70,11 @@
     <p class="pitch">A daemon that shows every running Claude Code session on a
     DJTT Midi Fighter Twister, one encoder per session. The color is the
     session's state, the LED ring is how long the current turn has run, and
-    <b>pressing an encoder brings that session's terminal tab to the front</b>.
-    <b>The device is display-only</b>: it cannot answer a prompt or approve a
-    tool call.</p>
+    pressing an encoder brings that session's terminal tab to the front.</p>
 
-    <div class="hero-meta">
-      <span>4 banks × 16 encoders = 64 sessions</span>
-      <span>Python 3.14, stdlib + mido</span>
-      <span>macOS</span>
-      <span>MIT</span>
-    </div>
-
-    <p class="lede" style="margin:3.5rem 0 1.1rem">Below is that render loop —
-    <code class="inl">render.py</code>, <code class="inl">board.py</code>,
-    <code class="inl">overlays.py</code>, <code class="inl">font.py</code> —
-    ported line for line, running against a simulated terminal instead of a MIDI
-    port. It runs one scenario at a time on its own, and the scenario it is
-    running stays lit in the row below. Click an encoder, press a scenario, or
-    type a prompt to drive it yourself.</p>
-
-    <p class="scenarios-label">scenarios</p>
-    <div class="scenarios" id="scenarios"></div>
-
-    <div class="replica">
+    <div class="replica" style="margin-top: 2rem;">
       <div class="replica-left">
         <div id="device"></div>
-        <p class="demo-status" id="demoStatus" data-live="auto">
-          <span class="led"></span>
-          <span id="demoStatusText">running scenarios automatically — interact to take over</span>
-        </p>
       </div>
       <div class="replica-right">
         <div id="console"></div>
@@ -107,11 +83,13 @@
 
     <div class="readout readout-full" id="readout"></div>
 
-    <p class="hint hint-full">
-      <kbd>click</kbd> an encoder to focus its session ·
-      <kbd>hold</kbd> 0.8s to clear it off the board ·
-      <kbd>tab</kbd> then <kbd>enter</kbd> does the same
+    <p class="demo-status" id="demoStatus" data-live="auto" style="margin-top: 1rem;">
+      <span class="led"></span>
+      <span id="demoStatusText">running scenarios automatically — interact to take over</span>
     </p>
+
+    <p class="scenarios-label" style="margin-top: 1rem;">scenarios</p>
+    <div class="scenarios" id="scenarios"></div>
   </div>
 </section>
 
@@ -189,7 +167,7 @@
 
 <div class="statusbar" id="statusbar"></div>
 
-<script type="module" src="js/flip.js?v=59"></script>
-<script type="module" src="js/main.js?v=59"></script>
+<script type="module" src="js/flip.js?v=62"></script>
+<script type="module" src="js/main.js?v=62"></script>
 </body>
 </html>

@@ -3,13 +3,13 @@
  * daemon minus its outside world, so two of them cost nothing but two clocks.
  */
 
-import * as C from "./config.js?v=59";
-import { hex } from "./config.js?v=59";
-import { Sim } from "./sim.js?v=59";
-import { makeBoard } from "./twister.js?v=59";
-import { Console } from "./console.js?v=59";
-import { Director, freePlay } from "./scenarios.js?v=59";
-import { Cell } from "./board.js?v=59";
+import * as C from "./config.js?v=62";
+import { hex } from "./config.js?v=62";
+import { Sim } from "./sim.js?v=62";
+import { makeBoard } from "./twister.js?v=62";
+import { Console } from "./console.js?v=62";
+import { Director, freePlay } from "./scenarios.js?v=62";
+import { Cell } from "./board.js?v=62";
 import { animate } from "https://cdn.jsdelivr.net/npm/motion@12.42.2/+esm";
 
 // ─── motion ───────────────────────────────────────────────────────────────
@@ -78,13 +78,10 @@ function seed() {
 // --- second code path to keep honest -- it's this one, on a timer.
 //
 // There are two lanes, and the split is the whole design. The *featured* lane
-// runs one scenario at a time: the console follows it, its encoder is focused,
-// and its button pings once when the scenario starts -- so the ping always
-// names the thing you are looking at, without staying lit for the whole run.
-// The *background* lane keeps one
-// other session quietly busy so the board doesn't look like a single knob in an
-// empty grid. Background scenarios never light a button, because you are not
-// being pointed at them.
+// runs one scenario at a time: the console follows it and its encoder is
+// focused. Neither lane lights a scenario button -- that ping is reserved for
+// a button someone actually pressed, so it keeps meaning "you did that"
+// instead of also meaning "the demo did that".
 //
 // The first version ran everything as one lane at a beat and a half, which put
 // six knobs in motion and strobed the button row past anything you could follow.
@@ -122,7 +119,6 @@ function stopAutoplay() {
   if (!autoplay) return;
   autoplay = false;
   busy.clear();
-  releaseScenario();
   paintDemoStatus();
 }
 
@@ -132,7 +128,7 @@ function freeSession() {
   return free.length ? sample(free) : null;
 }
 
-// --- the featured lane: one scenario, named by a lit button, then a pause.
+// --- the featured lane: one scenario at a time, then a pause.
 function featuredBeat() {
   if (!autoplay) return;
   autoStep++;
@@ -148,11 +144,9 @@ function featuredBeat() {
 function playFeatured(s, sc) {
   lastAutoKey = sc.key;
   busy.add(s.slot);
-  holdScenario(sc.key);                       // the one ping, right away
   const dur = sc.run(s) || 0;
   const hold = sc.auto.gate ? AUTO_GATE_HOLD : Math.min(Math.max(dur, 3), 11);
   director.at(hold, () => {
-    releaseScenario();
     retire(s.slot);
     director.at(randIn(AUTO_GAP), featuredBeat);
   });
@@ -288,9 +282,7 @@ con.onSubmit = (text) => {
 };
 
 // --- scenarios. One table, two consumers: the buttons under the heading, and
-// --- the demo, which picks from the entries that carry an `auto` block. That
-// --- is also why the demo can light the button it is playing -- there is one
-// --- name for each scenario and both sides use it.
+// --- the demo, which picks from the entries that carry an `auto` block.
 const SCENARIOS = [
   { key: "permission", label: "permission gate", auto: { gate: true, spotlight: true }, run: (s) => director.permissionGate(s) },
   { key: "plan", label: "plan approval", auto: { gate: true, spotlight: true }, run: (s) => director.planGate(s) },
@@ -331,7 +323,6 @@ function reset() {
   busy.clear();
   lastAutoKey = null;
   lastSpawnAt = -Infinity;
-  releaseScenario();
   autoplay = true;             // reset is "start over", so the demo re-arms
   paintDemoStatus();
   seed();
@@ -353,13 +344,13 @@ for (const sc of SCENARIOS) {
   scenarioBtns.set(sc.key, btn);
 }
 
-/* Any time a scenario is initiated -- by the demo playing it, or by a click --
- * its button pings: the ring and fill jump to full strength and motion.dev
- * fades both back to resting over 1s. JS, not a CSS keyframe, because the
- * fade has to interpolate *from* the accent/panel/line colors read off the
- * page right now -- a keyframe can only bake in a fixed value, and this page
- * has a dark console/readout subtree with its own --accent alongside the
- * light body, so "the accent color" isn't one constant to hardcode. */
+/* A scenario button pings when it's clicked: the ring and fill jump to full
+ * strength and motion.dev fades both back to resting over 1s. JS, not a CSS
+ * keyframe, because the fade has to interpolate *from* the accent/panel/line
+ * colors read off the page right now -- a keyframe can only bake in a fixed
+ * value, and this page has a dark console/readout subtree with its own
+ * --accent alongside the light body, so "the accent color" isn't one
+ * constant to hardcode. */
 function pingColors() {
   const cs = getComputedStyle(document.documentElement);
   return {
@@ -370,13 +361,15 @@ function pingColors() {
 }
 function pingButton(btn) {
   btn.__ping?.cancel();
+  clearTimeout(btn.__pingTimer);
   const { accent, panel, line2 } = pingColors();
   const fillOn = `color-mix(in srgb, ${accent} 22%, ${panel})`;
   if (reduced) {
     // No animation, but the ring still has to say "this one" -- held at the
-    // strength the animated version starts from, until releaseScenario clears it.
+    // strength the animated version starts from, then cleared on a plain timer.
     btn.__ping = null;
     Object.assign(btn.style, { background: fillOn, borderColor: accent, boxShadow: `0 0 0 2px ${accent} inset` });
+    btn.__pingTimer = setTimeout(() => unpingButton(btn), 1000);
     return;
   }
   btn.__ping = animate(
@@ -392,28 +385,10 @@ function pingButton(btn) {
 function unpingButton(btn) {
   btn.__ping?.cancel();
   btn.__ping = null;
+  clearTimeout(btn.__pingTimer);
   btn.style.background = "";
   btn.style.borderColor = "";
   btn.style.boxShadow = "";
-}
-
-let litKey = null;
-function holdScenario(key) {
-  releaseScenario();
-  const btn = scenarioBtns.get(key);
-  if (!btn) return;
-  litKey = key;
-  btn.classList.add("playing");
-  pingButton(btn);
-}
-function releaseScenario() {
-  if (litKey === null) return;
-  const btn = scenarioBtns.get(litKey);
-  if (btn) {
-    btn.classList.remove("playing");
-    unpingButton(btn);
-  }
-  litKey = null;
 }
 
 // --- the readout under the device: what the daemon's --status would say
@@ -525,26 +500,18 @@ function paintMotionBtn() {
 
 // Follow the OS while nobody has expressed an opinion here; once they have,
 // this page's setting is theirs and the OS stops speaking for them.
-// The ping used to be a CSS class, so toggling reduced motion changed it for
-// free everywhere the class was applied. Now that it's JS, a ping mid-fade
-// when the toggle fires has to be told to redraw itself as the other mode.
-function repaintPing() {
-  if (litKey !== null) pingButton(scenarioBtns.get(litKey));
-}
 let motionTouched = false;
 motionBtn.addEventListener("click", () => {
   motionTouched = true;
   reduced = !reduced;
   applyMotion();
   paintMotionBtn();
-  repaintPing();
 });
 motionMQ.addEventListener("change", (e) => {
   if (motionTouched) return;
   reduced = e.matches;
   applyMotion();
   paintMotionBtn();
-  repaintPing();
 });
 paintMotionBtn();
 
