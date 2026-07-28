@@ -1,4 +1,4 @@
-# claude-midi-twister
+# Claude Midi Twister
 
 **[Try the browser demo →](https://dylanfisher.github.io/claude-midi-twister/)**
 
