@@ -105,8 +105,10 @@ p a:hover, li a:hover, footer a:hover { color: var(--ink); text-decoration-color
   backdrop-filter: saturate(180%) blur(12px);
   border-bottom: 1px solid var(--line);
 }
-/* Never wraps. A sticky bar with a fixed height that wraps puts its second row
- * on top of the page; narrow viewports scroll it sideways instead. */
+/* Never wraps at this width: a sticky bar with a *fixed* height that wraps puts
+ * its second row on top of the page. Below the phone breakpoint it does wrap,
+ * and the height goes to auto in the same rule so the bar grows with it — see
+ * the responsive block. */
 .nav .wide {
   display: flex; gap: 1.4rem; align-items: center; height: 56px;
   flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
@@ -629,6 +631,22 @@ footer p { color: var(--faint); }
   .legend-wrap { flex-direction: column; }
   .legend-wrap > #legend-board { width: auto; }
   .nav a.hide-sm { display: none; }
+}
+/* On a phone the nav's links don't fit on one line, and sideways scroll hides
+ * them behind an edge nobody thinks to drag. Wrap instead: the brand takes a
+ * full-width first row, the links flow under it, and the bar's height goes to
+ * auto so the second row pushes the page down rather than sitting on it. The
+ * links `hide-sm` drops in the single-row band come back here, because wrapping
+ * has room for them. */
+@media (max-width: 700px) {
+  .nav .wide {
+    flex-wrap: wrap; overflow: visible; height: auto;
+    row-gap: 0.5rem; column-gap: 1.1rem;
+    padding-top: 0.7rem; padding-bottom: 0.75rem;
+  }
+  .nav b { flex: 0 0 100%; }
+  .nav .spacer { display: none; }
+  .nav a.hide-sm { display: inline; }
 }
 @media (max-width: 560px) {
   .statusbar .hide-xs { display: none; }

@@ -7,9 +7,9 @@
  * the state underneath instead of snapping.
  */
 
-import * as C from "./config.js?v=72";
-import { Cell, clamp01, lerp, smoothstep, spiralPath, handover } from "./board.js?v=72";
-import { pixels } from "./font.js?v=72";
+import * as C from "./config.js?v=73";
+import { Cell, clamp01, lerp, smoothstep, spiralPath, handover } from "./board.js?v=73";
+import { pixels } from "./font.js?v=73";
 
 const SPIRAL = spiralPath(4);
 
