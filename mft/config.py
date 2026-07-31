@@ -1269,6 +1269,25 @@ USAGE_PEEK_ENCODER = ENCODERS_PER_BANK - 1
 #: a word and the peek spells it first, exactly like a milestone does.
 USAGE_PEEK_WORD = os.environ.get("MFT_USAGE_PEEK_WORD", "")
 
+#: How long an asked-for reading stands on the board. The milestones flash,
+#: because one that arrives unbidden has to catch an eye that was not looking;
+#: an answer has an eye already on it, and a flashing answer is a number you
+#: have to wait for the lit half of. So the peek does not flash at all -- it
+#: rises into place and then simply stays there for this long, long enough to
+#: look away and back once.
+USAGE_PEEK_SECONDS = 5.0
+
+#: How the bar arrives: each row fades up over `USAGE_PEEK_ROW_SECONDS`, the
+#: next starting `USAGE_PEEK_ROW_STAGGER` after the one below it, so the reading
+#: is *filled in* from the bottom rather than switched on. The stagger is what
+#: carries the quantity -- you see the bar stop climbing, which is a stronger
+#: statement of where it stopped than the same bar already stopped. Both are
+#: short: the rise is a way of showing the number, not an animation to watch,
+#: and the whole climb has to be over well inside `USAGE_PEEK_SECONDS` so that
+#: most of the readout is the reading standing still.
+USAGE_PEEK_ROW_SECONDS = 0.32
+USAGE_PEEK_ROW_STAGGER = 0.18
+
 #: The debounce, and it is a *grace* rather than a cooldown: the readout itself
 #: is what the knob is deaf for, and this is only the margin either side of it.
 #: A turn is refused while the answer to the last one is still on the board and

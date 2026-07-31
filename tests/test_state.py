@@ -2637,8 +2637,10 @@ class Overlays(unittest.TestCase):
 
 
 class EncoderTurns(unittest.TestCase):
-    """A knob is not a control. Turning one changes nothing about the session
-    and is undone; all it can do is wake a sleeping board."""
+    """A knob is not a control. Turning one changes nothing about the session,
+    is undone by the next frame, and leaves the rest of the board exactly as it
+    found it -- including a board that had dimmed itself. The bottom-right knob
+    of the current bank is the single exception, because it asks a question."""
 
     def visualizer(self):
         from mft.daemon import Visualizer
@@ -2660,18 +2662,50 @@ class EncoderTurns(unittest.TestCase):
         )
         self.assertEqual(dataclasses.asdict(vis.table.by_slot(0)), before)
 
-    def test_a_turn_wakes_a_sleeping_board(self):
-        """The one thing a turn does, and the only gesture that does *only*
-        this: a hand on the hardware is the one activity sleep can see that has
-        nothing to do with any agent, and a dark board is the likeliest reason
-        for the hand. A press would wake it too, but a press on a claimed
-        encoder also goes and focuses that terminal."""
-        vis = self.visualizer()
+    def asleep(self, vis):
         vis._sleep.last_activity = time.monotonic() - 2 * config.SLEEP_DARK_SECONDS
         self.assertEqual(vis._sleep.gain(time.monotonic()), 0.0)
+
+    def turn(self, vis, control):
         vis.on_midi(
             SimpleNamespace(
-                type="control_change", channel=config.CH_ENCODER, control=0, value=65
+                type="control_change",
+                channel=config.CH_ENCODER,
+                control=control,
+                value=65,
+            )
+        )
+
+    def test_a_turn_leaves_a_dimmed_board_where_it_found_it(self):
+        """A turn is the one input here nobody necessarily meant: a sleeve, a
+        cable, a hand reaching past. It used to count as a hand on the hardware
+        and relight the whole board, which is sixteen encoders swelling out of
+        the dark because something brushed one knob."""
+        vis = self.visualizer()
+        self.asleep(vis)
+        self.turn(vis, 0)
+        self.assertEqual(
+            vis._sleep.gain(time.monotonic() + config.SLEEP_WAKE_SECONDS), 0.0
+        )
+
+    def test_the_knob_that_asks_a_question_still_wakes_it(self):
+        """The exception, and it is the whole of the exception: a turn that is a
+        question has to be answered on a board you can see. A press wakes it
+        too, but a press on a claimed encoder also goes and focuses a terminal.
+        """
+        vis = self.visualizer()
+        self.asleep(vis)
+        self.turn(vis, config.USAGE_PEEK_ENCODER)
+        self.assertEqual(
+            vis._sleep.gain(time.monotonic() + config.SLEEP_WAKE_SECONDS), 1.0
+        )
+
+    def test_a_press_still_wakes_it(self):
+        vis = self.visualizer()
+        self.asleep(vis)
+        vis.on_midi(
+            SimpleNamespace(
+                type="control_change", channel=config.CH_SWITCH, control=3, value=127
             )
         )
         self.assertEqual(

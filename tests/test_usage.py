@@ -51,13 +51,8 @@ class BannerColorTest(unittest.TestCase):
         self.assertEqual(usage.banner_color(100), "red")
 
 
-class OverlayTest(unittest.TestCase):
-    """What the announcement looks like: the word, then the number as rows.
-
-    The word half is `TextOverlay`'s, and pinned in `tests/test_state.py`. What
-    is pinned here is the two things this overlay adds -- letters that do not
-    fade, and a bar that reads bottom-up.
-    """
+class Frames:
+    """Reading one composed bank back, for both halves of this overlay."""
 
     def frame(self, overlay: overlays.UsageOverlay, at: float):
         return board.compose([], at, [overlay])[: config.ENCODERS_PER_BANK]
@@ -71,6 +66,15 @@ class OverlayTest(unittest.TestCase):
     def gauge_at(self, overlay: overlays.UsageOverlay) -> float:
         """A moment inside the first flash's lit half."""
         return overlay.word_duration + overlay.flash * config.USAGE_GAUGE_DUTY / 2
+
+
+class OverlayTest(Frames, unittest.TestCase):
+    """What the announcement looks like: the word, then the number as rows.
+
+    The word half is `TextOverlay`'s, and pinned in `tests/test_state.py`. What
+    is pinned here is the two things this overlay adds -- letters that do not
+    fade, and a bar that reads bottom-up.
+    """
 
     def test_a_quarter_fills_the_bottom_row_and_nothing_else(self) -> None:
         overlay = overlays.UsageOverlay(25.0, 0.0)
@@ -183,6 +187,54 @@ class OverlayTest(unittest.TestCase):
     def test_the_bar_is_clamped_at_both_ends(self) -> None:
         self.assertEqual(overlays.UsageOverlay(-5.0, 0.0).rows(), [0.0, 0.0, 0.0, 0.0])
         self.assertEqual(overlays.UsageOverlay(140.0, 0.0).rows(), [1.0, 1.0, 1.0, 1.0])
+
+
+class PeekOverlayTest(Frames, unittest.TestCase):
+    """The asked-for reading: the same bar, filled in from the bottom and held.
+
+    Only the envelope is pinned here -- the reading itself is the announcement's
+    and is pinned above.
+    """
+
+    def peek(self, percent: float) -> overlays.UsageOverlay:
+        return overlays.UsageOverlay(percent, 0.0, word="", rise=True)
+
+    def test_it_stands_still_for_five_seconds_instead_of_flashing(self) -> None:
+        overlay = self.peek(100.0)
+        self.assertEqual(overlay.duration, config.USAGE_PEEK_SECONDS)
+        # Sampled right through where the flashes used to fall dark. A number
+        # you asked for is readable at every moment it is on the board.
+        at = overlay.climb
+        while at < overlay.duration:
+            frame = self.frame(overlay, at)
+            self.assertTrue(all(c.brightness > 0 for c in frame), at)
+            at += 0.1
+
+    def test_the_rows_arrive_from_the_bottom(self) -> None:
+        overlay = self.peek(100.0)
+        # One stagger in: the bottom row is on its way up and the row above it
+        # has only just started, so the bar is visibly climbing rather than
+        # switching on.
+        rows = self.rows(self.frame(overlay, overlay.stagger))
+        heights = [row[0].brightness for row in rows]
+        self.assertEqual(heights, sorted(heights, reverse=True))
+        self.assertGreater(heights[0], heights[1])
+        self.assertEqual(heights[-1], 0.0)
+        # And by the end of the climb every row is where the reading puts it.
+        settled = self.rows(self.frame(overlay, overlay.climb))
+        self.assertTrue(all(c.brightness == 1.0 for row in settled for c in row))
+
+    def test_the_climb_is_over_well_inside_the_readout(self) -> None:
+        # The rise is how the reading is shown, not the thing being watched: most
+        # of the five seconds has to be the bar standing still.
+        overlay = self.peek(100.0)
+        self.assertLess(overlay.climb, overlay.duration / 2)
+
+    def test_a_row_above_the_reading_never_arrives(self) -> None:
+        overlay = self.peek(50.0)
+        rows = self.rows(self.frame(overlay, overlay.duration - 0.01))
+        self.assertTrue(all(c.brightness == 1.0 for c in rows[0] + rows[1]))
+        self.assertTrue(all(c.brightness == 0.0 for c in rows[2] + rows[3]))
 
 
 class WatcherTest(unittest.TestCase):

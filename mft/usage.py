@@ -41,7 +41,9 @@ past a milestone while the daemon runs.
 which means the number is only ever available on its own schedule -- miss the
 flash and the next word about it is half a window away. So the reading is also
 askable: a turn of the bottom-right encoder (:data:`config.USAGE_PEEK_ENCODER`)
-spells the same animation with whatever the file says right now. That path goes
+shows the same bar with whatever the file says right now -- without the word in
+front of it, and standing still for :data:`config.USAGE_PEEK_SECONDS` rather
+than flashing, because an answer does not have to catch you. That path goes
 through :meth:`UsageWatcher.request`, :meth:`~UsageWatcher.take_request` and
 :meth:`~UsageWatcher.current`, and it is carefully sterile: it reads the file and
 paints, and touches neither the watermark nor ``resets_at``, so looking can never

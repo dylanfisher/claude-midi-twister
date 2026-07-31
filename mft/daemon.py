@@ -343,17 +343,27 @@ class Visualizer:
     def on_midi(self, msg) -> None:
         if msg.type != "control_change":
             return
-        # Any CC at all, turn or press, is a hand on the hardware -- the one
-        # activity sleep can see that has nothing to do with any agent, and if
-        # the board is dark it is very likely the whole reason for it. Waking
-        # the loop is right for a turn on its own terms too: the ring the knob
-        # lit locally is undone by the next frame, and "next" should mean now.
+        # A press or a bank select is a hand on the hardware -- the one activity
+        # sleep can see that has nothing to do with any agent, and if the board
+        # is dark it is very likely the whole reason for it. A turn used to
+        # count the same way and no longer does. A turn is the one input on this
+        # device that is *not* deliberate: it is what a sleeve, a cable or a hand
+        # reaching past does, and every one of them was relighting a board that
+        # was dim on purpose -- sixteen encoders swelling up out of the dark and
+        # settling back, which at those brightnesses is the RGB's blue whatever
+        # hue is underneath it (see `config.WHITE`). Ignored means ignored: the
+        # knob that asks for the usage window wakes the board because it was
+        # asked a question, and nothing else on channel 1 does anything at all.
         now = time.monotonic()
-        self._sleep.touch(now)
+        # The loop is woken for anything, because the ring a knob lit locally is
+        # undone by the next frame and "next" should mean now. Waking the *board*
+        # is a different question, and the answer is no for a turn: see below.
         self._wake.set()
         if msg.channel == config.CH_SWITCH:
+            self._sleep.touch(now)
             self._on_switch(msg.control, msg.value)
         elif msg.channel == config.CH_SYSTEM:
+            self._sleep.touch(now)
             self.banks.chose(msg.control, msg.value, now)
         elif msg.channel == config.CH_ENCODER:
             self._on_turn(msg.control, now)
@@ -375,10 +385,19 @@ class Visualizer:
         :meth:`_check_usage` picks it up on the next frame.
         """
         if control % config.ENCODERS_PER_BANK != config.USAGE_PEEK_ENCODER:
+            # Every other knob: nothing. Not a dismissal, not a wake, not a
+            # frame's worth of anything -- the frame this turn already woke will
+            # compose the same board it would have composed anyway and write
+            # nothing. A knob that is not a control has to be a knob that leaves
+            # no trace, or it is a control that only does one thing.
             return
         if self._suspended.is_set():
             return
         if self.usage.request(now):
+            # The one turn that is a question, so the one turn that is a hand:
+            # asking to see the window on a board that has gone dim means the
+            # board comes back up to answer.
+            self._sleep.touch(now)
             self._wake.set()
 
     def _press_target(self, slot: int) -> Optional[Session]:
@@ -649,9 +668,13 @@ class Visualizer:
 
         The same overlay and the same color bands the milestones use, because an
         asked-for 96% is the same fact as an announced one and a second dialect
-        for it would be one to learn. The one difference is the word, which is
-        skipped (`config.USAGE_PEEK_WORD`): a milestone has to introduce itself
-        and an answer does not.
+        for it would be one to learn. What differs is only how it is delivered,
+        and both differences are the same difference: an answer is not an
+        interruption. The word is skipped (`config.USAGE_PEEK_WORD`), because a
+        milestone has to introduce itself and an answer does not; and the bar
+        rises into place and holds rather than flashing (`rise=True`), because
+        the flash is there to catch an eye that was elsewhere and this eye is
+        already here.
 
         Nothing is said when there is nothing to say -- an unreadable cache
         paints no bar rather than an empty one, which would read as a window
@@ -668,6 +691,7 @@ class Visualizer:
             color=usage_mod.banner_color(int(percent)),
             bank=self.banks.current,
             word=config.USAGE_PEEK_WORD,
+            rise=True,
         )
         self.push_overlay(overlay)
         # The knob is deaf until this has finished saying what it says. Told
@@ -1061,11 +1085,15 @@ class Visualizer:
                 blocked=bool(self._holds) or self._waiting is not None,
             )
             still = 0 if self.paint(now) else still + 1
-            # A fuse is burning: hold the loop at full rate whether or not the
-            # frame moved. The first fifth of a second of a hold paints nothing
-            # at all, and a board that dropped to its idle rate through it would
-            # fire the clear most of a second after the ring said it had.
-            if self._holds:
+            # A fuse is burning, or an overlay is on the board: hold the loop at
+            # full rate whether or not the frame moved. The first fifth of a
+            # second of a hold paints nothing at all, and a board that dropped
+            # to its idle rate through it would fire the clear most of a second
+            # after the ring said it had. Overlays for the same reason from the
+            # other end: an asked-for usage reading stands *still* for its last
+            # few seconds by design, and an idling loop would leave it covering
+            # the bank for up to a second after it was over.
+            if self._holds or self._overlays:
                 still = 0
             # Before the reap, so an ended session's tab is handed back while
             # the record that knows which tty it was on still exists.

@@ -171,8 +171,15 @@ class UsageOverlay(Overlay):
     one thing the board says that you may only get one look at, and it must be
     at its most legible at the readings that are easiest to miss.
 
-    It flashes rather than sitting there, because a static bar over a bank of
-    sessions is indistinguishable from four encoders that happen to be red.
+    An announcement flashes rather than sitting there, because a static bar over
+    a bank of sessions is indistinguishable from four encoders that happen to be
+    red. An *asked-for* reading does the opposite: it rises row by row from the
+    bottom and then stands still for :data:`config.USAGE_PEEK_SECONDS`. Nothing
+    has to be caught, because the eye asking the question is already on the
+    board -- and a flash, to that eye, is a number that is missing half the time
+    you are looking at it. The rise is what the flash was for: it makes the bar
+    an event without making it intermittent, and it says the quantity twice
+    over, because you watch the fill stop where the reading stops.
 
     The word is skipped entirely when the reading was *asked* for. It is there
     to say what an interruption is about, and a knob you just turned has already
@@ -191,8 +198,15 @@ class UsageOverlay(Overlay):
         color: str | int | None = config.TEXT_COLOR,
         bank: int = 0,
         word: str = config.USAGE_WORD,
+        rise: bool = False,
     ) -> None:
         self.percent = max(0.0, min(100.0, float(percent)))
+        #: Which of the two gauges this is: the flashed announcement, or the
+        #: asked-for reading that fills in from the bottom and holds. One flag
+        #: rather than a second class -- everything above the gauge (the rows,
+        #: the partial leading row, the hue ramp, the word in front) is the same
+        #: reading said the same way, and only its envelope differs.
+        self.rise = rise
         self.bank = bank
         self.started_at = started_at
         #: The word half, delegated -- the letter envelope is already correct in
@@ -214,7 +228,20 @@ class UsageOverlay(Overlay):
             else None
         )
         self.flash = max(0.01, config.USAGE_GAUGE_FLASH_SECONDS)
-        self.gauge = self.flash * max(1, config.USAGE_GAUGE_FLASHES)
+        #: How long one row takes to come up, and how far behind the row under
+        #: it that starts. Floored so a zeroed row time is still a cut rather
+        #: than a division by nothing.
+        self.row = max(0.01, config.USAGE_PEEK_ROW_SECONDS)
+        self.stagger = max(0.0, config.USAGE_PEEK_ROW_STAGGER)
+        #: The whole climb, bottom row starting to top row settled. The readout
+        #: can never be shorter than this: a bar cut off mid-rise is a reading
+        #: you have to have watched from the start to trust.
+        self.climb = self.stagger * (config.GRID_ROWS - 1) + self.row
+        self.gauge = (
+            max(config.USAGE_PEEK_SECONDS, self.climb)
+            if rise
+            else self.flash * max(1, config.USAGE_GAUGE_FLASHES)
+        )
 
     @property
     def word_duration(self) -> float:
@@ -256,6 +283,18 @@ class UsageOverlay(Overlay):
             return 0.0
         return lerp(*config.USAGE_GAUGE_PARTIAL, fill)
 
+    def arrived(self, row: int, gauge_t: float) -> float:
+        """How far up row ``row`` (0 is the bottom) is, ``gauge_t`` into the bar.
+
+        A ramp per row, offset by :attr:`stagger` per row above the bottom, and
+        eased -- a linear fade up on this hardware reads as a lamp on a dial,
+        where the ease reads as the row *arriving*. Every row is staggered,
+        including the empty ones above the reading, so the fill is timed the
+        same way at every percentage and only its height changes; an empty row's
+        ramp multiplies a level of zero and shows nothing either way.
+        """
+        return smoothstep(clamp01((gauge_t - row * self.stagger) / self.row))
+
     def apply(self, board: list[Cell], now: float, claimed=frozenset()) -> None:
         t = now - self.started_at
         if t < 0 or t >= self.duration:
@@ -264,7 +303,8 @@ class UsageOverlay(Overlay):
             self.word.apply(board, now, claimed)
             return
 
-        within = (t - self.word_duration) % self.flash
+        gauge_t = t - self.word_duration
+        within = gauge_t % self.flash
         lit = within < self.flash * config.USAGE_GAUGE_DUTY
         fraction = self.percent / 100.0
         low, high = config.USAGE_GAUGE_HUE
@@ -278,7 +318,11 @@ class UsageOverlay(Overlay):
             # Slot order runs top-left to bottom-right, and the bar fills the
             # other way up; this subtraction is the whole of the flip.
             row = config.GRID_ROWS - 1 - offset // config.GRID_COLS
-            value = self.level(rows[row]) if lit else 0.0
+            value = self.level(rows[row])
+            if self.rise:
+                value *= self.arrived(row, gauge_t)
+            elif not lit:
+                value = 0.0
             on = value > 0.02
             board[slot] = Cell(
                 hue if on else None,
