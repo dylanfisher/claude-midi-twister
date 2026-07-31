@@ -7,9 +7,9 @@
  * the state underneath instead of snapping.
  */
 
-import * as C from "./config.js?v=65";
-import { Cell, clamp01, lerp, smoothstep, spiralPath, handover } from "./board.js?v=65";
-import { pixels } from "./font.js?v=65";
+import * as C from "./config.js?v=72";
+import { Cell, clamp01, lerp, smoothstep, spiralPath, handover } from "./board.js?v=72";
+import { pixels } from "./font.js?v=72";
 
 const SPIRAL = spiralPath(4);
 
@@ -239,7 +239,11 @@ export class FocusOverlay extends Overlay {
     const under = cells.get(this.slot) || Cell({});
     const k = this.elapsed(now) / C.FOCUS_SECONDS;
     const swell = Math.sin(clamp01(k) * Math.PI);
-    cells.set(this.slot, { ...under, brightness: Math.max(under.brightness, swell), ringLevel: C.ATTENTION_RING_LEVEL });
+    // Through Cell(), not a spread -- see markFocus in board.js for why a
+    // patched `ringLevel` on a spread copy never reaches the ring.
+    cells.set(this.slot, Cell({
+      ...under, brightness: Math.max(under.brightness, swell), ringLevel: C.ATTENTION_RING_LEVEL,
+    }));
   }
 }
 
@@ -259,7 +263,16 @@ export class SleepOverlay extends Overlay {
     const k = clamp01(this.elapsed(now) / this.length);
     const level = this.waking ? smoothstep(k) : lerp(C.SLEEP_DARK_LEVEL, 1, 1 - smoothstep(k));
     for (const [slot, cell] of cells) {
-      cells.set(slot, { ...cell, brightness: cell.brightness * level, ringLevel: cell.ringLight * level });
+      // The animation goes on the way down, same as `mft.board.dim` drops it and
+      // for the same reason: an animated lens is driven by its keyframes and not
+      // by brightness (see twister.js), so a cell that keeps its animation
+      // cannot be dimmed at all. A dim that silently doesn't dim is worse than
+      // one that costs a strobe.
+      cells.set(slot, Cell({
+        ...cell, anim: 0,
+        brightness: cell.brightness * level,
+        ringLevel: cell.ringLight * level,
+      }));
     }
   }
 }

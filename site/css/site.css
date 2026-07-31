@@ -84,6 +84,17 @@ a:hover { color: #000; }
 p a, li a, footer a { color: var(--dim); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-2); }
 p a:hover, li a:hover, footer a:hover { color: var(--ink); text-decoration-color: var(--dim); }
 
+/* Nothing you operate is text you can take away with you. The device is drawn,
+ * the buttons are controls, the legend rows are played by hovering — a click or
+ * a drag on any of them should do the thing, not leave a blue smear across it,
+ * and a press on a touchscreen should not raise the copy/define callout. Prose,
+ * code blocks and the console's transcript are deliberately *not* in this list:
+ * those are there to be read and taken. */
+.twister, .btn, .motion-btn, .legend li, .scenarios-label {
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none;
+}
+
 .wrap { max-width: 1080px; margin: 0 auto; padding: 0 var(--gut); }
 .wide { max-width: 1360px; margin: 0 auto; padding: 0 var(--gut); }
 
@@ -136,7 +147,7 @@ p.lede { font-size: clamp(1rem, 1.5vw, 1.1rem); color: var(--dim); }
  * hairline of background shows between the rows of a letter. */
 .logo {
   display: flex; flex-direction: column; align-items: flex-start;
-  gap: 0.5em; margin: 0 0 2.2rem;
+  gap: 0.5em; margin: 0 0 1rem;
 }
 .logo pre {
   margin: 0; padding: 0; background: none;
@@ -248,9 +259,12 @@ code.inl {
 .enc .collar { fill: url(#mft-collar); }
 .enc .collar-rim { fill: none; stroke: rgba(255,255,255,0.07); stroke-width: 1; }
 /* Two numbers describe everything lit on an encoder, and they are registered so
- * the animation bands can be a *multiplier* on them rather than a replacement:
- * an unregistered custom property can't be multiplied in calc(), and animating
- * opacity directly would blink a dim encoder at full strength. */
+ * the animation band can be a *multiplier* on the other rather than a
+ * replacement -- setting opacity directly would blink a dim encoder at full
+ * strength. Registration is what gives them a usable value on an encoder the
+ * renderer has never written to: unregistered, `--pulse` would be the empty
+ * string and every lens opacity below it would be invalid at computed-value
+ * time. */
 @property --glow-a { syntax: "<number>"; inherits: true; initial-value: 0; }
 @property --pulse  { syntax: "<number>"; inherits: true; initial-value: 1; }
 .enc { --glow: transparent; }
@@ -265,9 +279,17 @@ code.inl {
  * lit lens never goes fully dark at low brightness — the real one is a diffuser
  * with a floor — so the color survives at the bottom of the ramp. */
 .enc .lens-off { fill: none; stroke: #191919; stroke-width: 9.6; stroke-linecap: round; }
+/* The curve from brightness to opacity. It used to be 0.42 + a*0.58 — a floor
+ * so high and a slope so shallow that the whole board lived in the top half of
+ * the range: a sleeping encoder at 0.02 came out at 0.43, an idle one at 0.50,
+ * and a working one mid-kick at 0.74. Everything looked lit and nothing looked
+ * bright. Steep instead, and off a much lower floor: the active band (working's
+ * 0.55 up) saturates at full, idle and the ambient breath sit at a third, and
+ * the sleep level is finally dark. The floor is the diffuser's, not a design
+ * choice — a lit lens on the real thing never goes fully black. */
 .enc .lens {
   fill: none; stroke: var(--glow); stroke-width: 9.4; stroke-linecap: round;
-  opacity: calc(min(1, 0.42 + var(--glow-a) * 0.58) * var(--pulse));
+  opacity: calc(min(1, 0.08 + var(--glow-a) * 1.75) * var(--pulse));
 }
 /* The bloom is a screen-only halo, not a hardware feature, so it is kept to a
  * minimal, near-uniform strength across states rather than tracking brightness
@@ -295,28 +317,24 @@ code.inl {
   opacity: calc(var(--glow-a) * 0.15 * var(--pulse)); filter: blur(4px); pointer-events: none;
 }
 
-/* The hardware's two animation bands, as keyframes at the same beat divisions.
- * gate is hard on/off; pulse is a soft breath. On the device both are driven by
- * the MIDI clock the daemon supplies, which is why all sixteen breathe in step.
- * They ride the RGB lens and its spill, never the white ring: channels 3 and 6
- * animate separately on the real thing, and only channel 3 is in play here. */
-.enc[data-anim="gate"] { animation: gate var(--anim-period, 1s) steps(1) infinite; }
-.enc[data-anim="pulse"] { animation: pulse var(--anim-period, 1s) ease-in-out infinite; }
-@keyframes gate { 0%, 49% { --pulse: 1; } 50%, 100% { --pulse: 0.12; } }
-@keyframes pulse { 0%, 100% { --pulse: 0.3; } 50% { --pulse: 1; } }
+/* The hardware's two animation bands used to be keyframes here, riding the RGB
+ * lens and its spill. They are computed per frame in js/twister.js now and
+ * arrive as `--pulse`; see `bandLevel` there for why the clock had to be the
+ * board's own and not the animation timeline's. Nothing on the encoder is
+ * animated by CSS any more, which is also why the reduced-motion block below
+ * has nothing to say about it: the renderer honours that preference itself. */
 @keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0.15; } }
 
 /* Motion can be turned off two ways, and the corner toggle wins over the OS in
  * both directions: `full` overrides a system preference for less motion, and
  * `reduced` applies without one. The media query is therefore written to stand
- * down whenever the toggle has been touched. */
+ * down whenever the toggle has been touched. js/main.js reads the same pair and
+ * hands the answer to the board, so the encoders and the page agree. */
 @media (prefers-reduced-motion: reduce) {
   :root:not([data-motion="full"]) { scroll-behavior: auto; }
-  :root:not([data-motion="full"]) .enc[data-anim],
   :root:not([data-motion="full"]) .cursor.blink { animation: none !important; }
 }
 :root[data-motion="reduced"] { scroll-behavior: auto; }
-:root[data-motion="reduced"] .enc[data-anim],
 :root[data-motion="reduced"] .cursor.blink { animation: none !important; }
 
 /* ── the console pane ────────────────────────────────────────────────────── */
@@ -340,7 +358,17 @@ code.inl {
 }
 .console-empty { color: var(--faint); font-style: italic; }
 .console .line { display: flex; gap: 8px; padding: 1px 0; }
-.console .line .glyph { flex: none; width: 1ch; color: var(--faint); }
+/* The glyph column is a drawn icon, not a character, so nothing here depends on
+ * a monospace face happening to carry U+23FA and friends (it doesn't on iOS,
+ * where the fallback was an emoji-font placeholder). One line-height tall so it
+ * centres on the first row of a wrapped line, and it may spill a little into
+ * the 8px gap -- the column stays 1ch so the text edge is where it always was. */
+.console .line .glyph {
+  flex: none; width: 1ch; height: 1.65em; color: var(--faint);
+  display: flex; align-items: center; justify-content: center;
+}
+.console .line .glyph .ic, .console-input .prompt .ic { width: 1.05em; height: 1.05em; overflow: visible; }
+.console-input .prompt { display: flex; align-items: center; }
 .console .line .text { white-space: pre-wrap; word-break: break-word; }
 .console .line.user .text { color: var(--ink); font-weight: 700; }
 .console .line.user .glyph { color: var(--accent); }
@@ -355,7 +383,11 @@ code.inl {
 .console .line.gate { background: rgba(240,50,42,0.10); border-left: 2px solid var(--hot); padding-left: 8px; margin: 3px -8px 3px -10px; }
 .console .line.gate .text { color: #ffb0a8; font-weight: 700; }
 .console .line.gate .glyph { color: var(--hot); }
-.cursor { color: var(--accent); }
+/* Drawn, not U+2588 -- same reason as the glyph column. */
+.cursor {
+  display: inline-block; vertical-align: -0.14em;
+  width: 1ch; height: 1em; background: var(--accent);
+}
 .cursor.blink { animation: blink 1s steps(1) infinite; }
 
 .console-input {
@@ -413,6 +445,24 @@ code.inl {
 .btn:hover { background: var(--panel-2); border-color: var(--faint); }
 .btn:active { transform: translateY(1px); }
 .btn.ghost { background: none; color: var(--dim); border-color: var(--line); }
+
+/* A scenario button pings when it's clicked: `.ping` jumps ring and fill to
+ * full strength with transitions off, and dropping the class a reflow later
+ * lets `.ping-fade` carry them back to resting over 1s. A keyframe couldn't do
+ * this — it would have to bake in one accent, and the page has a dark
+ * console/readout subtree with its own --accent alongside the light body — but
+ * a transition never names the resting value at all: it interpolates out of
+ * whatever the cascade already resolved here. Declared after :hover and .ghost
+ * so equal specificity lands on the ping. */
+.btn.ping {
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel));
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent) inset;
+  transition: none;
+}
+.btn.ping-fade {
+  transition: background 1s ease-out, border-color 1s ease-out, box-shadow 1s ease-out;
+}
 
 .readout {
   border: 1px solid var(--line); border-radius: var(--r); background: var(--bg-2);
@@ -494,7 +544,12 @@ code.inl {
 }
 .statusbar::-webkit-scrollbar { display: none; }
 .statusbar > * { flex: none; }
-.statusbar .live { color: #12833a; }
+/* Drawn rather than U+25CF, so the "daemon is up" dot is the same size on every
+ * device instead of whichever fallback font owns that codepoint there. */
+.statusbar .live {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: #12833a; vertical-align: 0.05em;
+}
 .statusbar .k { color: var(--faint); }
 .statusbar .spacer { margin-left: auto; }
 

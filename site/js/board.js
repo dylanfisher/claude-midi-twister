@@ -10,7 +10,7 @@
  * human clicking around without either knowing about the other.
  */
 
-import * as C from "./config.js?v=65";
+import * as C from "./config.js?v=72";
 
 // --- the easing vocabulary, all of it (mft/board.py:116,122, render.lerp) ---
 export const clamp01 = (t) => Math.max(0, Math.min(1, t));
@@ -277,7 +277,7 @@ export function arbitrateMotion(cells, sessions, now) {
     }
   }
   for (const [slot, cell] of cells) {
-    if (cell.anim && slot !== winner) cells.set(slot, { ...cell, anim: C.SLOW_ANIM });
+    if (cell.anim && slot !== winner) cells.set(slot, Cell({ ...cell, anim: C.SLOW_ANIM }));
   }
   return winner;
 }
@@ -308,9 +308,18 @@ export function ambient(now, slot) {
 }
 
 /** The focused encoder holds its ring at full: a "you are here" on the map. */
+/* Rebuilt through Cell() rather than spread, here and in the two functions
+ * either side of it. `ringLight` is a getter over `ringLevel`, and a spread
+ * evaluates it once and freezes the answer as a plain property — so patching
+ * `ringLevel` onto a spread copy changed a number nothing downstream reads, and
+ * twister.js's `cell.ringLight` went on returning the pre-patch value. Every
+ * ring-brightness feature on this page was inert that way: the focus marker,
+ * the ceiling below, the sleep fade. The hardware has its own version of this
+ * bug (see the ring band note in CLAUDE.md), which is not a coincidence — both
+ * are a write that succeeds and means nothing. */
 export function markFocus(cells, slot) {
   const cell = cells.get(slot);
-  if (cell) cells.set(slot, { ...cell, ringLevel: C.ATTENTION_RING_LEVEL });
+  if (cell) cells.set(slot, Cell({ ...cell, ringLevel: C.ATTENTION_RING_LEVEL }));
 }
 
 /** Rings are capped only on the states with nothing of their own to say at full
@@ -325,7 +334,7 @@ export function capRings(cells, sessions) {
     const exempt = s && EXEMPT.includes(s.state);
     if (exempt || cell.ringLevel === C.ATTENTION_RING_LEVEL) continue;
     const light = cell.ringLevel === null ? cell.brightness : cell.ringLevel;
-    if (light > C.RING_CEILING) cells.set(slot, { ...cell, ringLevel: C.RING_CEILING });
+    if (light > C.RING_CEILING) cells.set(slot, Cell({ ...cell, ringLevel: C.RING_CEILING }));
   }
 }
 

@@ -7,16 +7,30 @@
  * state directly.
  */
 
+/* The glyph column used to be literal characters -- U+23FA for a turn, U+273B
+ * for a thought, U+21B3 for a subagent. None of those are in the monospace
+ * faces this page asks for, so a phone would fall through the stack to the
+ * emoji font and paint a grey placeholder button where a small mark belonged.
+ * They are drawn instead, Phosphor-style: one 16x16 box, currentColor, so the
+ * per-kind colors in the stylesheet still apply and nothing depends on which
+ * fonts the device happens to ship.
+ */
+const svg = (body) =>
+  `<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"` +
+  ` stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+
+const CARET = svg(`<path d="M6 3.5 10.5 8 6 12.5"/>`);
+
 const KINDS = {
-  user: "›",
-  assistant: "⏺",
-  thought: "✻",
-  tool: "⏺",
-  result: " ",
-  gate: "!",
-  error: "✗",
-  system: "·",
-  sub: "↳",
+  user: CARET,
+  assistant: svg(`<circle cx="8" cy="8" r="4" fill="currentColor" stroke="none"/>`),
+  thought: svg(`<path d="M8 3.4V12.6M4.02 5.7l7.96 4.6M4.02 10.3l7.96-4.6"/>`),
+  tool: svg(`<circle cx="8" cy="8" r="4" fill="currentColor" stroke="none"/>`),
+  result: "",
+  gate: svg(`<path d="M8 4.2v4.4"/><circle cx="8" cy="11.4" r="0.9" fill="currentColor" stroke="none"/>`),
+  error: svg(`<path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>`),
+  system: svg(`<circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none"/>`),
+  sub: svg(`<path d="M4 3.8V9h7.5"/><path d="M9.2 6.7 11.5 9l-2.3 2.3"/>`),
 };
 
 export class Console {
@@ -30,7 +44,7 @@ export class Console {
       </div>
       <div class="console-body" role="log" aria-live="polite" aria-label="session transcript"></div>
       <form class="console-input" autocomplete="off">
-        <span class="prompt">›</span>
+        <span class="prompt">${CARET}</span>
         <input type="text" name="line" placeholder="type a prompt, or /clear, /compact, /plan, /error"
                aria-label="prompt input for the simulated session" />
       </form>`;
@@ -108,15 +122,15 @@ export class Console {
       const line = buf[i];
       const text = line.text.slice(0, Math.floor(line.shown));
       const partial = line.shown < line.text.length;
-      const cursor = partial ? `<span class="cursor">█</span>` : "";
+      const cursor = partial ? `<span class="cursor"></span>` : "";
       out.push(
-        `<div class="line ${line.kind}"><span class="glyph">${KINDS[line.kind] || " "}</span>` +
+        `<div class="line ${line.kind}"><span class="glyph">${KINDS[line.kind] ?? ""}</span>` +
         `<span class="text">${esc(text)}${cursor}</span></div>`
       );
     }
     // The live cursor sits on the last line only when nothing is being typed.
     const busy = buf.some((l) => l.shown < l.text.length);
-    if (!busy) out.push(`<div class="line caret"><span class="glyph">›</span><span class="text"><span class="cursor blink">█</span></span></div>`);
+    if (!busy) out.push(`<div class="line caret"><span class="glyph">${CARET}</span><span class="text"><span class="cursor blink"></span></span></div>`);
     this.body.innerHTML = out.join("");
     if (atBottom) this.body.scrollTop = this.body.scrollHeight;
   }

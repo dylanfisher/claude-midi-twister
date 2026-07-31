@@ -22,8 +22,8 @@
  * white the same as the real hardware.
  */
 
-import * as C from "./config.js?v=65";
-import { hex } from "./config.js?v=65";
+import * as C from "./config.js?v=72";
+import { hex } from "./config.js?v=72";
 
 const SEGMENTS = 11;
 const ARC_START = 216;    // degrees, clockwise from 12 o'clock; the lower left
@@ -42,6 +42,48 @@ function arcPath(cx, cy, r, a0, a1) {
   const [x1, y1] = polar(cx, cy, r, a1);
   const large = Math.abs(a1 - a0) > 180 ? 1 : 0;
   return `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1}`;
+}
+
+/* One frame of the hardware's two animation bands, off the board's own clock.
+ *
+ * These were CSS keyframes until they turned out to be the one thing on the
+ * page a user preference could switch off behind the renderer's back: under
+ * `prefers-reduced-motion` the stylesheet dropped `animation` and every
+ * strobing state went dead flat, while everything modulated in here -- the
+ * subagent shimmer, the ring sweeps, the ambient breath -- carried on. Half the
+ * board honouring a preference is worse than either answer, and from in here
+ * the lens looked lit and correct.
+ *
+ * Driving them from the clock is also the more faithful drawing, which is the
+ * argument that would have won on its own. The device's animations run off the
+ * MIDI clock the daemon supplies, so all sixteen encoders breathe *in unison* --
+ * that is why `config.DARK_VALUE` is 18 and not 17, the slowest pulse. A CSS
+ * animation starts when the class lands on its element, so sixteen encoders each
+ * breathed on whatever phase they happened to be claimed at: the page was
+ * contradicting the one hardware fact it exists to teach.
+ *
+ * The gate is the keyframe it replaces. The breath is not: see BAND_FLOOR. */
+
+//: The bottom of both bands. The gate has always been here; the breath used to
+//: bottom out at 0.3, which cost it the deepest third of the swing it had
+//: available and left a slow pulse looking like a lit encoder wavering slightly.
+//: Both bands now travel the same distance, which is also the honest reading --
+//: on the device they are two shapes over one range, not two ranges.
+const BAND_FLOOR = 0.12;
+//: How the breath spends its cycle, as an exponent on a raised cosine. A plain
+//: cosine is symmetric, so a breath spends as long dark as lit and its peak is
+//: an instant you can miss between glances; under 1 it climbs early and dwells
+//: near the top, which is what makes the swing read as a pulse rather than as a
+//: slow wobble. Toward 0 it approaches a gate. 1.0 restores the old curve.
+const BAND_DWELL = 0.6;
+
+function bandLevel(anim, now) {
+  const period = C.animPeriod(anim);
+  if (period <= 0) return 1;
+  const phase = ((now % period) + period) % period / period;
+  if (C.animIsGate(anim)) return phase < 0.5 ? 1 : BAND_FLOOR;   // hard on/off
+  const swell = (1 - Math.cos(phase * 2 * Math.PI)) / 2;         // a soft breath
+  return BAND_FLOOR + (1 - BAND_FLOOR) * Math.pow(swell, BAND_DWELL);
 }
 
 function el(name, attrs) {
@@ -79,7 +121,7 @@ function ensureDefs() {
   document.body.appendChild(svg);
 }
 
-/** Build one encoder's DOM. Returns a handle with `write(cell)`. */
+/** Build one encoder's DOM. Returns a handle with `write(cell, now, reduced)`. */
 export function makeEncoder(index) {
   ensureDefs();
 
@@ -144,10 +186,26 @@ export function makeEncoder(index) {
   let last = "";
   const handle = {
     el: root,
-    write(cell) {
+    /** `now` is the board's clock; `reduced` is the page's motion preference,
+     *  and it is the whole board's answer rather than the stylesheet's, so an
+     *  encoder that has been asked to hold still holds still on every surface
+     *  at once. A still encoder gives its lens back to brightness -- the same
+     *  swap the wire makes, in the other direction. */
+    write(cell, now = 0, reduced = false) {
+      const animating = Boolean(cell.anim) && !reduced;
+      const pulse = animating ? bandLevel(cell.anim, now) : 1;
+
       // De-duplicated the same way mft/twister.py de-duplicates its writes:
-      // sixteen encoders at 30fps is a lot of DOM if you don't.
-      const key = `${cell.color}|${cell.anim}|${cell.ring}|${cell.brightness.toFixed(3)}|${cell.ringLight.toFixed(3)}`;
+      // sixteen encoders at 30fps is a lot of DOM if you don't. An animating
+      // encoder moves every frame by definition and writes every frame; the
+      // other fifteen still cost nothing.
+      // `animating` is in the key on its own account and not as a proxy for the
+      // pulse: an encoder asked to hold still lands on a pulse of 1, which is a
+      // value the band passes through anyway, so the frame the preference
+      // changes on can otherwise key identically to the one before it and be
+      // skipped -- leaving the lens at the animating level with nothing moving.
+      const key = `${cell.color}|${cell.anim}|${animating}|${cell.ring}` +
+                  `|${cell.brightness.toFixed(3)}|${cell.ringLight.toFixed(3)}|${pulse.toFixed(3)}`;
       if (key === last) return;
       last = key;
 
@@ -162,23 +220,24 @@ export function makeEncoder(index) {
       }
 
       // The lens, its bloom and the spill are all one hue at one strength, so
-      // they are two custom properties and the stylesheet does the rest --
-      // which is also what lets the animation bands multiply them instead of
-      // overwriting an opacity a dim encoder needs to keep.
+      // they are three custom properties and the stylesheet does the rest --
+      // which is what lets the animation multiply them instead of overwriting
+      // an opacity a dim encoder needs to keep.
+      //
+      // An animating cell's lens sits at full and lets the band do the
+      // modulating, which is what `mft.twister.Twister.write` does on the wire:
+      // channel 3 carries *either* an animation or a brightness, so a strobing
+      // encoder's brightness is never sent and never reaches its lens. This
+      // page used to send both and multiply them, and two of the states that
+      // animate also breathe their brightness in the renderer (`waiting`, at a
+      // 2.4s period, against a 2s or 4s band). Two breaths at periods that
+      // don't divide beat against each other: the lens swelled on some cycles
+      // and sat almost still on others, which read as the pulse not working.
       const dark = color === null || cell.brightness <= 0.001;
+      const level = animating ? 1 : cell.brightness;
       root.style.setProperty("--glow", dark ? "transparent" : color);
-      root.style.setProperty("--glow-a", dark ? "0" : cell.brightness.toFixed(3));
-
-      // The hardware's own animation bands, as CSS. On the device these are
-      // rate values 1-16 driven off the MIDI clock the daemon supplies; here
-      // they are a keyframe duration at the same beat divisions.
-      if (cell.anim) {
-        const period = C.animPeriod(cell.anim);
-        root.dataset.anim = C.animIsGate(cell.anim) ? "gate" : "pulse";
-        root.style.setProperty("--anim-period", `${period}s`);
-      } else {
-        delete root.dataset.anim;
-      }
+      root.style.setProperty("--glow-a", dark ? "0" : level.toFixed(3));
+      root.style.setProperty("--pulse", pulse.toFixed(3));
     },
     describe(text) {
       root.setAttribute("aria-label", `encoder ${index + 1}, ${text}`);

@@ -3,14 +3,13 @@
  * daemon minus its outside world, so two of them cost nothing but two clocks.
  */
 
-import * as C from "./config.js?v=65";
-import { hex } from "./config.js?v=65";
-import { Sim } from "./sim.js?v=65";
-import { makeBoard } from "./twister.js?v=65";
-import { Console } from "./console.js?v=65";
-import { Director, freePlay } from "./scenarios.js?v=65";
-import { Cell } from "./board.js?v=65";
-import { animate } from "https://cdn.jsdelivr.net/npm/motion@12.42.2/+esm";
+import * as C from "./config.js?v=72";
+import { hex } from "./config.js?v=72";
+import { Sim } from "./sim.js?v=72";
+import { makeBoard } from "./twister.js?v=72";
+import { Console } from "./console.js?v=72";
+import { Director, freePlay } from "./scenarios.js?v=72";
+import { Cell } from "./board.js?v=72";
 
 // ─── motion ───────────────────────────────────────────────────────────────
 // The OS preference is the starting position, not the last word: the control in
@@ -345,50 +344,35 @@ for (const sc of SCENARIOS) {
 }
 
 /* A scenario button pings when it's clicked: the ring and fill jump to full
- * strength and motion.dev fades both back to resting over 1s. JS, not a CSS
- * keyframe, because the fade has to interpolate *from* the accent/panel/line
- * colors read off the page right now -- a keyframe can only bake in a fixed
- * value, and this page has a dark console/readout subtree with its own
- * --accent alongside the light body, so "the accent color" isn't one
- * constant to hardcode. */
-function pingColors() {
-  const cs = getComputedStyle(document.documentElement);
-  return {
-    accent: cs.getPropertyValue("--accent").trim(),
-    panel: cs.getPropertyValue("--panel").trim(),
-    line2: cs.getPropertyValue("--line-2").trim(),
-  };
-}
+ * strength (`.ping`, transitions off) and then fade back to resting over 1s.
+ * Both ends of that fade live in the stylesheet -- see the `.btn.ping` rules --
+ * because a transition never has to name the resting value, it interpolates
+ * out of whatever the cascade resolved for this button, which is the one thing
+ * this page can't hardcode: the dark console/readout subtree carries its own
+ * --accent alongside the light body. All that's left here is the handoff -- add
+ * the class, force a reflow so the full-strength paint is what the transition
+ * starts from, then drop it. */
 function pingButton(btn) {
-  btn.__ping?.cancel();
   clearTimeout(btn.__pingTimer);
-  const { accent, panel, line2 } = pingColors();
-  const fillOn = `color-mix(in srgb, ${accent} 22%, ${panel})`;
+  btn.classList.remove("ping", "ping-fade");
+  void btn.offsetWidth;
+  btn.classList.add("ping");
   if (reduced) {
-    // No animation, but the ring still has to say "this one" -- held at the
-    // strength the animated version starts from, then cleared on a plain timer.
-    btn.__ping = null;
-    Object.assign(btn.style, { background: fillOn, borderColor: accent, boxShadow: `0 0 0 2px ${accent} inset` });
+    // No fade, but the ring still has to say "this one" -- held at the strength
+    // the animated version starts from, then cleared on a plain timer.
     btn.__pingTimer = setTimeout(() => unpingButton(btn), 1000);
     return;
   }
-  btn.__ping = animate(
-    btn,
-    {
-      background: [fillOn, panel],
-      borderColor: [accent, line2],
-      boxShadow: [`0 0 0 2px ${accent} inset`, "0 0 0 0px transparent inset"],
-    },
-    { duration: 1, ease: "easeOut" },
-  );
+  void btn.offsetWidth;
+  btn.classList.add("ping-fade");
+  btn.classList.remove("ping");
+  // A hair past the 1s transition, so the class comes off after it has landed
+  // rather than snapping the last frame.
+  btn.__pingTimer = setTimeout(() => unpingButton(btn), 1100);
 }
 function unpingButton(btn) {
-  btn.__ping?.cancel();
-  btn.__ping = null;
   clearTimeout(btn.__pingTimer);
-  btn.style.background = "";
-  btn.style.borderColor = "";
-  btn.style.boxShadow = "";
+  btn.classList.remove("ping", "ping-fade");
 }
 
 // --- the readout under the device: what the daemon's --status would say
@@ -519,7 +503,7 @@ let fps = 30;
 function paintStatus() {
   const blocked = sim.list().filter((s) => ["permission", "plan", "error", "waiting"].includes(s.state)).length;
   statusFields.innerHTML =
-    `<span><span class="live">●</span> <span class="k">daemon</span> localhost:7654</span>` +
+    `<span><span class="live" aria-hidden="true"></span> <span class="k">daemon</span> localhost:7654</span>` +
     `<span><span class="k">sessions</span> ${sim.list().length}/64</span>` +
     `<span><span class="k">bank</span> ${sim.bank + 1}/4</span>` +
     `<span><span class="k">blocking</span> ${blocked}</span>` +
@@ -563,12 +547,17 @@ if (stage) {
   seed();
 }
 
+/* The board's clock goes to the encoders along with the cells: the animation
+ * bands are computed from it (js/twister.js), so all sixteen breathe in step the
+ * way they do on the device. `reduced` rides along for the same reason -- the
+ * renderer owns that preference now, rather than the stylesheet quietly
+ * dropping half the board's motion behind it. */
 function drawSim(s, ui, { soloIndex = null } = {}) {
   const cells = s.frame();
   for (let i = 0; i < C.PER_BANK; i++) {
     let cell = cells.get(i) || Cell({});
     if (soloIndex !== null && !soloIndex.includes(i)) cell = Cell({});
-    ui.encoders[i].write(cell);
+    ui.encoders[i].write(cell, s.now, reduced);
   }
 }
 

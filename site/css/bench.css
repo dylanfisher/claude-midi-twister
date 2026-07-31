@@ -87,6 +87,10 @@ button {
   padding: 8px 12px; margin: 0 0.3rem 0.3rem 0;
   transition: background 120ms, border-color 120ms, color 120ms;
 }
+button, label, .pad, .glyphs {
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none;
+}
 button:hover { background: var(--panel-2); border-color: var(--faint); }
 button:active { transform: translateY(1px); }
 button:disabled { opacity: 0.4; cursor: default; transform: none; }

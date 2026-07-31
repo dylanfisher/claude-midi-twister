@@ -148,21 +148,26 @@ export const ATTENTION_FLOOR = 0.45;
  * split applies to SWEEP_BRIGHTNESS and DONE_FLASH_BRIGHTNESS below. On the
  * real hardware `Twister.write` only ever sends brightness when a cell has no
  * RGB animation, so a permission gate's brightness never reaches its lens --
- * only the ring feels this constant there. This page's CSS multiplies the
- * animation keyframes against `--glow-a` instead of overwriting it (see
- * twister.js), so brightness reaches the lens on every state, animated or
- * not. A ceiling that reads as fine on the device reads as a much brighter
- * glow in a browser tab, which is what this and the two constants below tune
- * down for the showcase page specifically. */
+ * only the ring feels this constant there, and twister.js now does the same.
+ * What is left for it here is `error`, the one insistent state that doesn't
+ * animate: solid red, brightness straight onto the lens. The ceiling stays
+ * under 1.0 because that is the one case where nothing else is modulating it. */
 export const ATTENTION_CEILING = 0.8;
 export const ATTENTION_RAMP_SECONDS = 300.0;
 export const ATTENTION_ANIM_STEPS = 2;
 
 /* `thinking` and `streaming` are narration, not a block, and used to borrow
  * `ACTIVE_BRIGHTNESS` wholesale -- full lens glow for the mere fact that a
- * session is talking. Well under half: still legible as "something is
- * moving" without reading as urgent. */
-export const SWEEP_BRIGHTNESS = 0.3;
+ * session is talking. Under half, so it is legible as "something is moving"
+ * without reading as urgent.
+ *
+ * In practice this is now `thinking`'s number alone: `streaming` animates, and
+ * an animated cell's lens is driven by its keyframes rather than by brightness
+ * (twister.js, mirroring the wire). 0.3 was tuned against the old, very
+ * compressed opacity curve, where it came out at 0.59; against the steep one it
+ * would have dropped to 0.6 of what a working encoder shows, which is dimmer
+ * than a state this close to the active band should read. */
+export const SWEEP_BRIGHTNESS = 0.42;
 
 /* Peak glow on the instant a turn finishes, before the flash decays toward
  * IDLE_BRIGHTNESS. Under ACTIVE_BRIGHTNESS on purpose: the flash fires on
