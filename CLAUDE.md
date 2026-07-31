@@ -189,41 +189,10 @@ These are load-bearing. Breaking one is a design change, not a refactor.
 
 ## Hardware gotchas
 
-The MIDI channel layout is documented and stable; the value tables are not.
-
-- Channel 1 ring position, 2 RGB hue + press input, 3 RGB animation *or*
-  brightness, 4 banks/side buttons, 6 ring animation *or* brightness.
-- On channels 3 and 6 the low band is rate-based animations and the band above
-  is a brightness ramp — a lit encoder can animate or dim, not both.
-- **Off is 18** (`config.DARK_VALUE`) on channel 3, not 0 (which means "no
-  animation") and not 17 (which is the *slowest pulse* — and since the daemon
-  supplies the MIDI clock, all sixteen breathe in unison).
-- **Channel 6's tables are channel 3's plus 48** (`config.RING_ANIM_OFFSET`):
-  49-56 gate, 57-64 pulse, 65-95 brightness, so the ring's floor is **65**
-  (`config.RING_DARK_VALUE`) and its ceiling 95. An RGB brightness sent on
-  channel 6 lands below the indicator band and does nothing — silently, which is
-  how it survived for the whole life of this board and made every ring
-  brightness feature (focus marker, `RING_CEILING`, focus pulse, gauge fade,
-  sleep dimming) inert. If a ring feature "doesn't work", suspect this first and
-  sweep the whole channel, not just 0-47.
-- Per-unit drift goes through `mft.calibrate` and then into `config.py` or an
-  `MFT_*` env var. Don't hardcode a number a sweep found.
-- Encoders must be set to accept host LED control in the Midi Fighter Utility,
-  or the device drives its own LEDs and ignores everything sent.
-- **The device has its own sleep timer**, also set in the Utility, and it counts
-  *physical input* rather than incoming MIDI. A board that is only ever looked at
-  — which is the whole design (invariant 1) — eventually dozes off mid-session
-  and comes back only for a hand on a knob. There is no keep-alive: the daemon
-  already sends a 120bpm clock continuously and restates all sixteen rings every
-  `RING_REFRESH_SECONDS`, and the device slept through both. There is no readback
-  to detect it with either — the LED path is write-only, and nothing on the input
-  port reports LED or power state. So from in here a dozing device is
-  *indistinguishable* from a board the daemon is deliberately holding dark: sends
-  still succeed, `port_failing` stays false, the port enumerates exactly once, and
-  the log is clean. Turn the timer off in the Utility; this one is not fixable in
-  code. Don't be tempted by "lit board, no input for N minutes → probably asleep"
-  either: an untouched board is the resting state of a display, so that flag would
-  fire on healthy hardware constantly, which is the phantom of invariant 6.
+The MIDI channel layout is stable but the value tables are not, and getting one
+wrong fails silently. They live in `mft/CLAUDE.md`, which loads whenever you
+work under `mft/` — read it before touching `twister.py`, `config.py`, or
+`calibrate.py`.
 
 ## Conventions
 
@@ -242,16 +211,8 @@ The MIDI channel layout is documented and stable; the value tables are not.
   code and installed settings drift silently.
 - Tests are `unittest`, no fixtures framework, and `tests/test_state.py` is
   where most behaviour is pinned. Hardware and HTTP aren't tested; purity is.
-- **Bump `?v=` on every change under `site/`.** The project page ships from
-  `site/` to GitHub Pages with no build step, so nothing fingerprints the
-  filenames for us and browsers hold on to ES modules and stylesheets hard.
-  Every asset reference carries a version query — the `<link>` and `<script>` in
-  `site/index.html`, the two `<link>`s and the `<script>` in `site/bench.html`,
-  and every relative `import ... from "./x.js?v=N"` in `site/js/`. They share **one** number: edit any file under `site/`, raise it
-  everywhere in the same commit. A partial bump is worse than none, because a
-  module imported under two specifiers is loaded and instantiated twice.
-
-  ```sh
-  cd site && grep -rn '?v=' index.html bench.html js/*.js   # the current number
-  # raise N -> N+1 across all of them, then hard-reload and check the console
-  ```
+- **Bump `?v=` on every change under `site/`** — one shared number across every
+  asset reference, raised in the same commit. The page ships to GitHub Pages
+  with no build step, so nothing fingerprints the filenames and a partial bump
+  is worse than none. The exact references and the grep are in `site/CLAUDE.md`,
+  which loads whenever you work under `site/`.
