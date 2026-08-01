@@ -53,6 +53,21 @@ IDLE_FRAMES = 15
 #: that is 64 messages a frame for a repair that only has to look instant.
 RING_REFRESH_SECONDS = 0.25
 
+#: How often the *whole* board is restated regardless of the de-dup cache, hues
+#: included. The same argument as `RING_REFRESH_SECONDS` one channel over: a
+#: cached value is a belief about hardware we cannot read back, and a USB
+#: suspend can leave an encoder holding its own inactive blue while the cache
+#: goes on suppressing the write that would fix it. A resting session never
+#: changes value again, so nothing else would ever correct it -- which is why
+#: the symptom is always a knob that is idle, never one that is working.
+#: A full restate is ~200 messages; at five seconds that averages 40 a second
+#: against MIDI's ~1000, and it does not disturb the idle-FPS backoff because
+#: `paint` paces off composed cells rather than bytes sent. Lower to repair a
+#: flaky cable faster, raise to quieten the wire. What this cannot do is wake a
+#: device that dozed off on its own timer -- see `mft/CLAUDE.md`; that one is
+#: not fixable in code.
+BOARD_REFRESH_SECONDS = 5.0
+
 # --- Sleep and wake ---------------------------------------------------------
 # macOS keeps the USB bus powered while it sleeps, so a board left lit stays
 # lit in an empty room; and `time.monotonic()` here does not tick through a

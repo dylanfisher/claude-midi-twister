@@ -246,5 +246,72 @@ class DarkWakeTest(unittest.TestCase):
         self.assertEqual(self.vis.device._last, {})
 
 
+class BoardRefreshTest(unittest.TestCase):
+    """The repair for a write the hardware dropped without saying so.
+
+    A wake forgets the cache and repaints, but that repaint goes out while the
+    USB device may still be coming back: the endpoint is valid, nothing raises,
+    `port_failing` stays false, and the messages are simply not heard. The cache
+    then believes a hue it never delivered, and a resting encoder -- which never
+    changes value again -- keeps the device's own inactive blue until its
+    session next does something. So the board restates itself on a slow clock
+    whether or not anything moved.
+    """
+
+    def setUp(self) -> None:
+        self.vis = daemon_mod.Visualizer(twister.NullTwister())
+        self.vis.handle_event(
+            {
+                "session_id": "resting",
+                "cwd": "/tmp/p",
+                "hook_event_name": "Stop",
+                "terminal": "test",
+            }
+        )
+        self.sent: list[tuple[int, int, int]] = []
+        real = self.vis.device.cc
+
+        def record(channel, control, value, force=False):
+            before = dict(self.vis.device._last)
+            real(channel, control, value, force=force)
+            if self.vis.device._last != before or force:
+                self.sent.append((channel, control, value))
+
+        self.vis.device.cc = record
+
+    def hues(self) -> list[tuple[int, int, int]]:
+        return [msg for msg in self.sent if msg[0] == config.CH_SWITCH]
+
+    def test_a_still_board_is_written_once_between_refreshes(self) -> None:
+        now = time.monotonic()
+        self.vis.paint(now)
+        painted = len(self.hues())
+        self.assertTrue(painted, "the first frame states every hue")
+        for tick in range(1, 10):
+            self.vis.paint(now + tick * (config.BOARD_REFRESH_SECONDS / 20))
+        self.assertEqual(len(self.hues()), painted, "the de-dup still holds")
+
+    def test_the_slow_clock_restates_it(self) -> None:
+        now = time.monotonic()
+        self.vis.paint(now)
+        painted = len(self.hues())
+        self.vis.paint(now + config.BOARD_REFRESH_SECONDS + 0.01)
+        self.assertEqual(len(self.hues()), painted * 2)
+
+    def test_the_ring_refresh_survives_a_board_refresh(self) -> None:
+        # The two clocks share a frame every so often, and the fast one must not
+        # be starved by the slow one resetting it.
+        now = time.monotonic()
+        self.vis.paint(now)
+        self.vis.paint(now + config.BOARD_REFRESH_SECONDS + 0.01)
+        rings = len([msg for msg in self.sent if msg[0] == config.CH_ENCODER])
+        self.vis.paint(
+            now + config.BOARD_REFRESH_SECONDS + config.RING_REFRESH_SECONDS + 0.02
+        )
+        self.assertGreater(
+            len([msg for msg in self.sent if msg[0] == config.CH_ENCODER]), rings
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

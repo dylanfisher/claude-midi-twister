@@ -154,6 +154,8 @@ class Visualizer:
         #: When every ring was last restated regardless of the de-dup cache.
         #: Negative infinity so the very first frame is a refresh.
         self._last_ring_refresh = float("-inf")
+        #: The same for the whole board, hues included, on its own slower clock.
+        self._last_board_refresh = float("-inf")
         #: The cells the last frame composed, to tell a board that is animating
         #: from one that is merely lit. `None` until the first frame.
         self._last_cells: list[render_mod.Cell] | None = None
@@ -728,6 +730,19 @@ class Visualizer:
         if self._suspended.is_set():
             return False
         try:
+            if now - self._last_board_refresh >= config.BOARD_REFRESH_SECONDS:
+                # The rings' argument, made about the hues: the cache is a
+                # belief about a device we cannot read back, and a USB suspend
+                # can leave an encoder showing its own inactive color while the
+                # cache suppresses every write that would correct it. A working
+                # session shimmers and repairs itself within a frame; an idle
+                # one never changes value again, so this is the only thing that
+                # ever restates it. Cheap enough at this interval to be
+                # unconditional, which is the point -- it needs no theory about
+                # *why* the board and the cache came apart.
+                self._last_board_refresh = now
+                self._last_ring_refresh = now
+                self.device.forget_all()
             if now - self._last_ring_refresh >= config.RING_REFRESH_SECONDS:
                 # Periodically, not every frame: a knob turned by hand lights
                 # its own ring and the cache would believe that ring is already

@@ -25,8 +25,9 @@ The MIDI channel layout is documented and stable; the value tables are not.
   *physical input* rather than incoming MIDI. A board that is only ever looked at
   — which is the whole design (invariant 1) — eventually dozes off mid-session
   and comes back only for a hand on a knob. There is no keep-alive: the daemon
-  already sends a 120bpm clock continuously and restates all sixteen rings every
-  `RING_REFRESH_SECONDS`, and the device slept through both. There is no readback
+  already sends a 120bpm clock continuously, restates all sixteen rings every
+  `RING_REFRESH_SECONDS` and the whole board every `BOARD_REFRESH_SECONDS`, and
+  the device slept through all three. There is no readback
   to detect it with either — the LED path is write-only, and nothing on the input
   port reports LED or power state. So from in here a dozing device is
   *indistinguishable* from a board the daemon is deliberately holding dark: sends
