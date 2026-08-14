@@ -29,7 +29,7 @@ PORT_MATCH = os.environ.get("MFT_PORT_MATCH", "twister")
 #: resorting to `pgrep -f`, which happily matches any shell that mentions the
 #: daemon's name.
 STATE_DIR = os.path.expanduser("~/Library/Application Support/ClaudeTwister")
-PID_FILE = os.path.join(STATE_DIR, "daemon.pid")
+PID_FILE = os.environ.get("MFT_PID_FILE", os.path.join(STATE_DIR, "daemon.pid"))
 
 #: Render loop rate. 30Hz is smooth for ring sweeps and cheap on USB bandwidth.
 FPS = 30.0
@@ -724,6 +724,16 @@ TAB_TITLE_MAX = int(os.environ.get("MFT_TAB_TITLE_MAX", "64"))
 # transcripts on disk and the process table.
 
 DISCOVER_ON_START = _flag("MFT_DISCOVER", True)
+
+#: Notice a Codex CLI launched after the daemon even when Codex delays or drops
+#: its documented ``SessionStart(startup)`` command hook. A background watcher
+#: reads only process ids on this clock; a new interactive Codex pid starts the
+#: existing process/App Server join on another worker. Turning it off restores
+#: hook-only startup behavior without affecting boot/wake adoption.
+CODEX_START_DISCOVERY = _flag("MFT_CODEX_START_DISCOVERY", True)
+#: One ``ps`` per second is cheap enough for a launch detector and remains off
+#: the render thread. The App Server join runs only when that pid set grows.
+CODEX_START_POLL_SECONDS = float(os.environ.get("MFT_CODEX_START_POLL", "1"))
 #: Where Claude Code keeps one directory of transcripts per project.
 CLAUDE_PROJECTS_DIR = os.path.expanduser(
     os.environ.get("MFT_PROJECTS_DIR", "~/.claude/projects")

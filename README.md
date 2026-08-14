@@ -1,8 +1,8 @@
-# Claude Midi Twister
+# Agent Midi Twister
 
 **[Try the browser demo →](https://dylanfisher.github.io/claude-midi-twister/)**
 
-Visualizes running Claude Code sessions on a DJTT Midi Fighter Twister — one
+Visualizes running Claude Code and Codex CLI sessions on a DJTT Midi Fighter Twister — one
 encoder per session. Color and animation show state (working, waiting on you,
 errored, done), the ring shows turn length or context window fill, and
 pressing an encoder brings that session's terminal tab to the front.
@@ -42,14 +42,25 @@ a time.
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python install_hooks.py --print     # preview what it will add
-.venv/bin/python install_hooks.py             # merge into ~/.claude/settings.json
+.venv/bin/python install_agent_hooks.py --print
+.venv/bin/python install_agent_hooks.py       # install Claude + Codex hooks
 ```
 
-This installs hooks into your **user** settings, so every project gets the
-visualizer. It backs up your settings first and tags its own entries, so
-`--uninstall` removes exactly what it added. Run `--check` after a `git pull`
-to catch drift between the code and your installed hooks.
+This installs hooks into `~/.claude/settings.json` and `~/.codex/hooks.json`, so
+every project gets the visualizer. It backs up every file it changes and tags
+its own entries, so `--uninstall` removes exactly what it added. Run `--check`
+after a `git pull` to catch drift. You can target one runtime with
+`--provider claude|codex`.
+
+The combined install preserves an existing Claude Twister hook installation
+exactly and only adds the Codex hooks. The existing Claude hooks already work
+with the provider-aware daemon. To deliberately replace or upgrade them, run
+`install_agent_hooks.py --provider claude` separately.
+
+After installing Codex hooks, run `/hooks` in Codex and review and trust the
+definitions. Codex merges `hooks.json` with inline hooks from `config.toml`; the
+installer leaves inline hooks untouched and warns when it finds both sources.
+`install_hooks.py` remains the compatibility installer for Claude-only setups.
 
 ## Run
 
@@ -57,7 +68,7 @@ to catch drift between the code and your installed hooks.
 .venv/bin/python -m mft.daemon
 ```
 
-Leave it running. Open Claude Code anywhere and its encoder lights up.
+Leave it running. Open Claude Code or Codex CLI anywhere and its encoder lights up.
 Sessions already running when the daemon starts are adopted automatically.
 
 ```sh
@@ -76,29 +87,36 @@ Developing without hardware:
 ### Or: the app
 
 ```sh
-.venv/bin/python app/make_app.py     # -> ~/Applications/Claude Twister.app
+.venv/bin/python app/make_app.py     # -> ~/Applications/Agent Midi Twister.app
 ```
 
 Launch it from Spotlight. It's a background app with no dock icon or window;
 launch once to start the daemon, again to stop it. Logs go to
-`~/Library/Logs/claude-twister.log`. Rebuild it after moving the repo or
+`~/Library/Logs/agent-midi-twister.log`. The build also creates a legacy
+`Claude Twister.app` launcher and `claude-twister` executable alias. Rebuild after moving the repo or
 upgrading Python, since it bakes in absolute paths.
 
 To start at login, drop a launchd plist in `~/Library/LaunchAgents` pointing
-at `.venv/bin/claude-twister -m mft.daemon`.
+at `.venv/bin/agent-midi-twister -m mft.daemon`. Existing references to
+`.venv/bin/claude-twister` continue to work.
 
 ## How it works
 
 ```
-Claude Code session ──hook──▶ POST localhost:7654/event ──▶ daemon ──MIDI──▶ Twister
+Claude/Codex session ─hook──▶ POST localhost:7654/event ──▶ daemon ──MIDI──▶ Twister
        ▲                                                      │
        └──────────── AppleScript / tmux / wezterm ◀───────────┘  (encoder press)
 ```
 
-Claude Code hooks POST session events to a local HTTP daemon, which infers
+Provider hooks POST session events to a local HTTP daemon, which infers
 session state from those events and renders it to the Twister at 30Hz.
 Pressing an encoder raises the matching terminal tab via AppleScript, tmux, or
 similar, depending on the terminal.
+
+Codex does not always deliver a usable startup hook before its first prompt, so
+the daemon also watches for newly launched interactive `codex` processes. It
+reserves an idle encoder from the live pid and tty, then hands that same encoder
+to the real session id when the first hook arrives.
 
 Hooks always exit `0`. If the daemon isn't running, the POST fails silently
 and you just get no lights — nothing is printed, nothing is blocked, no
@@ -120,3 +138,10 @@ open demo/index.html                               # Web MIDI bench, no daemon
 ```
 
 See `CLAUDE.md` for the module layout and design invariants.
+
+## Upgrading from Claude Twister
+
+Rebuild the app, run `install_agent_hooks.py`, review the Codex definitions with
+`/hooks`, and restart the daemon. Keep the legacy app until launchd or other
+external references use `Agent Midi Twister.app` or `agent-midi-twister`; then
+the compatibility app may be removed.

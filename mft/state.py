@@ -1,10 +1,10 @@
-"""Session bookkeeping: which Claude Code session owns which encoder.
+"""Session bookkeeping: which agent session owns which encoder.
 
 Two things live here, and they are the same thing seen from two sides:
 :class:`Session`, one agent's record, and :class:`SessionTable`, the registry
 that decides which encoder that record is on. Everything is pure state -- the
 daemon does the I/O -- which is what makes nearly all of this project's
-behaviour testable without hardware, a socket or a Claude.
+behaviour testable without hardware, a socket or an agent runtime.
 
 What a session's state *means* is :mod:`mft.render`. How a hook payload turns
 into one is :mod:`mft.events`. How a tab is recognised across a `/clear` is
@@ -84,6 +84,8 @@ class Subagent:
 class Session:
     session_id: str
     slot: int
+    #: The agent runtime that owns this identifier. Legacy events are Claude.
+    provider: str = "claude"
     cwd: str = ""
     state: str = "idle"
     #: Whatever the SessionStart hook could learn about the terminal it lives
@@ -293,7 +295,7 @@ class Session:
 
     @property
     def unsupervised(self) -> bool:
-        return self.permission_mode == "bypassPermissions"
+        return self.permission_mode in {"bypassPermissions", "dontAsk"}
 
     @property
     def key(self) -> str:
@@ -312,6 +314,11 @@ class Session:
         return self.session_id[:8]
 
     @property
+    def ref(self) -> tuple[str, str]:
+        """Collision-free identity used by :class:`SessionTable`."""
+        return (self.provider, self.session_id)
+
+    @property
     def label(self) -> str:
         return f"{os.path.basename(self.cwd) or '~'}#{self.short_id}"
 
@@ -322,10 +329,10 @@ class SessionTable:
     def __init__(self, slot_count: int = config.SLOT_COUNT) -> None:
         self.slot_count = slot_count
         self._lock = threading.RLock()
-        self._sessions: dict[str, Session] = {}
+        self._sessions: dict[tuple[str, str], Session] = {}
         #: slot -> session_id, including recently-ended sessions during the
         #: linger window so a resumed session lands back where it was.
-        self._slots: dict[int, str] = {}
+        self._slots: dict[int, tuple[str, str]] = {}
         #: Every identity token any session answers to -> its slot, so a new
         #: session id in a known tab is adopted by the slot that tab already
         #: owns. A cache of what the sessions themselves hold, rebuilt from them
@@ -369,7 +376,7 @@ class SessionTable:
                     slot + 1,
                 )
                 session.slot = slot
-            self._slots[slot] = session.session_id
+            self._slots[slot] = session.ref
         # Rebuilt from the sessions, in board order, first writer winning: a
         # token two records somehow both claim resolves to the live one nearer
         # the top-left rather than to whichever happened to be indexed last.
@@ -434,7 +441,8 @@ class SessionTable:
             slot = self._keys.get(key)
             if slot is None:
                 continue
-            session = self._sessions.get(self._slots.get(slot, ""))
+            ref = self._slots.get(slot)
+            session = self._sessions.get(ref) if ref else None
             if session is not None:
                 return session
             del self._keys[key]
@@ -461,17 +469,20 @@ class SessionTable:
         keys = set(live.keys) | set(stale.keys)
         if not live.terminal:
             live.terminal = dict(stale.terminal)
-        if not live.transcript_path:
-            live.transcript_path = stale.transcript_path
-        live.created_at = min(live.created_at, stale.created_at)
-        live.turn_count = max(live.turn_count, stale.turn_count)
+        if live.provider == stale.provider:
+            if not live.transcript_path:
+                live.transcript_path = stale.transcript_path
+            live.created_at = min(live.created_at, stale.created_at)
+            live.turn_count = max(live.turn_count, stale.turn_count)
         self._release(stale)
         live.slot = slot
         live.keys = keys
         self._compact()
         return live
 
-    def _cleared_ghost(self, cwd: str, now: float) -> Optional[Session]:
+    def _cleared_ghost(
+        self, cwd: str, now: float, provider: str = "claude"
+    ) -> Optional[Session]:
         """The record a `/clear` just emptied here, if it is about to be orphaned.
 
         `/clear` retires a session id and hands out a new one in the same tab.
@@ -496,6 +507,7 @@ class SessionTable:
             s
             for s in self._sessions.values()
             if s.cwd == cwd
+            and s.provider == provider
             and s.cleared_at is not None
             and now - s.cleared_at <= config.CLEAR_ADOPT_SECONDS
             # Silent since the wipe: anything that has spoken for itself since
@@ -507,7 +519,11 @@ class SessionTable:
         return max(candidates, key=lambda s: s.cleared_at or 0.0)
 
     def _handed_off(
-        self, cwd: str, now: float, exclude: Optional[Session] = None
+        self,
+        cwd: str,
+        now: float,
+        exclude: Optional[Session] = None,
+        provider: str = "claude",
     ) -> Optional[Session]:
         """The tab whose conversation just moved into a process with no terminal.
 
@@ -547,6 +563,7 @@ class SessionTable:
             s
             for s in self._sessions.values()
             if s is not exclude
+            and s.provider == provider
             and s.cwd == cwd
             and s.ended_at is None
             and (
@@ -571,22 +588,42 @@ class SessionTable:
                         del self._keys[key]
         self._slots.pop(slot, None)
 
-    def get(self, session_id: str) -> Optional[Session]:
+    def get(self, session_id: str, provider: str = "claude") -> Optional[Session]:
         with self._lock:
-            return self._sessions.get(session_id)
+            return self._sessions.get((provider, session_id))
 
-    def _rekey(self, session: Session, session_id: str) -> None:
-        """Point an existing slot at a new session id, keeping its history."""
-        self._sessions.pop(session.session_id, None)
+    def _rekey(self, session: Session, session_id: str, provider: str) -> None:
+        """Point an existing slot at a new identity.
+
+        Session history survives an id change within one provider. A provider
+        change retains only the terminal identity and encoder it owns.
+        """
+        self._sessions.pop(session.ref, None)
+        if session.provider != provider:
+            # The terminal owns the slot, but runtime state belongs to the
+            # provider. Build from the dataclass defaults so future session
+            # fields reset here automatically instead of joining a second list.
+            fresh = Session(
+                session_id=session_id,
+                slot=session.slot,
+                provider=provider,
+                cwd=session.cwd,
+                terminal=dict(session.terminal),
+                keys=set(session.keys),
+            )
+            session.__dict__.clear()
+            session.__dict__.update(fresh.__dict__)
         session.session_id = session_id
-        self._sessions[session_id] = session
-        self._slots[session.slot] = session_id
+        session.provider = provider
+        self._sessions[session.ref] = session
+        self._slots[session.slot] = session.ref
 
     def ensure(
         self,
         session_id: str,
         cwd: str = "",
         terminal: Optional[dict[str, Any]] = None,
+        provider: str = "claude",
     ) -> Optional[Session]:
         """Get the session, creating and assigning a slot if it's new.
 
@@ -602,7 +639,8 @@ class SessionTable:
         with self._lock:
             now = time.monotonic()
             keys = terminal_keys(terminal, cwd) if terminal else []
-            session = self._sessions.get(session_id)
+            ref = (provider, session_id)
+            session = self._sessions.get(ref)
 
             if session is not None:
                 if cwd:
@@ -620,7 +658,9 @@ class SessionTable:
                         # the identity now arriving says it is running in a bare
                         # process. If a tab here just went quiet, the two are one
                         # session and this is a second encoder for it.
-                        owner = self._handed_off(session.cwd, now, exclude=session)
+                        owner = self._handed_off(
+                            session.cwd, now, exclude=session, provider=provider
+                        )
                     if owner is not None and owner is not session:
                         session = self._absorb(session, owner)
                     self._bind(session, keys)
@@ -632,7 +672,7 @@ class SessionTable:
                 if owner is not None:
                     # Same tab, new session id: /clear, resume, compact or fork.
                     # Keep the slot and everything on it.
-                    self._rekey(owner, session_id)
+                    self._rekey(owner, session_id, provider)
                     owner.cwd = cwd or owner.cwd
                     owner.last_event_at = now
                     self._bind(owner, keys)
@@ -648,9 +688,9 @@ class SessionTable:
                 # A new session id whose only name is the process it runs in, in
                 # a directory whose tab just went quiet: the same conversation,
                 # moved. Keep the tab's encoder.
-                tab = self._handed_off(cwd, now)
+                tab = self._handed_off(cwd, now, provider=provider)
                 if tab is not None:
-                    self._rekey(tab, session_id)
+                    self._rekey(tab, session_id, provider)
                     tab.cwd = cwd or tab.cwd
                     tab.last_event_at = now
                     self._bind(tab, keys)
@@ -666,9 +706,9 @@ class SessionTable:
             # Only for an event with nothing to go on. One that named a tab and
             # matched no slot is a new tab, whatever else is going on in this
             # directory -- guessing is strictly for the events that force it.
-            ghost = self._cleared_ghost(cwd, now) if not keys else None
+            ghost = self._cleared_ghost(cwd, now, provider) if not keys else None
             if ghost is not None:
-                self._rekey(ghost, session_id)
+                self._rekey(ghost, session_id, provider)
                 ghost.cwd = cwd or ghost.cwd
                 ghost.last_event_at = now
                 log.info(
@@ -686,9 +726,11 @@ class SessionTable:
                 return None
             self._evict(slot)
 
-            session = Session(session_id=session_id, slot=slot, cwd=cwd)
-            self._sessions[session_id] = session
-            self._slots[slot] = session_id
+            session = Session(
+                session_id=session_id, slot=slot, provider=provider, cwd=cwd
+            )
+            self._sessions[session.ref] = session
+            self._slots[slot] = session.ref
             self._bind(session, keys)
             log.info(
                 "session %s -> encoder %d (%s, %s)",
@@ -699,7 +741,9 @@ class SessionTable:
             )
             return session
 
-    def find_parent(self, session_id: str, cwd: str = "") -> Optional[Session]:
+    def find_parent(
+        self, session_id: str, cwd: str = "", provider: str = "claude"
+    ) -> Optional[Session]:
         """The session an event about a *subagent* belongs to, or None.
 
         Never creates anything, which is the whole point: a subagent owns no
@@ -711,13 +755,15 @@ class SessionTable:
         a phantom session.
         """
         with self._lock:
-            session = self._sessions.get(session_id)
+            session = self._sessions.get((provider, session_id))
             if session is not None:
                 return session
             if not cwd:
                 return None
             candidates = [
-                s for s in self._sessions.values() if s.cwd == cwd and s.state != "ended"
+                s
+                for s in self._sessions.values()
+                if s.provider == provider and s.cwd == cwd and s.state != "ended"
             ]
             if not candidates:
                 return None
@@ -725,8 +771,8 @@ class SessionTable:
 
     def by_slot(self, slot: int) -> Optional[Session]:
         with self._lock:
-            sid = self._slots.get(slot)
-            return self._sessions.get(sid) if sid else None
+            ref = self._slots.get(slot)
+            return self._sessions.get(ref) if ref else None
 
     def all(self) -> list[Session]:
         with self._lock:
@@ -735,8 +781,8 @@ class SessionTable:
     def _release(self, session: Session) -> None:
         """Drop one session. Leaves the board un-compacted; the caller squeezes
         it back up once it has finished removing things."""
-        self._sessions.pop(session.session_id, None)
-        if self._slots.get(session.slot) == session.session_id:
+        self._sessions.pop(session.ref, None)
+        if self._slots.get(session.slot) == session.ref:
             del self._slots[session.slot]
         for key in session.keys:
             if self._keys.get(key) == session.slot:
@@ -761,7 +807,7 @@ class SessionTable:
         """
         with self._lock:
             dropped = [
-                s for s in sessions if self._sessions.get(s.session_id) is s
+                s for s in sessions if self._sessions.get(s.ref) is s
             ]
             for session in dropped:
                 self._release(session)

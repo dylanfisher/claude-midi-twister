@@ -8,15 +8,21 @@ together. There is nowhere on the board for a number that belongs to no encoder
 -- so it doesn't get an encoder, it gets the whole bank for a couple of seconds,
 on the milestones where interrupting you for it is worth it.
 
-**Where the number comes from.** No hook payload carries it and there is no API
-to ask from in here. But Claude Code fetches its own ``/usage`` answer and
-caches it in ``~/.claude.json`` under ``cachedUsageUtilization``, which is
-readable, cheap, and already on this machine. Two shapes live in there and both
-are used: ``utilization.limits`` is the newer list, where the entry with
-``kind == "session"`` is the five-hour window, and ``utilization.five_hour`` is
-the older field it grew out of. First one that parses wins.
+**Where the number comes from.** No hook payload carries it. Claude Code caches
+its own ``/usage`` answer in ``~/.claude.json`` under
+``cachedUsageUtilization``; Codex exposes its quota through the local App
+Server. The Claude cache is a cheap file read. Starting an App Server process
+is not, so it is polled only while a Codex session is present, always on a
+background thread; the render loop consumes only its completed snapshot.
 
-That cache is *Claude Code's*, refreshed on its clock and not ours, so a reading
+Two Claude cache shapes are understood: ``utilization.limits`` is the newer
+list, where the entry with ``kind == "session"`` is the five-hour window, and
+``utilization.five_hour`` is the older field it grew out of. First one that
+parses wins. Claude and Codex keep independent rollover markers and milestone
+watermarks; when both cross during one poll, only the higher exact reading is
+announced.
+
+The Claude cache is refreshed on Claude Code's clock and not ours, so a reading
 can be an hour old and there is nothing to be done about it. This is why the
 number is announced at milestones rather than shown continuously: a number that
 lags is a bad dial and a perfectly good "you have crossed 75%, some time in the
@@ -31,10 +37,9 @@ itself six times. The watermark resets when the window does -- a new
 ``resets_at``, or a percentage that fell -- and the reset is silent, because
 "your limit refilled" is not news you look up for.
 
-There is no hook that can fake one of these, so seeing the animation without
-waiting five hours means pointing ``MFT_USAGE_FILE`` at a file you write
+For a deterministic Claude test, point ``MFT_USAGE_FILE`` at a file you write
 yourself -- ``{"cachedUsageUtilization": {"utilization": {"limits": [{"kind":
-"session", "percent": 76, "resets_at": "R"}]}}}`` -- and raising the percentage
+"session", "percent": 76, "resets_at": "R"}]}}}`` -- and raise the percentage
 past a milestone while the daemon runs.
 
 **And then there is asking.** Milestones are the board volunteering the number,
@@ -45,8 +50,9 @@ shows the same bar with whatever the file says right now -- without the word in
 front of it, and standing still for :data:`config.USAGE_PEEK_SECONDS` rather
 than flashing, because an answer does not have to catch you. That path goes
 through :meth:`UsageWatcher.request`, :meth:`~UsageWatcher.take_request` and
-:meth:`~UsageWatcher.current`, and it is carefully sterile: it reads the file and
-paints, and touches neither the watermark nor ``resets_at``, so looking can never
+:meth:`~UsageWatcher.current`, and it is carefully sterile: it reads Claude's
+file plus the last completed Codex snapshot and paints the worse reading. It
+touches neither provider's watermark nor ``resets_at``, so looking can never
 consume, arm or suppress an announcement.
 
 The first reading of a daemon's life is silent too, for the same reason
@@ -60,6 +66,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from typing import NamedTuple, Optional, Sequence
 
 from . import config
@@ -77,6 +84,48 @@ class Reading(NamedTuple):
     #: window than the last reading, and string equality answers that without
     #: this module having to have an opinion about timezones.
     resets_at: str
+
+
+class Announcement(NamedTuple):
+    """One milestone and the exact provider reading that crossed it."""
+
+    provider: str
+    milestone: int
+    percent: float
+
+
+class _ProviderTracker:
+    """An independent milestone watermark for a second provider."""
+
+    def __init__(self) -> None:
+        self.percent: Optional[float] = None
+        self.resets_at = ""
+        self.watermark = 0.0
+        self.seen = False
+
+    def observe(self, reading: Reading) -> Optional[int]:
+        rolled = (
+            reading.resets_at != self.resets_at
+            or reading.percent + config.USAGE_ROLLOVER_DROP < self.watermark
+        )
+        self.resets_at = reading.resets_at
+        self.percent = reading.percent
+        if not self.seen or rolled:
+            self.seen = True
+            self.watermark = reading.percent
+            return None
+        milestone = crossed(self.watermark, reading.percent)
+        self.watermark = max(self.watermark, reading.percent)
+        return milestone
+
+    def payload(self) -> Optional[dict]:
+        if self.percent is None:
+            return None
+        return {
+            "percent": round(self.percent, 1),
+            "resets_at": self.resets_at,
+            "announced": int(self.watermark),
+        }
 
 
 #: path -> (mtime, reading). ``~/.claude.json`` is ~90KB and is rewritten
@@ -178,7 +227,7 @@ def banner_color(milestone: int) -> str | int | None:
 
 
 class UsageWatcher:
-    """The polling clock and the watermark, over :func:`read`.
+    """The polling clock and provider watermarks.
 
     Impure by construction -- it reads a file and it remembers -- which is why
     the two decisions worth pinning (:func:`crossed`, :func:`banner_color`) are
@@ -208,22 +257,91 @@ class UsageWatcher:
         #: readouts of the same number back to back is the thing the debounce
         #: exists to prevent, not something to queue up.
         self._pending = False
+        self._codex = _ProviderTracker()
+        self._codex_lock = threading.Lock()
+        self._codex_polling = False
+        self._codex_ready = False
+        self._codex_pending: Optional[Reading] = None
+        self._codex_thread: Optional[threading.Thread] = None
+        self._pending_announcements: list[Announcement] = []
 
-    def poll(self, now: float) -> Optional[int]:
-        """The milestone to announce right now, or ``None``.
+    def _start_codex_poll(self) -> None:
+        """Fetch Codex quota off the render loop, at most one call at a time."""
+        with self._codex_lock:
+            if self._codex_polling:
+                return
+            self._codex_polling = True
+
+        def run() -> None:
+            reading: Optional[Reading] = None
+            try:
+                from . import codex
+
+                raw = codex.rate_limit()
+                if raw is not None:
+                    reading = Reading(*raw)
+            except Exception:
+                log.debug("Codex usage read failed", exc_info=True)
+            finally:
+                with self._codex_lock:
+                    self._codex_pending = reading
+                    self._codex_ready = True
+                    self._codex_polling = False
+
+        thread = threading.Thread(target=run, name="mft-codex-usage", daemon=True)
+        self._codex_thread = thread
+        thread.start()
+
+    def _take_codex_reading(self) -> tuple[bool, Optional[Reading]]:
+        """Consume one completed background result without waiting for it."""
+        with self._codex_lock:
+            if not self._codex_ready:
+                return False, None
+            reading = self._codex_pending
+            self._codex_pending = None
+            self._codex_ready = False
+            return True, reading
+
+    def poll(self, now: float, *, include_codex: bool = True) -> Optional[Announcement]:
+        """The provider milestone to announce right now, or ``None``.
 
         Called from the render loop, so the common path is a clock comparison
-        and the uncommon one is a stat.
+        and consuming a cached background result. It never waits on Codex.
         """
         if not config.USAGE_BANNER:
             return None
-        if now - self._checked_at < config.USAGE_POLL_SECONDS:
-            return None
-        self._checked_at = now
-        reading = read(self.path)
-        if reading is None:
-            return None
-        return self.observe(reading)
+        ready, codex_reading = self._take_codex_reading()
+        if ready and codex_reading is not None:
+            milestone = self._codex.observe(codex_reading)
+            if milestone is not None:
+                self._pending_announcements.append(
+                    Announcement("codex", milestone, codex_reading.percent)
+                )
+        announcement: Optional[Announcement] = None
+        if ready and self._pending_announcements:
+            announcement = max(
+                self._pending_announcements, key=lambda item: item.percent
+            )
+            self._pending_announcements.clear()
+        if now - self._checked_at >= config.USAGE_POLL_SECONDS:
+            self._checked_at = now
+            reading = read(self.path)
+            if reading is not None:
+                milestone = self.observe(reading)
+                if milestone is not None:
+                    self._pending_announcements.append(
+                        Announcement("claude", milestone, reading.percent)
+                    )
+            if include_codex:
+                self._start_codex_poll()
+            elif announcement is None and self._pending_announcements:
+                # Preserve the Claude-only path: with no Codex session there is
+                # no second reading to wait for and no subprocess to launch.
+                announcement = max(
+                    self._pending_announcements, key=lambda item: item.percent
+                )
+                self._pending_announcements.clear()
+        return announcement
 
     def observe(self, reading: Reading) -> Optional[int]:
         """Fold one reading in, and say what it means. The pollable part, with
@@ -300,25 +418,56 @@ class UsageWatcher:
         return pending
 
     def current(self) -> Optional[float]:
-        """The reading right now, or ``None`` -- read fresh, remembered nowhere.
+        """The worst available reading, or ``None`` -- no watermark changes.
 
         Mutates none of this watcher's state, `resets_at` least of all: that
-        field is what :meth:`observe` compares to notice a window rolling over,
-        and a look that quietly updated it would swallow the next rollover and
-        with it the milestones on the far side. ``None`` means the file said
-        nothing, and the answer to that is to say nothing back (invariant 6) --
-        an empty bar is indistinguishable from a genuine 0%.
+        Claude is read fresh from its cheap cache; Codex comes from the most
+        recent completed background poll. ``None`` means neither provider said
+        anything, and the answer to that is to say nothing back (invariant 6)
+        -- an empty bar is indistinguishable from a genuine 0%.
         """
-        reading = read(self.path)
-        return None if reading is None else reading.percent
+        selected = self.current_reading()
+        return None if selected is None else selected[1]
+
+    def current_reading(self) -> Optional[tuple[str, float, bool]]:
+        """Worst current/cached provider and whether a prefix is needed."""
+        readings: dict[str, float] = {}
+        claude_reading = read(self.path)
+        if claude_reading is not None:
+            readings["claude"] = claude_reading.percent
+        if self._codex.percent is not None:
+            readings["codex"] = self._codex.percent
+        if not readings:
+            return None
+        provider = max(readings, key=lambda name: readings[name])
+        return provider, readings[provider], len(readings) > 1
+
+    def provider_readings(self) -> dict[str, dict]:
+        found: dict[str, dict] = {}
+        claude = None if self.percent is None else {
+            "percent": round(self.percent, 1),
+            "resets_at": self.resets_at,
+            "announced": int(self.watermark),
+        }
+        codex = self._codex.payload()
+        if claude is not None:
+            found["claude"] = claude
+        if codex is not None:
+            found["codex"] = codex
+        return found
 
     def payload(self) -> Optional[dict]:
         """What `/status` says about the window, or ``None`` if nothing was
         readable -- which is itself the answer to "why has it never said 75%"."""
-        if self.percent is None:
+        providers = self.provider_readings()
+        if not providers:
             return None
+        selected = max(providers, key=lambda name: providers[name]["percent"])
+        row = providers[selected]
         return {
-            "percent": round(self.percent, 1),
-            "resets_at": self.resets_at,
-            "announced": int(self.watermark),
+            "percent": row["percent"],
+            "resets_at": row["resets_at"],
+            "announced": row["announced"],
+            "provider": selected,
+            "providers": providers,
         }

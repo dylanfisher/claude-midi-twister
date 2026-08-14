@@ -4,22 +4,22 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
 
-    <title>claude-midi-twister — Claude Code sessions on a Midi Fighter Twister</title>
-    <meta name="description" content="A daemon that shows running Claude Code sessions on a DJTT Midi Fighter Twister: one encoder per session, press to focus that terminal tab. The page includes a browser simulator.">
+    <title>Agent Midi Twister — Claude Code and Codex sessions</title>
+    <meta name="description" content="A daemon that shows running Claude Code and Codex CLI sessions on a DJTT Midi Fighter Twister: one encoder per session, press to focus that terminal tab.">
 
     <meta property="og:type"        content="website">
-    <meta property="og:title"       content="claude-midi-twister">
-    <meta property="og:description" content="Running Claude Code sessions on a Midi Fighter Twister, one encoder each. Color is the state, the ring is turn length, press to focus the terminal tab.">
-    <meta property="og:image"       content="https://dylanfisher.github.io/claude-midi-twister/share-image.jpg?v=73">
+    <meta property="og:title"       content="Agent Midi Twister">
+    <meta property="og:description" content="Claude Code and Codex CLI sessions on a Midi Fighter Twister, one encoder each. Color is the state and press focuses the terminal tab.">
+    <meta property="og:image"       content="https://dylanfisher.github.io/claude-midi-twister/share-image.jpg?v=74">
 
     <meta name="twitter:card"        content="summary_large_image">
-    <meta name="twitter:title"       content="claude-midi-twister">
-    <meta name="twitter:description" content="Running Claude Code sessions on a Midi Fighter Twister, one encoder each. Color is the state, the ring is turn length, press to focus the terminal tab.">
-    <meta name="twitter:image"       content="https://dylanfisher.github.io/claude-midi-twister/share-image.jpg?v=73">
+    <meta name="twitter:title"       content="Agent Midi Twister">
+    <meta name="twitter:description" content="Claude Code and Codex CLI sessions on a Midi Fighter Twister, one encoder each. Color is the state and press focuses the terminal tab.">
+    <meta name="twitter:image"       content="https://dylanfisher.github.io/claude-midi-twister/share-image.jpg?v=74">
 
     <meta name="theme-color" content="#f0eee6">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='34' fill='none' stroke='%23d97757' stroke-width='14'/></svg>">
-    <link rel="stylesheet" href="css/site.css?v=73">
+    <link rel="stylesheet" href="css/site.css?v=74">
   </head>
 
   <body>
@@ -58,9 +58,9 @@
         </div>
         <br>
 
-        <h1>Visual overview of your Claude sessions</h1>
+        <h1>Visual overview of your agent sessions</h1>
 
-        <p class="pitch">A daemon that shows every running Claude Code session on a
+        <p class="pitch">A daemon that shows every running Claude Code and Codex CLI session on a
         DJTT Midi Fighter Twister, one encoder per session. The color is the
         session's state, the LED ring is how long the current turn has run, and
         pressing an encoder brings that session's terminal tab to the front.</p>
@@ -122,14 +122,14 @@
         <pre class="term"><span class="c"># install. it backs up your settings first and tags its own entries,</span>
 <span class="c"># so --uninstall removes exactly what it added</span>
 <span class="p">$</span> python3 -m venv .venv &amp;&amp; .venv/bin/pip install -r requirements.txt
-<span class="p">$</span> .venv/bin/python install_hooks.py --print   <span class="c"># look at what it will add</span>
-<span class="p">$</span> .venv/bin/python install_hooks.py           <span class="c"># merge into ~/.claude/settings.json</span>
+<span class="p">$</span> .venv/bin/python install_agent_hooks.py --print   <span class="c"># look at what it will add</span>
+<span class="p">$</span> .venv/bin/python install_agent_hooks.py           <span class="c"># install Claude + Codex hooks</span>
 
-<span class="c"># run it and leave it running. any Claude Code session claims an encoder.</span>
+<span class="c"># run it and leave it running. any Claude or Codex session claims an encoder.</span>
 <span class="p">$</span> .venv/bin/python -m mft.daemon
 
 <span class="c"># or build the app bundle, which starts and stops the daemon</span>
-<span class="p">$</span> .venv/bin/python app/make_app.py            <span class="c"># -> ~/Applications/Claude Twister.app</span>
+<span class="p">$</span> .venv/bin/python app/make_app.py            <span class="c"># -> ~/Applications/Agent Midi Twister.app</span>
 
 <span class="c"># without hardware, everything except the wire still runs</span>
 <span class="p">$</span> .venv/bin/python -m mft.daemon --no-device
@@ -152,8 +152,8 @@
 
     <div class="statusbar" id="statusbar"></div>
 
-    <script type="module" src="js/flip.js?v=73"></script>
-    <script type="module" src="js/main.js?v=73"></script>
+    <script type="module" src="js/flip.js?v=74"></script>
+    <script type="module" src="js/main.js?v=74"></script>
 
   </body>
 </html>

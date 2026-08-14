@@ -127,7 +127,7 @@ def _osascript(script: str, retries: int = 1) -> str:
                     "raise the app -- never the tab. Allow it under System "
                     "Settings > Privacy & Security > Automation, beneath "
                     "whichever app started the daemon (the terminal you ran it "
-                    "in, or Claude Twister); `tccutil reset AppleEvents` brings "
+                    "in, or Agent Midi Twister); `tccutil reset AppleEvents` brings "
                     "the prompt back if the entry isn't there to toggle.",
                     refused,
                 )

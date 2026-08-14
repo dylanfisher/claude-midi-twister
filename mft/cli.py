@@ -67,7 +67,7 @@ def warn_about_hook_drift() -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Claude Code -> Midi Fighter Twister")
+    parser = argparse.ArgumentParser(description="Agent Midi Twister")
     parser.add_argument("--port", type=int, default=config.PORT)
     parser.add_argument("--host", default=config.HOST)
     parser.add_argument(
@@ -105,13 +105,17 @@ def print_status(running: int | None) -> int:
 def print_discovered() -> int:
     """What startup would adopt, without starting anything."""
     found = discover_mod.discover()
+    try:
+        found += discover_mod.discover_codex()
+    except Exception:
+        log.exception("Codex discovery failed")
     for entry in found:
         tab = entry.terminal.get("tty") or entry.terminal.get("pid") or "unknown tab"
         # The state and the pile are both guesses read off transcripts, so this
         # is where you check them against what the session is actually doing.
         pile = f"  +{len(entry.subagents)} subagent(s)" if entry.subagents else ""
         print(
-            f"{entry.session_id[:8]}  {entry.state or 'idle':8}  {tab}  "
+            f"{entry.provider[:3].upper()} {entry.session_id[:8]}  {entry.state or 'idle':8}  {tab}  "
             f"{entry.cwd}{pile}"
         )
     print(f"{len(found)} running session{'' if len(found) == 1 else 's'}")

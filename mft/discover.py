@@ -1,4 +1,4 @@
-"""Find the Claude Code sessions that were already running when we started.
+"""Find the agent sessions that were already running when we started.
 
 Hooks are a one-way push: nothing in Claude Code answers questions, so a
 session that existed before the daemon did stays dark until it fires its next
@@ -45,11 +45,14 @@ allowed to because it recognises nothing: a closed tab frees its pty, and
 reading which ttys are in use does not depend on knowing what a Claude process
 looks like.
 
-The join at the heart of adoption is a guess, and :func:`phantoms` is what keeps
+The join at the heart of Claude adoption is a guess, and :func:`phantoms` is what keeps
 a wrong one from lasting: nothing on disk says which of a directory's transcripts
 belongs to which of its processes, so a session that exited an hour ago can be
 matched to a live Claude and put on the board in place of the session that really
-owns it. See that function for what makes the arithmetic safe to act on.
+owns it. See that function for what makes the arithmetic safe to act on. Codex
+adoption is isolated at the bottom of this module: its App Server supplies the
+live thread metadata, which is joined narrowly to the same process-table tty
+evidence.
 """
 
 from __future__ import annotations
@@ -160,6 +163,10 @@ class Discovered:
     #: how long ago it was last seen writing, and how long ago it was spawned.
     #: Ages rather than timestamps; see :func:`subagents`.
     subagents: dict[str, tuple[float, float]] = field(default_factory=dict)
+    #: Added at the end to preserve the positional constructor used by older
+    #: callers and fixtures.
+    provider: str = "claude"
+    title: str = ""
 
 
 # --- the process table ------------------------------------------------------
@@ -317,6 +324,48 @@ def claude_processes(
         )
         for pid, tty, argv in found
     ]
+
+
+def _codex_rows(rows: list[tuple[int, str, str]]) -> list[tuple[int, str, str]]:
+    """Interactive Codex rows, without the costly cwd/environment reads."""
+    found: list[tuple[int, str, str]] = []
+    for pid, tty, argv in rows:
+        parts = argv.split()
+        if not parts or os.path.basename(parts[0]) != "codex":
+            continue
+        if any(token in parts[1:3] for token in ("app-server", "exec", "mcp-server")):
+            continue
+        found.append((pid, tty, argv))
+    return found
+
+
+def codex_process_ids(
+    rows: Optional[list[tuple[int, str, str]]] = None,
+) -> Optional[frozenset[int]]:
+    """Pids of live interactive Codex CLIs, cheap enough for a 1Hz watcher."""
+    rows = process_rows() if rows is None else rows
+    if rows is None:
+        return None
+    return frozenset(pid for pid, _, _ in _codex_rows(rows))
+
+
+def codex_processes(
+    rows: Optional[list[tuple[int, str, str]]] = None,
+) -> Optional[list[Proc]]:
+    """Live interactive Codex CLI processes, excluding helper subcommands."""
+    rows = process_rows() if rows is None else rows
+    if rows is None:
+        return None
+    found = _codex_rows(rows)
+    pids = [pid for pid, _, _ in found]
+    cwds = _cwds(pids)
+    envs = _environments(pids)
+    uuid = re.compile(r"^[0-9a-f]{8}-[0-9a-f-]{27,}$", re.I)
+    result = []
+    for pid, tty, argv in found:
+        explicit = next((p for p in argv.split() if uuid.match(p)), "")
+        result.append(Proc(pid, tty, cwds.get(pid, ""), explicit, envs.get(pid, {})))
+    return result
 
 
 # --- liveness ---------------------------------------------------------------
@@ -1080,6 +1129,80 @@ def discover(
     ]
 
 
+def discover_codex(
+    processes: Optional[list[Proc]] = None,
+    threads: Optional[list[Any]] = None,
+    now: float = 0.0,
+    window: float = 0.0,
+) -> list[Discovered]:
+    """Conservatively join stable App Server thread metadata to live CLIs."""
+    from . import codex
+
+    now = now or time.time()
+    procs = codex_processes() if processes is None else processes
+    if not procs:
+        return []
+    rows = codex.list_threads() if threads is None else threads
+    window = window or config.DISCOVER_WINDOW_SECONDS
+    recent = [t for t in rows if not t.updated_at or now - t.updated_at <= window]
+    by_id = {t.thread_id: t for t in recent}
+    by_session = {t.session_id: t for t in recent}
+    by_cwd: dict[str, list[Any]] = {}
+    for thread in recent:
+        by_cwd.setdefault(thread.cwd, []).append(thread)
+
+    found: list[Discovered] = []
+    for proc in procs:
+        thread = by_id.get(proc.session_id) or by_session.get(proc.session_id)
+        if thread is None and proc.cwd:
+            candidates = by_cwd.get(proc.cwd, [])
+            same_cwd_procs = [p for p in procs if p.cwd == proc.cwd]
+            # Refuse an assignment unless both sides of the terminal/thread join
+            # are unique. A dark encoder is recoverable; a wrong focus target is not.
+            if len(candidates) == 1 and len(same_cwd_procs) == 1:
+                thread = candidates[0]
+        if thread is None:
+            continue
+        found.append(Discovered(
+            session_id=thread.thread_id,
+            cwd=thread.cwd,
+            transcript_path=thread.path,
+            provider="codex",
+            title=thread.title,
+            terminal=proc.terminal,
+        ))
+    return found
+
+
+def discover_codex_starts(
+    pids: Iterable[int], processes: Optional[list[Proc]] = None
+) -> list[Discovered]:
+    """Live Codex processes as provisional sessions, before the first prompt.
+
+    App Server does not publish a newly opened TUI until it has a prompt, which
+    is exactly the boundary this path exists to get ahead of.  A process still
+    gives us the two facts the board needs safely: it is alive, and its tty
+    names the terminal that owns the encoder.  The temporary id is replaced by
+    the first real hook through :meth:`mft.state.SessionTable.ensure`'s normal
+    same-terminal handoff.
+    """
+    wanted = frozenset(pids)
+    rows = codex_processes() if processes is None else processes
+    if not rows:
+        return []
+    return [
+        Discovered(
+            session_id=f"startup-pid-{proc.pid}",
+            cwd=proc.cwd,
+            transcript_path="",
+            provider="codex",
+            terminal=proc.terminal,
+        )
+        for proc in rows
+        if proc.pid in wanted
+    ]
+
+
 def _believable(transcript: Transcript, now: float) -> str:
     """The transcript's reading, unless the file is too cold to trust it.
 
@@ -1200,14 +1323,17 @@ def adopt(
         # is live where this is reconstructed -- so a session that already
         # exists keeps its own terminal identity rather than being rekeyed onto
         # a tab this guessed at.
-        known = table.get(entry.session_id) is not None
+        known = table.get(entry.session_id, entry.provider) is not None
         terminal = None if known else (entry.terminal or None)
-        session = table.ensure(entry.session_id, entry.cwd, terminal)
+        session = table.ensure(
+            entry.session_id, entry.cwd, terminal, provider=entry.provider
+        )
         if session is None:
             log.info("no free encoder for discovered session %s", entry.session_id[:8])
             break
         session.terminal = session.terminal or dict(entry.terminal)
         session.transcript_path = session.transcript_path or entry.transcript_path
+        session.tab_title = session.tab_title or entry.title
         session.permission_mode = session.permission_mode or entry.permission_mode
         # The same guard as the terminal above, and for the same reason: a live
         # record knows better than a file, and `ensure` can hand back one that

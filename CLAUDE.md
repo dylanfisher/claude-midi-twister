@@ -1,6 +1,6 @@
 # claude-midi-twister
 
-A daemon that visualizes running Claude Code sessions on a DJTT Midi Fighter
+A daemon that visualizes running Claude Code and Codex CLI sessions on a DJTT Midi Fighter
 Twister: one encoder per session, press to focus that session's terminal tab.
 Python 3.14, stdlib only except `mido` + `python-rtmidi`. macOS-only in practice
 (focus adapters and the app bundle are AppleScript/`open`).
@@ -25,8 +25,8 @@ open demo/index.html                               # Web MIDI bench, no daemon
                                                    #   (stop the daemon first)
 
 curl -s localhost:7654/status | python3 -m json.tool
-.venv/bin/python install_hooks.py --print|--check|--uninstall
-.venv/bin/python app/make_app.py                   # -> ~/Applications/Claude Twister.app
+.venv/bin/python install_agent_hooks.py --print|--check|--uninstall
+.venv/bin/python app/make_app.py                   # -> ~/Applications/Agent Midi Twister.app
                                                    #    + .venv/bin/claude-twister
 ```
 
@@ -41,23 +41,23 @@ surrounding code by hand.
 `--no-device` plus `mft.simulate` exercises everything but the wire. That is the
 default way to work here: hardware is only needed to judge *how a thing looks*,
 never to know whether it runs. Logs go to stderr, or
-`~/Library/Logs/claude-twister.log` under the app bundle.
+`~/Library/Logs/agent-midi-twister.log` under the app bundle.
 
 ## Architecture
 
-Hooks (installed into **user** `~/.claude/settings.json`) fire and forget HTTP
+Hooks (installed into **user** Claude and Codex settings) fire and forget HTTP
 POSTs at one long-lived daemon, which owns the MIDI port and renders at 30Hz.
 
 ```
-hooks/notify.sh, hooks/register_session.py
-              │
-      POST ───┴──► mft/httpd.py ──► mft/daemon.py (Visualizer + render loop)
+hooks/notify.sh (cheap Claude events), hooks/forward.py (Codex/registration)
+                              │
+                      POST ───┴──► mft/httpd.py ──► mft/daemon.py
                                           │
-   identity.py ─► state.py ─► events.py   │  what is on the board
+ providers.py ─► identity.py ─► state.py ─► events.py   what is on the board
                      ▲                    │
    render.py ─► board.py ─► overlays.py   │  what it looks like
                                           │
-   twister.py ◄───────────────────────────┘  what goes on the wire
+   twister.py ◄──────────────────────────────────────── what goes on the wire
    focus.py · tab.py · power.py · upkeep.py   what touches the outside
    attention.py                               what the outside is doing
 ```
@@ -77,17 +77,19 @@ Every module is one job, and the filename is the job. Start at `daemon.py` for
   them. Pure.
 - `identity.py` — what names a terminal tab, and how well. Invariant 3 in one
   file. Pure, and knows nothing about sessions.
-- `context.py` — context-window fullness and Claude's own generated title, both
-  tailed out of `transcript_path`.
+- `context.py` / `codex.py` — provider-specific context-window readers;
+  Claude's generated title is also tailed from its transcript.
 - `usage.py` — the other limit: how much of the five-hour usage window is spent,
-  read out of Claude Code's own `~/.claude.json` cache. Belongs to no session,
-  so it gets no encoder — it gets the whole bank for a few seconds on
+  read from Claude Code's `~/.claude.json` cache and, while Codex is present, a
+  background Codex App Server snapshot. Each provider has its own watermark; the worse current
+  reading is shown. Usage belongs to no session, so it gets no encoder — it
+  gets the whole bank for a few seconds on
   25/50/75/90/95/100% and nothing in between, once each per window. What that
   looks like is `overlays.UsageOverlay`: the word `USE`, then the reading as
   rows filling from the bottom. The same animation is also *askable* — a turn
   of the bottom-right knob, debounced so one flick is one readout — and that
-  path is sterile by design: it reads the file and paints, and never moves the
-  watermark, so looking can't swallow a milestone.
+  path is sterile by design: it reads the available snapshots and paints, and
+  never moves either watermark, so looking can't swallow a milestone.
 
 **What it looks like**
 
@@ -121,8 +123,9 @@ Every module is one job, and the filename is the job. Start at `daemon.py` for
   predate the daemon (transcripts joined with the process table), and `orphans`,
   which releases the encoders whose recorded pid no longer exists.
 - `upkeep.py` — *when* to ask, on which thread, and what to do with the answer.
-  Three clocks: adoption at boot/wake, the free pid sweep every reap, the `ps`
-  census on its own thread.
+  Four clocks: adoption at boot/wake, the free pid sweep every reap, the `ps`
+  census on its own thread, and a cheap Codex-pid watcher that reserves an
+  encoder before the first prompt when `SessionStart` arrives late.
 - `power.py` — system sleep and wake, over `ctypes` into IOKit, plus the
   display's power state out of CoreGraphics. The board follows the screen, and
   that poll is the detector that carries the weight: the IOKit notification can
@@ -204,11 +207,12 @@ work under `mft/` — read it before touching `twister.py`, `config.py`, or
   conventional-commit prefixes — "Dim at half an hour, dark at an hour, unless
   it's asking for you". Sentence case, no scope tags.
 - `from __future__ import annotations` at the top of every module.
-- New hook events: add to `install_hooks.py`, fold into a session in
-  `events.apply_event`, and route in `daemon.Visualizer._apply_hook_event` only
-  if the event needs something other than the default (a subagent's parent, an
-  update-only rule, a compaction). Remember `--check` exists precisely because
-  code and installed settings drift silently.
+- New hook events: add Claude events to `install_hooks.py` and Codex events to
+  `install_agent_hooks.py`, fold them into a session in `events.apply_event`,
+  and route in `daemon.Visualizer._apply_hook_event` only if an event needs
+  something other than the default (a subagent's parent, an update-only rule,
+  a compaction). Remember `--check` exists precisely because code and installed
+  settings drift silently.
 - Tests are `unittest`, no fixtures framework, and `tests/test_state.py` is
   where most behaviour is pinned. Hardware and HTTP aren't tested; purity is.
 - **Bump `?v=` on every change under `site/`** — one shared number across every

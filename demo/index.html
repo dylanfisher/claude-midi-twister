@@ -292,8 +292,8 @@
       The other half, and the half that decides whether you ever see the word:
       <code>mft/usage.py</code>'s watermark. Move the percentage and this plays
       exactly what the daemon would have played — which is usually nothing.
-      Readings come from Claude Code's own cache
-      (<code>~/.claude.json</code>), so they arrive minutes late and in jumps.
+      Claude readings come from <code>~/.claude.json</code>; Codex readings come
+      from background App Server snapshots. Both may arrive late and in jumps.
     </p>
     <label>reading = <span class="val" id="pct-val">40</span>% of the five-hour window</label>
     <input type="range" id="pct" min="0" max="100" value="40">

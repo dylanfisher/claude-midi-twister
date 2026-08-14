@@ -3,13 +3,13 @@
  * daemon minus its outside world, so two of them cost nothing but two clocks.
  */
 
-import * as C from "./config.js?v=73";
-import { hex } from "./config.js?v=73";
-import { Sim } from "./sim.js?v=73";
-import { makeBoard } from "./twister.js?v=73";
-import { Console } from "./console.js?v=73";
-import { Director, freePlay } from "./scenarios.js?v=73";
-import { Cell } from "./board.js?v=73";
+import * as C from "./config.js?v=74";
+import { hex } from "./config.js?v=74";
+import { Sim } from "./sim.js?v=74";
+import { makeBoard } from "./twister.js?v=74";
+import { Console } from "./console.js?v=74";
+import { Director, freePlay } from "./scenarios.js?v=74";
+import { Cell } from "./board.js?v=74";
 
 // ─── motion ───────────────────────────────────────────────────────────────
 // The OS preference is the starting position, not the last word: the control in

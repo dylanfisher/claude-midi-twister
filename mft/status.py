@@ -26,6 +26,7 @@ def session_payload(session: Session, now: float) -> dict:
     one is a breaking change to anything grepping this output."""
     return {
         "session_id": session.session_id,
+        "provider": session.provider,
         "encoder": session.slot + 1,
         "bank": session.slot // config.ENCODERS_PER_BANK + 1,
         "key": session.key,
@@ -44,6 +45,7 @@ def session_payload(session: Session, now: float) -> dict:
         "failures": round(session.failure_heat, 2),
         "subagents": session.subagents,
         "model": session.model,
+        "title": session.tab_title,
         "context_tokens": session.context_tokens,
         "context_limit": session.context_limit,
         "context_pct": (
@@ -111,11 +113,10 @@ def payload(
         # have already replaced on disk. Non-empty means restart, not debug.
         "discovery_failing": discovery_failing,
         "stale": list(stale),
-        # The five-hour usage window as last read out of Claude Code's own
-        # cache, and the milestone already spelled for it. Null means nothing
-        # was readable there, which is the answer to "why has the board never
-        # said 75%" -- and `announced` is the answer to "why did it only say it
-        # once". See :mod:`mft.usage`.
+        # The worst five-hour usage window last read for any provider, plus the
+        # per-provider readings and milestones. Null means neither Claude's
+        # cache nor Codex's background App Server snapshot was readable. See
+        # :mod:`mft.usage`.
         "usage": usage,
         "sessions": [
             session_payload(s, now) for s in sorted(sessions, key=lambda s: s.slot)

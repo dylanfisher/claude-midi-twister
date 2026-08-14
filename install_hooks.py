@@ -40,13 +40,15 @@ import argparse
 import json
 import os
 import shlex
-import shutil
 import sys
 from pathlib import Path
+
+import hook_settings
 
 REPO = Path(__file__).resolve().parent
 REGISTER = REPO / "hooks" / "register_session.py"
 NOTIFY = REPO / "hooks" / "notify.sh"
+FORWARD = REPO / "hooks" / "forward.py"
 
 #: Marks our entries so --uninstall can find them again.
 TAG = "mft-twister"
@@ -144,7 +146,18 @@ def build_hooks(url: str, with_message_display: bool, http: bool = False) -> dic
 
 
 def _is_ours(entry: dict) -> bool:
-    return any(h.get("_source") == TAG for h in entry.get("hooks", []))
+    """Recognize current tagged hooks and legacy command-only installs."""
+    for hook in entry.get("hooks", []):
+        if not isinstance(hook, dict):
+            continue
+        if hook.get("_source") == TAG:
+            return True
+        command = hook.get("command", "")
+        if str(REGISTER) in command or str(NOTIFY) in command:
+            return True
+        if str(FORWARD) in command and "--provider claude" in command:
+            return True
+    return False
 
 
 def missing_events(settings_path: str | os.PathLike = "") -> list[str]:
@@ -155,23 +168,9 @@ def missing_events(settings_path: str | os.PathLike = "") -> list[str]:
     symptom is a part of the board that quietly never lights up. Cheap to check,
     so the daemon checks it at startup and says so.
     """
-    path = Path(settings_path or os.path.expanduser("~/.claude/settings.json"))
-    try:
-        settings = json.loads(path.read_text() or "{}")
-    except (OSError, json.JSONDecodeError):
-        # No settings, or settings we can't read: not our business to diagnose.
-        return []
-    installed = {
-        event
-        for event, entries in settings.get("hooks", {}).items()
-        if any(_is_ours(e) for e in entries)
-    }
-    if not installed:
-        # Nothing of ours is installed at all. That's "not set up", not "drift",
-        # and reporting every event as missing would only bury the real message.
-        return []
     expected = list(REGISTER_EVENTS) + [event for event, _ in NOTIFY_EVENTS]
-    return [event for event in expected if event not in installed]
+    path = settings_path or os.path.expanduser("~/.claude/settings.json")
+    return hook_settings.missing_events(path, expected, _is_ours)
 
 
 def missing_env(settings_path: str | os.PathLike = "") -> list[str]:
@@ -188,8 +187,12 @@ def missing_env(settings_path: str | os.PathLike = "") -> list[str]:
         settings = json.loads(path.read_text() or "{}")
     except (OSError, json.JSONDecodeError):
         return []
-    if not any(
-        _is_ours(e) for entries in settings.get("hooks", {}).values() for e in entries
+    hooks = settings.get("hooks", {}) if isinstance(settings, dict) else {}
+    if not isinstance(hooks, dict) or not any(
+        isinstance(entry, dict) and _is_ours(entry)
+        for entries in hooks.values()
+        if isinstance(entries, list)
+        for entry in entries
     ):
         return []
     env = settings.get("env") or {}
@@ -200,24 +203,13 @@ def merge(settings: dict, new_hooks: dict) -> dict:
     # Strip first, so an event we used to install and no longer do
     # (PermissionRequest) doesn't survive an upgrade as an orphan pointing at an
     # endpoint the daemon has stopped serving.
-    existing = strip(settings).setdefault("hooks", {})
-    for event, entries in new_hooks.items():
-        current = [e for e in existing.get(event, []) if not _is_ours(e)]
-        existing[event] = current + entries
+    hook_settings.merge(settings, new_hooks, _is_ours)
     settings.setdefault("env", {}).update(ENV)
     return settings
 
 
 def strip(settings: dict) -> dict:
-    existing = settings.get("hooks", {})
-    for event in list(existing):
-        kept = [e for e in existing[event] if not _is_ours(e)]
-        if kept:
-            existing[event] = kept
-        else:
-            del existing[event]
-    if not existing:
-        settings.pop("hooks", None)
+    hook_settings.strip(settings, _is_ours)
 
     # Only the variables we set, and only where they still hold the value we
     # set them to. `env` is a flat map with nowhere to record who wrote an
@@ -279,21 +271,11 @@ def main() -> int:
         return 1
 
     path = Path(args.settings)
-    settings: dict = {}
-    if path.exists():
-        try:
-            settings = json.loads(path.read_text() or "{}")
-        except json.JSONDecodeError as exc:
-            print(f"{path} is not valid JSON ({exc}); refusing to touch it")
-            return 1
-        backup = path.with_suffix(path.suffix + ".bak")
-        shutil.copy2(path, backup)
-        print(f"backed up {path} -> {backup}")
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True)
-
+    settings = hook_settings.read(path)
+    if settings is None:
+        return 1
     settings = strip(settings) if args.uninstall else merge(settings, hooks)
-    path.write_text(json.dumps(settings, indent=2) + "\n")
+    hook_settings.write(path, settings)
     print(f"{'removed from' if args.uninstall else 'installed into'} {path}")
     if not args.uninstall:
         print("start the daemon, then open a new Claude Code session.")

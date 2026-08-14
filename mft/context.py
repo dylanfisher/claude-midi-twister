@@ -269,6 +269,17 @@ def refresh(session: "Session", now: float) -> None:
     faster than a context window moves. A failed read leaves the last good value
     standing rather than collapsing the ring to nothing.
     """
+    # Codex rollouts are not Claude JSONL. They are parsed only by the isolated
+    # Codex adapter; until that adapter recognises a version, no gauge is safer.
+    if session.provider == "codex":
+        # Imported lazily to keep the provider adapter isolated from the Claude
+        # transcript parser and avoid a module cycle at import time.
+        from . import codex
+
+        codex.refresh_context(session, now)
+        return
+    if session.provider != "claude":
+        return
     if not config.CONTEXT_RING or not session.transcript_path:
         return
     if now - session.context_checked_at < config.CONTEXT_POLL_SECONDS:

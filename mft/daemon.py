@@ -43,6 +43,7 @@ from . import (
     focus as focus_mod,
     overlays as overlays_mod,
     power as power_mod,
+    providers as providers_mod,
     render as render_mod,
     staleness as staleness_mod,
     status as status_mod,
@@ -103,7 +104,10 @@ class Visualizer:
         self.tabs = tab_mod.TabStrip(self.table)
         self.banks = banks_mod.BankFollower(device)
         self.upkeep = upkeep_mod.Upkeep(
-            self.table, released=self.tabs.restore, wake=self._wake_loop
+            self.table,
+            released=self.tabs.restore,
+            wake=self._wake_loop,
+            adopted=self._background_adoption,
         )
         #: The one number on this board that belongs to no encoder; see
         #: :mod:`mft.usage`. Its clock lives in the render loop with the others.
@@ -131,7 +135,7 @@ class Visualizer:
         self._overlays: list[board_mod.Overlay] = []
         #: Keyed by session, not slot: the board compacts under sessions that
         #: end, so a slot is not a stable handle for anything long-lived.
-        self._compactions: dict[str, overlays_mod.CompactOverlay] = {}
+        self._compactions: dict[tuple[str, str], overlays_mod.CompactOverlay] = {}
         #: Per-slot, not a single overlay: pressing a second encoder before
         #: releasing the first would otherwise strand the first one on the
         #: board with nothing left to release it.
@@ -148,7 +152,7 @@ class Visualizer:
         #: The session a focus attempt is currently running for, so a second
         #: press on the same knob doesn't stack another AppleScript behind it.
         self._focus_lock = threading.Lock()
-        self._focusing = ""
+        self._focusing: tuple[str, str] | None = None
         #: When the render loop last logged a dropped frame; see :meth:`paint`.
         self._last_paint_error = float("-inf")
         #: When every ring was last restated regardless of the de-dup cache.
@@ -211,10 +215,10 @@ class Visualizer:
         for effect in effects:
             if effect == EFFECT_COMPACT_START:
                 overlay = overlays_mod.CompactOverlay(session, now)
-                self._compactions[session.session_id] = overlay
+                self._compactions[session.ref] = overlay
                 self.push_overlay(overlay)
             elif effect == EFFECT_COMPACT_END:
-                overlay = self._compactions.pop(session.session_id, None)
+                overlay = self._compactions.pop(session.ref, None)
                 if overlay is not None:
                     overlay.finish(now)
             elif effect == EFFECT_SPAWN:
@@ -251,7 +255,7 @@ class Visualizer:
         out there is running, which is the only question sleep is asking.
         """
         try:
-            return self._apply_hook_event(event)
+            return self._apply_hook_event(providers_mod.normalize_event(event))
         finally:
             self._sleep.touch(time.monotonic())
             self._wake.set()
@@ -262,10 +266,11 @@ class Visualizer:
             return {"ok": False, "error": "missing session_id"}
 
         name = event.get("hook_event_name", "")
+        provider = providers_mod.provider_of(event)
         if name in SUBAGENT_EVENTS:
-            return self._apply_subagent_event(name, session_id, event)
+            return self._apply_subagent_event(name, session_id, event, provider)
 
-        if name in UPDATE_ONLY_EVENTS and self.table.get(session_id) is None:
+        if name in UPDATE_ONLY_EVENTS and self.table.get(session_id, provider) is None:
             log.debug("%s for a session we don't have (%s)", name, session_id[:8])
             return {"ok": True}
 
@@ -277,7 +282,9 @@ class Visualizer:
         terminal = event.get("terminal")
         terminal = terminal if isinstance(terminal, dict) and terminal else None
 
-        session = self.table.ensure(session_id, event.get("cwd", ""), terminal)
+        session = self.table.ensure(
+            session_id, event.get("cwd", ""), terminal, provider=provider
+        )
         if session is None:
             return {"ok": False, "error": "no free encoder"}
         if terminal:
@@ -299,7 +306,9 @@ class Visualizer:
             self._apply_effects(session, effects)
         return {"ok": True, "slot": session.slot + 1, "state": session.state}
 
-    def _apply_subagent_event(self, name: str, session_id: str, event: dict) -> dict:
+    def _apply_subagent_event(
+        self, name: str, session_id: str, event: dict, provider: str
+    ) -> dict:
         """A subagent owns no encoder, so its events must never claim one.
 
         Whether these payloads carry the parent's session id or the subagent's
@@ -308,7 +317,9 @@ class Visualizer:
         session, which is the one thing the board is not allowed to do. So: find
         the parent or drop the event.
         """
-        session = self.table.find_parent(session_id, event.get("cwd", ""))
+        session = self.table.find_parent(
+            session_id, event.get("cwd", ""), provider=provider
+        )
         if session is None:
             log.debug("%s with no known parent (%s)", name, session_id[:8])
             return {"ok": True}
@@ -541,6 +552,10 @@ class Visualizer:
         stored = dict(session.terminal or {})
         if focus_mod.precise(stored):
             return stored
+        # Claude discovery understands Claude's process model only. Codex
+        # sessions rely on identity recorded by their command hooks.
+        if session.provider != "claude":
+            return stored
         try:
             found = discover_mod.resolve_terminal(
                 session.cwd, stored.get("pid", ""), self._claimed_pids(session)
@@ -564,10 +579,10 @@ class Visualizer:
         first is still working is a repeat, not a new destination.
         """
         with self._focus_lock:
-            if self._focusing == session.session_id:
+            if self._focusing == session.ref:
                 log.debug("already focusing %s", session.label)
                 return
-            self._focusing = session.session_id
+            self._focusing = session.ref
 
         def run() -> None:
             try:
@@ -578,8 +593,8 @@ class Visualizer:
                 log.exception("focus failed for %s", session.label)
             finally:
                 with self._focus_lock:
-                    if self._focusing == session.session_id:
-                        self._focusing = ""
+                    if self._focusing == session.ref:
+                        self._focusing = None
 
         threading.Thread(target=run, name="mft-focus", daemon=True).start()
 
@@ -640,19 +655,20 @@ class Visualizer:
             return
         if self.usage.take_request():
             self._show_usage(now)
-        milestone = self.usage.poll(now)
-        if milestone is None:
+        announcement = self.usage.poll(
+            now,
+            include_codex=any(
+                session.provider == "codex" for session in self.table.all()
+            ),
+        )
+        if announcement is None:
             return
+        provider, milestone, percent = announcement
         # The word announces the milestone that was crossed; the bar shows where
         # the reading actually is, which is the same number or a little past it.
-        # The fallback is for a watcher that announced without ever recording a
-        # percentage, which cannot currently happen and would otherwise be a
-        # blank bank if it ever did.
-        percent = self.usage.percent
-        if percent is None:
-            percent = float(milestone)
         log.info(
-            "usage window past %d%%; announcing it (reading %.0f%%)",
+            "%s usage window past %d%%; announcing it (reading %.0f%%)",
+            provider,
             milestone,
             percent,
         )
@@ -662,6 +678,11 @@ class Visualizer:
                 now,
                 color=usage_mod.banner_color(milestone),
                 bank=self.banks.current,
+                word=(
+                    "CDX" if provider == "codex" else "CLA"
+                )
+                if len(self.usage.provider_readings()) > 1
+                else config.USAGE_WORD,
             )
         )
 
@@ -682,17 +703,18 @@ class Visualizer:
         paints no bar rather than an empty one, which would read as a window
         barely touched (invariant 6).
         """
-        percent = self.usage.current()
-        if percent is None:
+        reading = self.usage.current_reading()
+        if reading is None:
             log.debug("usage asked for, but nothing readable in %s", self.usage.path)
             return
+        provider, percent, multiple = reading
         log.info("usage window asked for; showing %.0f%%", percent)
         overlay = overlays_mod.UsageOverlay(
             percent,
             now,
             color=usage_mod.banner_color(int(percent)),
             bank=self.banks.current,
-            word=config.USAGE_PEEK_WORD,
+            word=("CDX" if provider == "codex" else "CLA") if multiple else config.USAGE_PEEK_WORD,
             rise=True,
         )
         self.push_overlay(overlay)
@@ -987,6 +1009,16 @@ class Visualizer:
 
     # -- the roster ---------------------------------------------------------
 
+    def _background_adoption(self, adopted: upkeep_mod.Adopted) -> None:
+        """Finish a Codex launch discovered by upkeep's worker."""
+        now = time.monotonic()
+        for session in adopted.found:
+            context_mod.refresh(session, now)
+        if adopted.new:
+            # Opening a TUI is the same evidence of presence as its startup
+            # hook, including when that hook is the part that went missing.
+            self._sleep.touch(now)
+
     def adopt_running_sessions(self, awaken: bool = True) -> None:
         """Put the sessions that predate us on the board, and read their gauges.
 
@@ -1023,6 +1055,7 @@ class Visualizer:
         # follows is for an empty board, and an encoder that lights up halfway
         # through it reads as a session that just started.
         self.adopt_running_sessions()
+        self.upkeep.start_codex_watcher()
         if config.BOOT_ANIMATION:
             # The exit gesture backwards: the board comes up whole, unwraps
             # itself from the centre out along the same spiral the shutdown
@@ -1129,6 +1162,7 @@ class Visualizer:
         # Let go of the run loop before the shutdown animation: a sleep handler
         # that fires while that is painting would black out a board the exit is
         # about to paint anyway, and then hold the machine while it did it.
+        self.upkeep.stop_codex_watcher()
         self._power.stop()
 
     def shutdown_animation(self) -> None:

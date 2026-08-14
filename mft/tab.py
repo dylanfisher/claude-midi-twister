@@ -170,6 +170,8 @@ class TabStrip:
         the previous turn's title, since it is about to be overwritten anyway
         and a turn of lag on a tab strip is not a thing anyone can see.
         """
+        if session.provider != "claude":
+            return
         if not config.TAB_TITLE or not session.transcript_path:
             return
         if session.tab_title and session.tab_title_turn == session.turn_count:
@@ -206,6 +208,10 @@ class TabStrip:
             self._paint_one(session, glyph_for(session))
 
     def _paint_one(self, session: Session, glyph: str) -> None:
+        # Codex owns its terminal title. Phase-one support observes it without
+        # racing or replacing it.
+        if session.provider != "claude":
+            return
         tty = tty_of(session)
         if not tty:
             return
