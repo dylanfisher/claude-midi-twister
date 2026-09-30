@@ -186,9 +186,15 @@ def build_icns(png: bytes, out: Path) -> bool:
 # plain copy of the interpreter under the name we want, parked in the venv's
 # bin/ so that sys.prefix still finds the venv beside it.
 #
-# The copy is pinned to the interpreter it was made from, which matters only
-# across a Python minor upgrade -- the same moment the venv itself has to be
-# rebuilt, so it costs no failure mode that wasn't already there.
+# The copy is pinned to the interpreter it was made from, and more tightly than
+# the venv is. The venv reaches Python through Homebrew's stable
+# `opt/python@3.14` link; the copy's load command names the framework inside a
+# versioned `Cellar/python@3.14/3.14.4_1/`, which `brew upgrade` deletes on
+# any patch or revision bump. The venv survives that and the copy dies in dyld
+# before Python prints a word -- an app that silently never starts. So the
+# launcher probes the copy on every start, remakes it with `--interpreter-only`
+# when it won't run, and falls back to the venv's own `python` if that fails
+# too.
 
 
 def _real_executable(python: Path) -> Path | None:
@@ -312,8 +318,11 @@ LAUNCHER = """#!/bin/bash
 # including the shell you typed it into.
 #
 # PYTHON is a copy of the venv's interpreter renamed so Activity Monitor has
-# something to call it; see named_interpreter() in app/make_app.py.
+# something to call it; see named_interpreter() in app/make_app.py. It breaks
+# on every `brew upgrade` of Python, so it is probed before use: remade from
+# VENV_PYTHON if it won't run, and replaced by VENV_PYTHON if remaking fails.
 PYTHON={python}
+VENV_PYTHON={venv_python}
 REPO={repo}
 LOG="$HOME/Library/Logs/agent-midi-twister.log"
 
@@ -322,12 +331,21 @@ notify() {{
         >/dev/null 2>&1 || true
 }}
 
-if [ ! -x "$PYTHON" ]; then
-    notify "Python missing at $PYTHON — rebuild the venv, then app/make_app.py"
-    exit 1
+cd "$REPO" || exit 1
+mkdir -p "$(dirname "$LOG")"
+
+if ! "$PYTHON" -c '' >/dev/null 2>&1; then
+    echo "--- $PYTHON won't run; remaking it $(date) ---" >> "$LOG"
+    "$VENV_PYTHON" app/make_app.py --interpreter-only >> "$LOG" 2>&1
+    if ! "$PYTHON" -c '' >/dev/null 2>&1; then
+        PYTHON="$VENV_PYTHON"
+    fi
 fi
 
-cd "$REPO" || exit 1
+if ! "$PYTHON" -c '' >/dev/null 2>&1; then
+    notify "Python won't run at $PYTHON — rebuild the venv, then app/make_app.py"
+    exit 1
+fi
 
 if "$PYTHON" -m mft.daemon --status >/dev/null 2>&1; then
     if "$PYTHON" -m mft.daemon --stop >>"$LOG" 2>&1; then
@@ -338,7 +356,6 @@ if "$PYTHON" -m mft.daemon --status >/dev/null 2>&1; then
     exit 0
 fi
 
-mkdir -p "$(dirname "$LOG")"
 echo "--- starting $(date) ---" >> "$LOG"
 /usr/bin/nohup "$PYTHON" -m mft.daemon >> "$LOG" 2>&1 &
 
@@ -446,7 +463,10 @@ def build(dest_dir: Path, python: Path) -> Path:
     launcher = macos / "agent-midi-twister"
     launcher.write_text(
         LAUNCHER.format(
-            python=f'"{named_interpreter(python)}"', repo=f'"{REPO}"', name=APP_NAME
+            python=f'"{named_interpreter(python)}"',
+            venv_python=f'"{python}"',
+            repo=f'"{REPO}"',
+            name=APP_NAME,
         )
     )
     launcher.chmod(0o755)
@@ -499,6 +519,12 @@ def main() -> int:
         default=str(REPO / ".venv" / "bin" / "python"),
         help="interpreter to run the daemon with",
     )
+    parser.add_argument(
+        "--interpreter-only",
+        action="store_true",
+        help="only remake the named interpreter copy (the launcher does this "
+        "when an upgrade has broken it)",
+    )
     args = parser.parse_args()
 
     # Deliberately absolute-but-not-resolved: .venv/bin/python is a symlink to
@@ -508,6 +534,9 @@ def main() -> int:
     if not python.exists():
         print(f"no interpreter at {python} — create the venv first")
         return 1
+
+    if args.interpreter_only:
+        return 0 if named_interpreter(python) != python else 1
 
     dest = Path(args.dest).expanduser()
     dest.mkdir(parents=True, exist_ok=True)
